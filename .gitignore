@@ -1,0 +1,24 @@
+# build artifacts
+/arbiter
+/bin/
+dist/
+*.test
+coverage.out
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+
+# repo-local derived state when dogfooding arbiter on itself or fixtures
+.arbiter/match/
+.arbiter/facts/
+.arbiter/runs/
+.arbiter/locks/
+.arbiter/log/
+.arbiter/run/
+.arbiter/status.json
+
+# editor / OS
+.DS_Store
+.idea/
+.vscode/
