@@ -11,10 +11,8 @@ const (
 	StatusFinishedFailure = "finished_failure"
 	StatusAborted         = "aborted"
 
-	AbortReplaced       = "replaced"
 	AbortStepsExhausted = "steps_exhausted"
 	AbortStopLimit      = "stop_limit"
-	AbortInternalError  = "internal_error"
 
 	TaskOpen = "open"
 	TaskPass = "pass"

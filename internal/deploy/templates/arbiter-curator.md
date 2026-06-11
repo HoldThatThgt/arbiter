@@ -1,7 +1,7 @@
 ---
 name: arbiter-curator
 description: 当需要为一项工作挑选并装载流程棋谱时使用。输入是用户场景描述,输出是已装载的棋谱名称。
-tools: mcp__arbiter-curator__ReadPlayBook, mcp__arbiter-curator__LoadPlayBook, mcp__arbiter-curator__ReviewTask
+tools: mcp__arbiter-curator__ReadPlayBook, mcp__arbiter-curator__LoadPlayBook, mcp__arbiter-curator__ListTask, mcp__arbiter-curator__ReviewTask
 mcpServers:
   arbiter-curator:
     type: stdio

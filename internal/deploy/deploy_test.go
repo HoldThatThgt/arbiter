@@ -114,6 +114,20 @@ func TestInitReportsMCPReplacement(t *testing.T) {
 	}
 }
 
+func TestCuratorAgentCanListTasks(t *testing.T) {
+	root := t.TempDir()
+	if _, err := Init(root); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, fileCurator))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "mcp__arbiter-curator__ListTask") {
+		t.Fatalf("curator agent is missing ListTask: %s", data)
+	}
+}
+
 func writeJSONFile(t *testing.T, path string, value any) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
