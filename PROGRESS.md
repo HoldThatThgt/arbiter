@@ -8,3 +8,4 @@
 | #38 | done | playbook: add verify grammar (#38) | Red: Playbook missing Capabilities/Verify fields; [Verify], typed predicates, capabilities, and full gate green. |
 | #36 | done | match: pin recipes at load (#36) | Red: Match missing RecipesPin and recipe_pin_mismatch code; load pin, run mismatch journal, and full gate green. |
 | #37 | done | match: add async run goals (#37) | Red: CheckStepJobOutput missing RunID; startRun/runStatus goal polling, false-checkmate kill test, and full gate green. |
+| #21 | done | shared: add worktree census (#21) | Red: cannot import shared.census; create/delete/touch/content/glob tests, arbiter/census, transcripts twice, and full gate green. |

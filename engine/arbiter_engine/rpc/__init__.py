@@ -12,6 +12,7 @@ from typing import Any, Callable, Mapping, Optional, TextIO
 from arbiter_engine import __version__
 from arbiter_engine.errors import RPCError, engine_stale
 from arbiter_engine.runs import RunManager
+from arbiter_engine.shared import census
 
 
 MAX_LINE_BYTES = 1024 * 1024
@@ -215,10 +216,26 @@ def _handle_census(request_id: Any, params: Any) -> dict[str, Any]:
         raise RPCError(-32602, "invalid params", {"kind": "invalid_params", "field": "scope"})
     if not isinstance(meta, dict):
         raise RPCError(-32602, "invalid params", {"kind": "invalid_meta"})
-    return _result(
-        request_id,
-        {"digest": "stub", "scope": dict(scope), "new": [], "deleted": [], "changed": []},
-    )
+    bad_scope = sorted(set(scope) - {"globs", "previous"})
+    if bad_scope:
+        raise RPCError(-32602, "invalid params", {"kind": "invalid_params", "bad_scope": bad_scope})
+    globs = scope.get("globs", ["**/*"])
+    if not isinstance(globs, list) or not all(isinstance(item, str) for item in globs):
+        raise RPCError(-32602, "invalid params", {"kind": "invalid_params", "field": "globs"})
+    previous = None
+    if "previous" in scope:
+        raw_previous = scope["previous"]
+        if not isinstance(raw_previous, dict):
+            raise RPCError(-32602, "invalid params", {"kind": "invalid_params", "field": "previous"})
+        try:
+            previous = census.from_json(raw_previous)
+        except ValueError as exc:
+            raise RPCError(
+                -32602,
+                "invalid params",
+                {"kind": "invalid_params", "field": "previous", "detail": str(exc)},
+            )
+    return _result(request_id, census.to_json(census.scan(Path.cwd(), globs, previous=previous)))
 
 
 def _handle_resolve_briefing(request_id: Any, params: Any) -> dict[str, Any]:

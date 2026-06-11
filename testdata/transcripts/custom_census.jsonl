@@ -1,2 +1,2 @@
-{"type":"request","message":{"jsonrpc":"2.0","id":1,"method":"arbiter/census","params":{"scope":{"globs":["**/*.c"]}}}}
-{"type":"response","message":{"jsonrpc":"2.0","id":1,"result":{"digest":"stub","scope":{"globs":["**/*.c"]},"new":[],"deleted":[],"changed":[]}},"allow_volatile":[]}
+{"type":"request","message":{"jsonrpc":"2.0","id":1,"method":"arbiter/census","params":{"scope":{"globs":["transcript-no-such-dir/**/*.c"]}}}}
+{"type":"response","message":{"jsonrpc":"2.0","id":1,"result":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","files":{},"new":[],"deleted":[],"changed":[]}},"allow_volatile":[]}

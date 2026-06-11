@@ -51,7 +51,10 @@ SCENARIOS: List[Tuple[str, List[Dict[str, Any]]]] = [
     _scenario("custom_handshake", _request(1, "arbiter/handshake", {"expected_version": "dev"})),
     _scenario("custom_handshake_stale", _request(1, "arbiter/handshake", {"expected_version": "old"})),
     _scenario("custom_refresh", _request(1, "arbiter/refresh", {"scope": {"paths": ["src"]}, "_meta": {"match_id": "m1"}})),
-    _scenario("custom_census", _request(1, "arbiter/census", {"scope": {"globs": ["**/*.c"]}})),
+    _scenario(
+        "custom_census",
+        _request(1, "arbiter/census", {"scope": {"globs": ["transcript-no-such-dir/**/*.c"]}}),
+    ),
     _scenario("custom_resolve_briefing", _request(1, "arbiter/resolveBriefing", {"refs": ["fact:1"]})),
     _scenario("custom_start_run", _request(1, "arbiter/startRun", {"duration_ms": 0, "timeout_ms": 1000})),
     _scenario("custom_run_status_unknown", _request(1, "arbiter/runStatus", {"run_id": "transcript-missing-run"})),
