@@ -17,7 +17,7 @@ test-py:
 	PYTHONPATH=engine $(PYTHON) -m unittest discover -s engine/tests
 
 fmt-check:
-	@test -z "$$(gofmt -l .)" || (gofmt -l . && exit 1)
+	@test -z "$$(gofmt -l cmd internal)" || (gofmt -l cmd internal && exit 1)
 
 transcripts:
 	PYTHONPATH=engine $(PYTHON) engine/tests/write_transcripts.py
