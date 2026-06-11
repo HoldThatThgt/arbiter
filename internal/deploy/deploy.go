@@ -44,6 +44,7 @@ type Options struct {
 	NoExecutor     bool
 	Remove         bool
 	EmbeddedEngine bool
+	Openings       bool
 	Python         string
 	FSKind         string
 	Now            func() time.Time
@@ -121,6 +122,11 @@ func InitWithOptions(root string, opts Options) (string, error) {
 	}
 	if err := writeIfMissing(filepath.Join(root, fileFormat), mustTemplate("templates/FORMAT.md"), 0o644); err != nil {
 		return "", err
+	}
+	if opts.Openings {
+		if err := writeIfMissing(filepath.Join(root, dirPlaybook, "freeplay.md"), mustTemplate("templates/freeplay.md"), 0o644); err != nil {
+			return "", err
+		}
 	}
 	if err := writeIfMissing(filepath.Join(root, fileConfig), defaultConfig(), 0o644); err != nil {
 		return "", err

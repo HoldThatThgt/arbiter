@@ -45,11 +45,10 @@ func run() error {
 		fs.BoolVar(&opts.NoExecutor, "no-executor", false, "skip executor agent")
 		fs.BoolVar(&opts.Remove, "remove", false, "remove generated init wiring")
 		fs.BoolVar(&opts.EmbeddedEngine, "embedded-engine", false, "deny edits to embedded engine files")
-		openings := fs.Bool("openings", false, "install opening playbooks")
+		fs.BoolVar(&opts.Openings, "openings", false, "install opening playbooks")
 		if err := fs.Parse(os.Args[2:]); err != nil || fs.NArg() != 0 {
 			return fmt.Errorf("usage: arbiter init [--openings] [--no-executor] [--remove] [--embedded-engine]")
 		}
-		_ = openings
 		msg, err := deploy.InitWithOptions(root, opts)
 		if err != nil {
 			return err
