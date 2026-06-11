@@ -29,6 +29,14 @@ type Result struct {
 	Output     string     `json:"output"`
 	DurationMS int        `json:"duration_ms"`
 	Failure    string     `json:"failure,omitempty"`
+
+	// #33:run/fact 类型化判定。Verdict 是 expect 全子句 AND 的结果;
+	// Evidence 按 kind 类型化(RunEvidence/FactEvidence),只为复盘服务;
+	// ExpectReport 逐条对照,存于 Task 并经 ReviewTask 透出。
+	// 裁决只消费 Verdict 与计数;Evidence 绝不参与判定。
+	Verdict      *bool           `json:"verdict,omitempty"`
+	Evidence     json.RawMessage `json:"evidence,omitempty"`
+	ExpectReport []ClauseReport  `json:"expect_report,omitempty"`
 }
 
 type SpecError struct {
@@ -51,13 +59,30 @@ func Execute(ctx context.Context, root string, spec ResultSpec) (Result, error) 
 		return runShell(ctx, root, spec), nil
 	case "mcp":
 		return runTool(ctx, root, spec)
+	case "run", "fact":
+		// 评估路径经 seat 的引擎子进程(go-engineclient),由 #37/#43 接线;
+		// 在那之前 fail-closed:模式已校验,但绝不在无引擎时給出判定。
+		return Result{}, &SpecError{
+			Code:    playbook.CodeEngineUnavailable,
+			Message: spec.Kind + " predicates evaluate via the seat's engine children; engine wiring lands with #37/#43",
+		}
 	default:
 		return Result{}, &SpecError{Code: playbook.CodeBadResult, Message: "unknown result kind"}
 	}
 }
 
 func Validate(spec ResultSpec) error {
-	if spec.Kind != "shell" && spec.Kind != "mcp" {
+	switch spec.Kind {
+	case "run", "fact":
+		if err := validateTyped(spec); err != nil {
+			return err
+		}
+	case "shell", "mcp":
+		// 键集合封闭:legacy kind 不得携带 run/fact 专属字段。
+		if field := typedFieldsForLegacy(spec); field != "" {
+			return &SpecError{Code: playbook.CodeBadResult, Message: spec.Kind + " spec must not set " + field}
+		}
+	default:
 		return &SpecError{Code: playbook.CodeBadResult, Message: "unknown result kind"}
 	}
 	if spec.Kind == "shell" && strings.TrimSpace(spec.Command) == "" {
@@ -80,6 +105,11 @@ func Validate(spec ResultSpec) error {
 func Pass(result Result) bool {
 	if result.Failure != "" {
 		return false
+	}
+	// 类型化判定优先:run/fact 的 verdict 是唯一信号(#33)。
+	// shell/mcp 语义保持原样,不受影响。
+	if result.Verdict != nil {
+		return *result.Verdict
 	}
 	if result.ExitCode != nil {
 		return *result.ExitCode == 0
