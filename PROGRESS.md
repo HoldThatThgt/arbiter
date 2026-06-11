@@ -34,3 +34,4 @@
 | #51 | done | skills: add freeplay templates (#51) | Red: opts.Openings undefined; arbiter-play fallback, freeplay opening, gear-up scaffold lint, --openings install, and full gate green. |
 | #57 | done | deploy: embed engine with digest (#57) | Red: cannot find module internal/embeddedengine; go:embed engine bundle, init unpack, engines.json digest, spawn-time verification, journal evidence, tamper refusal, and full gate green. |
 | #49 | done | seat: gate engine tools (#49) | Red: buildServerWithRuntime undefined; live tools/list forwarding, QUERY/EXEC children, recipes capability gating, capability_revoked recheck, and full gate green. |
+| #45 | done | shared: add build-driven pipeline (#45) | Red: ImportError: cannot import name 'pipeline'; bounded extraction drain, snapshot.lock publish barrier, facts accounting, miss fail-closed, and full gate green. |
