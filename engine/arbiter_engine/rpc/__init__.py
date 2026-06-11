@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, TextIO
@@ -12,6 +13,9 @@ from typing import Any, Callable, Mapping, Optional, TextIO
 from arbiter_engine import __version__
 from arbiter_engine.errors import RPCError, engine_stale
 from arbiter_engine.runs import RunManager
+from arbiter_engine.runs import async_runs
+from arbiter_engine.runs import gtest
+from arbiter_engine.runs import recipes
 from arbiter_engine.shared import census
 
 
@@ -88,7 +92,7 @@ def serve(stdin: TextIO, stdout: TextIO, router: Optional[Router] = None) -> Non
 def default_router() -> Router:
     router = Router()
     for namespace, name, description, schema in _DEFAULT_TOOLS:
-        router.register(Tool(namespace, name, description, schema, _stub_handler(namespace, name)))
+        router.register(Tool(namespace, name, description, schema, _handler(namespace, name)))
     return router
 
 
@@ -359,6 +363,147 @@ def _stub_handler(namespace: str, name: str) -> Callable[[Context, Mapping[str, 
     return handler
 
 
+def _handler(namespace: str, name: str) -> Callable[[Context, Mapping[str, Any]], Mapping[str, Any]]:
+    if namespace == "runs":
+        if name == "run":
+            return _run_tool
+        if name == "recipe_search":
+            return _recipe_search_tool
+        if name == "register":
+            return _register_tool
+        if name == "import_recipes":
+            return _import_recipes_tool
+    return _stub_handler(namespace, name)
+
+
+def _run_tool(context: Context, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+    del context
+    recipe_id = arguments.get("recipe")
+    if not isinstance(recipe_id, str):
+        raise RPCError(-32602, "invalid arguments", {"kind": "invalid_args", "field": "recipe"})
+    tests = arguments.get("tests", [])
+    if not isinstance(tests, list) or not all(isinstance(item, str) for item in tests):
+        raise RPCError(-32602, "invalid arguments", {"kind": "invalid_args", "field": "tests"})
+    options = arguments.get("options", {})
+    if not isinstance(options, dict):
+        raise RPCError(-32602, "invalid arguments", {"kind": "invalid_args", "field": "options"})
+    profiles = _validate_run_options(options)
+    book = _load_committed_recipe_book()
+    result = gtest.run_target(Path.cwd(), book, recipe_id, run_id=uuid.uuid4().hex, tests=tests, profiles=profiles)
+    payload = result.to_json()
+    payload["isError"] = False
+    payload["content"] = [{"type": "text", "text": f"{recipe_id}: {result.overall}"}]
+    return payload
+
+
+def _recipe_search_tool(context: Context, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+    del context
+    query = arguments.get("query")
+    if not isinstance(query, str):
+        raise RPCError(-32602, "invalid arguments", {"kind": "invalid_args", "field": "query"})
+    try:
+        book = _load_committed_recipe_book()
+    except RPCError:
+        matches = []
+    else:
+        folded = query.lower()
+        matches = [
+            {
+                "id": target.id,
+                "harness": target.harness.kind,
+                "notes": target.notes or "",
+                "tests": list(target.tests),
+            }
+            for target in book.targets
+            if folded in target.id.lower()
+            or folded in (target.notes or "").lower()
+            or any(folded in test.lower() for test in target.tests)
+        ]
+    return {
+        "content": [{"type": "text", "text": f"{len(matches)} recipe matches"}],
+        "isError": False,
+        "matches": matches,
+    }
+
+
+def _register_tool(context: Context, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+    del context
+    book = _load_recipe_book_arg(arguments)
+    return _recipe_book_summary(book, "registered")
+
+
+def _import_recipes_tool(context: Context, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+    del context
+    book = _load_recipe_book_arg(arguments)
+    return _recipe_book_summary(book, "imported")
+
+
+def _recipe_book_summary(book: recipes.RecipeBook, verb: str) -> Mapping[str, Any]:
+    targets = [target.id for target in book.targets]
+    return {
+        "content": [{"type": "text", "text": f"{verb} {len(targets)} recipes"}],
+        "isError": False,
+        "targets": targets,
+        "profiles": sorted(book.profiles),
+    }
+
+
+def _load_recipe_book_arg(arguments: Mapping[str, Any]) -> recipes.RecipeBook:
+    raw_path = arguments.get("path")
+    if not isinstance(raw_path, str):
+        raise RPCError(-32602, "invalid arguments", {"kind": "invalid_args", "field": "path"})
+    path = Path(raw_path)
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    try:
+        return recipes.load(path)
+    except (OSError, recipes.RecipeError) as exc:
+        raise RPCError(
+            -32602,
+            "invalid arguments",
+            {"kind": "invalid_args", "field": "path", "detail": str(exc)},
+        ) from exc
+
+
+def _load_committed_recipe_book() -> recipes.RecipeBook:
+    path = Path.cwd() / ".arbiter" / "recipes.yaml"
+    try:
+        return recipes.load(path)
+    except (OSError, recipes.RecipeError) as exc:
+        raise RPCError(
+            -32602,
+            "invalid arguments",
+            {"kind": "invalid_args", "field": "recipe", "detail": str(exc)},
+        ) from exc
+
+
+def _validate_run_options(options: Mapping[str, Any]) -> tuple[str, ...]:
+    allowed = {"profiles", "harness_options", "force_recompile"}
+    unknown = sorted(set(options) - allowed)
+    if unknown:
+        raise RPCError(-32602, "invalid arguments", {"kind": "invalid_args", "bad_options": unknown})
+    profiles = options.get("profiles", [])
+    if not isinstance(profiles, list) or not all(isinstance(item, str) for item in profiles):
+        raise RPCError(-32602, "invalid arguments", {"kind": "invalid_args", "field": "options.profiles"})
+    harness_options = options.get("harness_options", {})
+    if not isinstance(harness_options, dict):
+        raise RPCError(-32602, "invalid arguments", {"kind": "invalid_args", "field": "options.harness_options"})
+    unknown_harnesses = sorted(set(harness_options) - {"gtest"})
+    if unknown_harnesses:
+        raise RPCError(
+            -32602,
+            "invalid arguments",
+            {"kind": "invalid_args", "bad_harness_options": unknown_harnesses},
+        )
+    gtest_options = harness_options.get("gtest", {})
+    if not isinstance(gtest_options, dict):
+        raise RPCError(-32602, "invalid arguments", {"kind": "invalid_args", "field": "options.harness_options.gtest"})
+    unknown_gtest = sorted(set(gtest_options) - {"fail_fast", "timeout_s"})
+    if unknown_gtest:
+        raise RPCError(-32602, "invalid arguments", {"kind": "invalid_args", "bad_gtest_options": unknown_gtest})
+    return tuple(profiles)
+
+
 def _result(request_id: Any, result: Mapping[str, Any]) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": request_id, "result": dict(result)}
 
@@ -403,7 +548,28 @@ _DEFAULT_TOOLS = (
             {
                 "recipe": {"type": "string"},
                 "tests": {"type": "array", "items": {"type": "string"}},
-                "options": {"type": "object"},
+                "options": {
+                    "type": "object",
+                    "properties": {
+                        "profiles": {"type": "array", "items": {"type": "string"}},
+                        "force_recompile": {"type": "boolean"},
+                        "harness_options": {
+                            "type": "object",
+                            "properties": {
+                                "gtest": {
+                                    "type": "object",
+                                    "properties": {
+                                        "fail_fast": {"type": "boolean"},
+                                        "timeout_s": {"type": "integer"},
+                                    },
+                                    "additionalProperties": False,
+                                }
+                            },
+                            "additionalProperties": False,
+                        },
+                    },
+                    "additionalProperties": False,
+                },
             },
             ("recipe",),
         ),

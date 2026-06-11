@@ -18,3 +18,4 @@
 | #30 | done | runs: validate build cache by census (#30) | Red: cannot import runs.build_cache; no-sources miss, clean census hits, edit/new/delete misses, restart persistence, and full gate green. |
 | #28 | done | runs: execute recipe stages (#28) | Red: cannot import runs.runner; pre/cmd/post execution, profile overlays, src_compile cc injection, build lock, env lint, and full gate green. |
 | #29 | done | runs: add gtest adapter (#29) | Red: cannot import runs.gtest; injected XML output, result-file-only parsing, repeated occurrences, empty suite, missing-file fail-closed, and full gate green. |
+| #31 | done | runs: wire run tools on chassis (#31) | Red: run/register still returned stubs; real run/register/import/search handlers, harness_options.gtest schema, transcripts twice, replay tests, and full gate green. |

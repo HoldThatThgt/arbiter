@@ -1,2 +1,2 @@
-{"type":"request","message":{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run","arguments":{"recipe":"unit"}}}}
-{"type":"response","message":{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"runs.run stub"}],"isError":false,"namespace":"runs","tool":"run"}},"allow_volatile":[]}
+{"type":"request","message":{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run","arguments":{"recipe":"unit","options":{"harness_options":{"gtest":{"fail_fast":false}}}}}}}
+{"type":"response","message":{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"invalid arguments","data":{"kind":"invalid_args","field":"recipe","detail":"[Errno 2] No such file or directory: '/Users/atishoo/Project/arbiter/.arbiter/recipes.yaml'"}}},"allow_volatile":[]}
