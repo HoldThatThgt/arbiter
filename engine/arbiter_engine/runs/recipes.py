@@ -312,7 +312,7 @@ def _command_list(node: Optional[_Node], name: str) -> Tuple[Tuple[str, ...], ..
         return ()
     if not isinstance(node.value, list):
         raise RecipeError(node.line, f"{name} must be a list")
-    return tuple(_command(_Node(item, node.line), name) for item in node.value)
+    return tuple(_command(item if isinstance(item, _Node) else _Node(item, node.line), name) for item in node.value)
 
 
 def _parse_yaml_subset(text: str) -> _Node:
@@ -396,7 +396,7 @@ def _parse_sequence(lines: list[tuple[int, str, int]], index: int, indent: int) 
             child, index = _parse_block(lines, index + 1, indent + 2)
             items.append(_Node(child.value, line))
             continue
-        if ":" in item_text and not item_text.startswith(('"', "'")):
+        if ":" in item_text and not item_text.startswith(('"', "'", "[")):
             key, value_text = _split_key_value(item_text, line)
             initial = {key: _Node(_parse_value(value_text, line), line)}
             index += 1
