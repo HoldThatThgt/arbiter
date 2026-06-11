@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	stderrors "errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -118,6 +120,205 @@ func TestStartRunAndRunStatusMethods(t *testing.T) {
 	}
 	if result.RunID != runID || result.Overall != "passed" {
 		t.Fatalf("result = %#v, want run_id %q overall passed", result, runID)
+	}
+}
+
+func TestToolWrappersSendMetaAndDecodeResults(t *testing.T) {
+	repo := fakeEngineRepo(t, `
+import json
+import sys
+
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request["method"]
+    if method == "tools/list":
+        result = {"tools": [{"name": "probe", "description": "Probe tool", "inputSchema": {"type": "object", "additionalProperties": False}}]}
+    elif method == "tools/call":
+        params = request.get("params", {})
+        result = {"isError": False, "content": [], "tool": params.get("name"), "seen_meta": params.get("_meta")}
+    else:
+        result = {"ok": method}
+    print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}, separators=(",", ":")), flush=True)
+`)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client, err := Spawn(ctx, RoleQuery, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	tools, err := client.ToolsList(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tools) != 1 || tools[0].Name != "probe" || tools[0].Description != "Probe tool" {
+		t.Fatalf("tools = %#v", tools)
+	}
+
+	result, err := client.CallTool(ctx, "probe", map[string]any{}, map[string]any{"match_id": "m1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Tool != "probe" || result.IsError {
+		t.Fatalf("result = %#v", result)
+	}
+	if !strings.Contains(string(result.Raw), `"match_id":"m1"`) {
+		t.Fatalf("raw result missing meta echo: %s", result.Raw)
+	}
+}
+
+func TestCustomMethodWrappers(t *testing.T) {
+	repo := fakeEngineRepo(t, `
+import json
+import sys
+
+for line in sys.stdin:
+    request = json.loads(line)
+    print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": {"method": request["method"], "params": request.get("params")}}, separators=(",", ":")), flush=True)
+`)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client, err := Spawn(ctx, RoleExec, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	calls := []struct {
+		name string
+		call func() (json.RawMessage, error)
+		want string
+	}{
+		{"Refresh", func() (json.RawMessage, error) { return client.Refresh(ctx, map[string]any{"scope": "worktree"}, nil) }, "arbiter/refresh"},
+		{"Census", func() (json.RawMessage, error) { return client.Census(ctx, map[string]any{"scope": "src"}, nil) }, "arbiter/census"},
+		{"ResolveBriefing", func() (json.RawMessage, error) { return client.ResolveBriefing(ctx, []string{"code:function:1"}, nil) }, "arbiter/resolveBriefing"},
+	}
+	for _, tc := range calls {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := tc.call()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(raw), tc.want) {
+				t.Fatalf("raw = %s, want method %s", raw, tc.want)
+			}
+		})
+	}
+}
+
+func TestTimeoutPoisonsChildAndKillsProcessGroup(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "child.pid")
+	repo := fakeEngineRepo(t, fmt.Sprintf(`
+import json
+import subprocess
+import sys
+import time
+
+for line in sys.stdin:
+    request = json.loads(line)
+    if request["method"] == "hang":
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        with open(%q, "w", encoding="utf-8") as handle:
+            handle.write(str(child.pid))
+        time.sleep(30)
+    print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": {"ok": True}}, separators=(",", ":")), flush=True)
+`, pidFile))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client, err := Spawn(ctx, RoleExec, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	callCtx, cancelCall := context.WithTimeout(ctx, 250*time.Millisecond)
+	defer cancelCall()
+	_, err = client.Call(callCtx, "hang", nil)
+	if !stderrors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want deadline exceeded", err)
+	}
+	childPID := readPIDFile(t, pidFile)
+	eventuallyProcessGone(t, childPID)
+
+	_, err = client.Call(ctx, "initialize", nil)
+	if !stderrors.Is(err, ErrPoisoned) {
+		t.Fatalf("reuse err = %v, want ErrPoisoned", err)
+	}
+}
+
+func TestFaultInjectionPoisonsOnGarbageLineAndDeath(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+	}{
+		{
+			name: "garbage",
+			source: `
+import sys
+
+sys.stdout.write("not json\n")
+sys.stdout.flush()
+time.sleep(30)
+`,
+		},
+		{
+			name: "death",
+			source: `
+import sys
+
+sys.exit(7)
+`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := fakeEngineRepo(t, tc.source)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			client, err := Spawn(ctx, RoleExec, repo)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+
+			_, err = client.Call(ctx, "initialize", nil)
+			if err == nil {
+				t.Fatal("expected call error")
+			}
+			_, err = client.Call(ctx, "initialize", nil)
+			if !stderrors.Is(err, ErrPoisoned) {
+				t.Fatalf("reuse err = %v, want ErrPoisoned", err)
+			}
+		})
+	}
+}
+
+func TestSpawnCreatesProcessGroupAndCloseUsesEOF(t *testing.T) {
+	repo := fakeEngineRepo(t, `
+import json
+import sys
+
+for line in sys.stdin:
+    request = json.loads(line)
+    print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": {"ok": True}}, separators=(",", ":")), flush=True)
+`)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client, err := Spawn(ctx, RoleQuery, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pgid, err := syscall.Getpgid(client.cmd.Process.Pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pgid != client.cmd.Process.Pid {
+		t.Fatalf("pgid = %d, want child pid %d", pgid, client.cmd.Process.Pid)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -266,6 +467,55 @@ func transcriptWorkdir(t *testing.T, repo string) string {
 		t.Fatalf("link engine into transcript workdir: %v", err)
 	}
 	return workdir
+}
+
+func fakeEngineRepo(t *testing.T, rpcSource string) string {
+	t.Helper()
+
+	root := t.TempDir()
+	packageDir := filepath.Join(root, "engine", "arbiter_engine")
+	if err := os.MkdirAll(packageDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packageDir, "__init__.py"), []byte(`__version__ = "fake"`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packageDir, "rpc.py"), []byte(rpcSource), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+func readPIDFile(t *testing.T, path string) int {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return pid
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("pid file %s was not written", path)
+	return 0
+}
+
+func eventuallyProcessGone(t *testing.T, pid int) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(pid, 0); err != nil {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("process %d still exists", pid)
 }
 
 func bytesLines(data []byte) [][]byte {
