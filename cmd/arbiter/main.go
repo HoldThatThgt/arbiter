@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/HoldThatThgt/arbiter/internal/cli"
 	"github.com/HoldThatThgt/arbiter/internal/deploy"
 	"github.com/HoldThatThgt/arbiter/internal/interpose"
 	"github.com/HoldThatThgt/arbiter/internal/match"
@@ -31,7 +32,7 @@ func main() {
 
 func run() error {
 	if len(os.Args) < 2 {
-		return fmt.Errorf("usage: arbiter init [flags] | adopt | serve <seat> | hook stop | cc -- <real-compiler> [args...]")
+		return fmt.Errorf("usage: arbiter init [flags] | adopt | status [--json] | report [--json] [match_id] | serve <seat> | hook stop | cc -- <real-compiler> [args...]")
 	}
 	root, err := os.Getwd()
 	if err != nil {
@@ -65,6 +66,43 @@ func run() error {
 		}
 		fmt.Print(report.String())
 		return nil
+	case "status":
+		if len(os.Args) > 3 || (len(os.Args) == 3 && os.Args[2] != "--json") {
+			return fmt.Errorf("usage: arbiter status [--json]")
+		}
+		status, err := cli.Status(root)
+		if err != nil {
+			return err
+		}
+		if len(os.Args) == 3 {
+			data, err := cli.JSON(status)
+			if err != nil {
+				return err
+			}
+			fmt.Print(string(data))
+			return nil
+		}
+		fmt.Print(cli.FormatStatus(status))
+		return nil
+	case "report":
+		jsonOut, matchID, err := cli.ParseReportArgs(os.Args[2:])
+		if err != nil {
+			return fmt.Errorf("usage: arbiter report [--json] [match_id]")
+		}
+		report, err := cli.Report(root, matchID)
+		if err != nil {
+			return err
+		}
+		if jsonOut {
+			data, err := cli.JSON(report)
+			if err != nil {
+				return err
+			}
+			fmt.Print(string(data))
+			return nil
+		}
+		fmt.Print(cli.FormatReport(report))
+		return nil
 	case "serve":
 		if len(os.Args) != 3 {
 			return fmt.Errorf("usage: arbiter serve <seat>")
@@ -88,6 +126,6 @@ func run() error {
 		}
 		return nil
 	default:
-		return fmt.Errorf("usage: arbiter init [flags] | adopt | serve <seat> | hook stop | cc -- <real-compiler> [args...]")
+		return fmt.Errorf("usage: arbiter init [flags] | adopt | status [--json] | report [--json] [match_id] | serve <seat> | hook stop | cc -- <real-compiler> [args...]")
 	}
 }
