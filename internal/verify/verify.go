@@ -286,8 +286,10 @@ func readServerConfig(root, name string) (serverConfig, error) {
 		return serverConfig{}, &SpecError{Code: playbook.CodeReservedServer, Message: "could not resolve current executable"}
 	}
 	target, err := resolvedExecutable(cfg.Command)
-	if err == nil && target == self {
-		return serverConfig{}, &SpecError{Code: playbook.CodeReservedServer, Message: "reserved server"}
+	if err == nil {
+		if target == self || sameFile(target, self) {
+			return serverConfig{}, &SpecError{Code: playbook.CodeReservedServer, Message: "reserved server"}
+		}
 	}
 	return cfg, nil
 }
@@ -308,6 +310,12 @@ func resolvedExecutable(path string) (string, error) {
 		path = resolved
 	}
 	return path, nil
+}
+
+func sameFile(left, right string) bool {
+	leftInfo, leftErr := os.Stat(left)
+	rightInfo, rightErr := os.Stat(right)
+	return leftErr == nil && rightErr == nil && os.SameFile(leftInfo, rightInfo)
 }
 
 func failureForContext(ctx context.Context, fallback string) string {
