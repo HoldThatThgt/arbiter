@@ -17,3 +17,4 @@
 | #27 | done | runs: create sqlite state schema (#27) | Red: cannot import runs.state; WAL/busy_timeout schema, run_test occurrence, BEGIN IMMEDIATE, proven lifecycle, async initializer, and full gate green. |
 | #30 | done | runs: validate build cache by census (#30) | Red: cannot import runs.build_cache; no-sources miss, clean census hits, edit/new/delete misses, restart persistence, and full gate green. |
 | #28 | done | runs: execute recipe stages (#28) | Red: cannot import runs.runner; pre/cmd/post execution, profile overlays, src_compile cc injection, build lock, env lint, and full gate green. |
+| #29 | done | runs: add gtest adapter (#29) | Red: cannot import runs.gtest; injected XML output, result-file-only parsing, repeated occurrences, empty suite, missing-file fail-closed, and full gate green. |
