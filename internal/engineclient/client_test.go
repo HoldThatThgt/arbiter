@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/HoldThatThgt/arbiter/internal/embeddedengine"
 )
 
 type transcriptEntry struct {
@@ -43,6 +45,38 @@ func TestReplayTranscriptsAgainstPythonStub(t *testing.T) {
 			workdir := transcriptWorkdir(t, repo)
 			replayTranscript(t, workdir, path)
 		})
+	}
+}
+
+func TestSpawnEmbeddedEngineVerifiesDigestAndJournals(t *testing.T) {
+	repo := t.TempDir()
+	manifest, err := embeddedengine.Unpack(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeJSONFile(t, filepath.Join(repo, ".arbiter", "run", "engines.json"), map[string]any{
+		"mode":          "embedded",
+		"engine_root":   ".arbiter/engine",
+		"engine_digest": manifest.Digest,
+	})
+	engine, err := Spawn(context.Background(), RoleQuery, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine.Close()
+	data, err := os.ReadFile(filepath.Join(repo, ".arbiter", "match", "log", "journal.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "embedded_engine_verified") {
+		t.Fatalf("journal = %s", data)
+	}
+
+	if err := os.WriteFile(filepath.Join(repo, ".arbiter", "engine", "arbiter_engine", "__init__.py"), []byte("tampered = True\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Spawn(context.Background(), RoleQuery, repo); err == nil || !strings.Contains(err.Error(), "embedded engine digest mismatch") {
+		t.Fatalf("err = %v, want digest mismatch", err)
 	}
 }
 
@@ -402,6 +436,20 @@ func transcriptWorkdir(t *testing.T, repo string) string {
 		t.Fatalf("link engine into transcript workdir: %v", err)
 	}
 	return workdir
+}
+
+func writeJSONFile(t *testing.T, path string, value any) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func bytesLines(data []byte) [][]byte {

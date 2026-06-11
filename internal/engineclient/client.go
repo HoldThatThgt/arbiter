@@ -14,6 +14,9 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/HoldThatThgt/arbiter/internal/embeddedengine"
+	"github.com/HoldThatThgt/arbiter/internal/journal"
 )
 
 // EngineRole identifies the seat-side engine role passed to the child.
@@ -112,6 +115,20 @@ func Spawn(ctx context.Context, role EngineRole, repo string) (*Engine, error) {
 	}
 
 	pythonPath := filepath.Join(repo, "engine")
+	if cfg, ok, err := embeddedConfig(repo); err != nil {
+		return nil, err
+	} else if ok {
+		manifest, verifyErr := embeddedengine.Verify(repo, cfg.Digest)
+		fields := map[string]any{"expected": cfg.Digest, "found": manifest.Digest}
+		if verifyErr != nil {
+			fields["outcome"] = "failed"
+			_ = journal.Append(repo, "engine", "embedded_engine_verified", fields)
+			return nil, verifyErr
+		}
+		fields["outcome"] = "ok"
+		_ = journal.Append(repo, "engine", "embedded_engine_verified", fields)
+		pythonPath = embeddedengine.PythonPath(repo)
+	}
 	if existing := os.Getenv("PYTHONPATH"); existing != "" {
 		pythonPath += string(os.PathListSeparator) + existing
 	}
@@ -124,6 +141,35 @@ func Spawn(ctx context.Context, role EngineRole, repo string) (*Engine, error) {
 			"ARBITER_ENGINE_ROLE", string(role),
 		),
 	})
+}
+
+type embeddedEngineConfig struct {
+	Digest string
+}
+
+func embeddedConfig(repo string) (embeddedEngineConfig, bool, error) {
+	data, err := os.ReadFile(filepath.Join(repo, ".arbiter", "run", "engines.json"))
+	if os.IsNotExist(err) {
+		return embeddedEngineConfig{}, false, nil
+	}
+	if err != nil {
+		return embeddedEngineConfig{}, false, err
+	}
+	var raw struct {
+		Mode   string `json:"mode"`
+		Root   string `json:"engine_root"`
+		Digest string `json:"engine_digest"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return embeddedEngineConfig{}, false, err
+	}
+	if raw.Mode != "embedded" {
+		return embeddedEngineConfig{}, false, nil
+	}
+	if raw.Root != embeddedengine.RootRel || raw.Digest == "" {
+		return embeddedEngineConfig{}, false, fmt.Errorf("invalid embedded engine config")
+	}
+	return embeddedEngineConfig{Digest: raw.Digest}, true, nil
 }
 
 func spawnCommand(ctx context.Context, role EngineRole, repo string, argv []string) (*Engine, error) {

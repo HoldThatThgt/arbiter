@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/HoldThatThgt/arbiter/internal/embeddedengine"
 	"github.com/HoldThatThgt/arbiter/internal/playbook"
 )
 
@@ -101,6 +102,14 @@ func InitWithOptions(root string, opts Options) (string, error) {
 	if isNetworkFilesystem(fsKind) {
 		return "", &Error{Kind: "network_filesystem", Message: "arbiter init refused network filesystem: " + fsKind}
 	}
+	var embeddedDigest string
+	if opts.EmbeddedEngine {
+		manifest, err := embeddedengine.Unpack(root)
+		if err != nil {
+			return "", err
+		}
+		embeddedDigest = manifest.Digest
+	}
 	python := resolvePython(opts.Python)
 	verify := opts.VerifyEngine
 	if verify == nil {
@@ -134,7 +143,7 @@ func InitWithOptions(root string, opts Options) (string, error) {
 	if err := writeIfMissing(filepath.Join(root, fileRecipes), defaultRecipes(), 0o644); err != nil {
 		return "", err
 	}
-	if err := writeEngines(filepath.Join(root, fileEngines), python, engineVersion, now(opts)); err != nil {
+	if err := writeEngines(filepath.Join(root, fileEngines), python, engineVersion, now(opts), opts.EmbeddedEngine, embeddedDigest); err != nil {
 		return "", err
 	}
 	replacedMCP, err := mergeMCP(filepath.Join(root, fileMCP), exe)
@@ -451,12 +460,20 @@ func writeJSON(path string, value map[string]any, perm os.FileMode) error {
 	return atomicWrite(path, append(data, '\n'), perm)
 }
 
-func writeEngines(path, python, version string, at time.Time) error {
-	return writeJSON(path, map[string]any{
+func writeEngines(path, python, version string, at time.Time, embedded bool, digest string) error {
+	record := map[string]any{
 		"python":         python,
 		"engine_version": version,
 		"verified_at":    at.UTC().Format(time.RFC3339),
-	}, 0o644)
+	}
+	if embedded {
+		record["mode"] = "embedded"
+		record["engine_root"] = embeddedengine.RootRel
+		record["engine_digest"] = digest
+	} else {
+		record["mode"] = "installed"
+	}
+	return writeJSON(path, record, 0o644)
 }
 
 func writeIfMissing(path, text string, perm os.FileMode) error {
@@ -581,7 +598,9 @@ func verifyEngine(python, root string) (string, error) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, python, "-m", "arbiter_engine", "--version")
 	cmd.Env = os.Environ()
-	if _, err := os.Stat(filepath.Join(root, "engine", "arbiter_engine")); err == nil {
+	if _, err := os.Stat(filepath.Join(root, embeddedengine.RootRel, "arbiter_engine")); err == nil {
+		cmd.Env = append(cmd.Env, "PYTHONPATH="+embeddedengine.PythonPath(root))
+	} else if _, err := os.Stat(filepath.Join(root, "engine", "arbiter_engine")); err == nil {
 		cmd.Env = append(cmd.Env, "PYTHONPATH="+filepath.Join(root, "engine"))
 	}
 	out, err := cmd.Output()
