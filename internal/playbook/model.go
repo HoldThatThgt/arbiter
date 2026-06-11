@@ -14,6 +14,7 @@ const (
 	CodeBadResult            = "bad_result"
 	CodeEngineUnavailable    = "engine_unavailable"
 	CodeBriefingUnresolved   = "briefing_unresolved"
+	CodeCapabilityRevoked    = "capability_revoked"
 	CodeRecipePinMismatch    = "recipe_pin_mismatch"
 	CodeServerNotFound       = "server_not_found"
 	CodeUnsupportedTransport = "unsupported_transport"

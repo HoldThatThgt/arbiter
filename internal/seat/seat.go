@@ -7,8 +7,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/HoldThatThgt/arbiter/internal/engineclient"
 	"github.com/HoldThatThgt/arbiter/internal/journal"
 	"github.com/HoldThatThgt/arbiter/internal/match"
 	"github.com/HoldThatThgt/arbiter/internal/playbook"
@@ -56,6 +58,41 @@ type AddPlayBookInput struct {
 
 type callFunc func(context.Context, json.RawMessage) (any, error)
 
+type seatRuntime struct {
+	root  string
+	query *engineclient.Engine
+
+	mu   sync.Mutex
+	exec *engineclient.Engine
+}
+
+func (r *seatRuntime) Close() {
+	r.mu.Lock()
+	exec := r.exec
+	r.exec = nil
+	r.mu.Unlock()
+	if exec != nil {
+		_ = exec.Close()
+	}
+	if r.query != nil {
+		_ = r.query.Close()
+	}
+}
+
+func (r *seatRuntime) execEngine(ctx context.Context) (*engineclient.Engine, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.exec != nil {
+		return r.exec, nil
+	}
+	engine, err := engineclient.Spawn(ctx, engineclient.RoleExec, r.root)
+	if err != nil {
+		return nil, err
+	}
+	r.exec = engine
+	return engine, nil
+}
+
 func Run(ctx context.Context, root, seatName string) error {
 	if seatName != Player && seatName != Curator && seatName != Executor {
 		return fmt.Errorf("unknown seat: %s", seatName)
@@ -68,16 +105,30 @@ func Run(ctx context.Context, root, seatName string) error {
 	_ = journal.Append(root, seatName, "seat_started", map[string]any{"pid": os.Getpid()})
 	defer journal.Append(root, seatName, "seat_stopped", map[string]any{"pid": os.Getpid()})
 
-	server, err := buildServer(root, seatName)
+	server, runtime, err := buildServerWithRuntime(ctx, root, seatName)
 	if err != nil {
 		return err
 	}
+	defer runtime.Close()
 	return server.Run(ctx, &mcp.StdioTransport{})
 }
 
 func buildServer(root, seatName string) (*mcp.Server, error) {
+	server, _, err := buildServerWithRuntime(context.Background(), root, seatName)
+	return server, err
+}
+
+func buildServerWithRuntime(ctx context.Context, root, seatName string) (*mcp.Server, *seatRuntime, error) {
 	server := mcp.NewServer(&mcp.Implementation{Name: "arbiter-" + seatName, Version: "v1"}, nil)
 	store := match.New(root, seatName)
+	runtime := &seatRuntime{root: root}
+	if seatName == Player || seatName == Executor {
+		query, err := engineclient.Spawn(ctx, engineclient.RoleQuery, root)
+		if err != nil {
+			return nil, nil, err
+		}
+		runtime.query = query
+	}
 	switch seatName {
 	case Player:
 		addShowStepJob(server, root, store)
@@ -97,9 +148,140 @@ func buildServer(root, seatName string) (*mcp.Server, error) {
 		addListTask(server, root, store)
 		addReviewTask(server, root, store)
 	default:
-		return nil, fmt.Errorf("unknown seat: %s", seatName)
+		runtime.Close()
+		return nil, nil, fmt.Errorf("unknown seat: %s", seatName)
 	}
-	return server, nil
+	if err := addEngineTools(ctx, server, root, seatName, store, runtime); err != nil {
+		runtime.Close()
+		return nil, nil, err
+	}
+	return server, runtime, nil
+}
+
+func addEngineTools(ctx context.Context, server *mcp.Server, root, seatName string, store *match.Store, runtime *seatRuntime) error {
+	if runtime.query == nil {
+		return nil
+	}
+	decls, err := runtime.query.ToolsList(ctx)
+	if err != nil {
+		return err
+	}
+	caps, err := store.ActiveCapabilities()
+	if err != nil {
+		return err
+	}
+	recipesCap := hasSeatCapability(caps, "recipes")
+	for _, decl := range decls {
+		gated := isGatedEngineTool(decl.Name)
+		if !seatAllowsEngineTool(seatName, decl.Name, recipesCap) {
+			continue
+		}
+		addEngineProxy(server, root, seatName, store, runtime, decl, gated)
+	}
+	return nil
+}
+
+func addEngineProxy(server *mcp.Server, root, seatName string, store *match.Store, runtime *seatRuntime, decl engineclient.ToolDecl, gated bool) {
+	server.AddTool(&mcp.Tool{Name: decl.Name, Description: decl.Description, InputSchema: decl.InputSchema}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		start := time.Now()
+		args := map[string]any{}
+		if req != nil && req.Params != nil && len(req.Params.Arguments) > 0 {
+			if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
+				return errorResult(&match.ToolError{Code: playbook.CodeBadResult, Message: err.Error()}), nil
+			}
+		}
+		var err error
+		var result engineclient.ToolResult
+		if gated {
+			err = store.RequireActiveCapability("recipes")
+		}
+		if err == nil {
+			engine := runtime.query
+			if isExecEngineTool(decl.Name) {
+				engine, err = runtime.execEngine(ctx)
+			}
+			if err == nil {
+				result, err = engine.CallTool(ctx, decl.Name, args, store.CurrentMeta())
+			}
+		}
+		fields := map[string]any{
+			"tool":        decl.Name,
+			"args":        args,
+			"ok":          err == nil,
+			"duration_ms": int(time.Since(start).Milliseconds()),
+			"proxy":       true,
+		}
+		if terr := toolError(err); terr != nil {
+			fields["error_code"] = terr.Code
+		}
+		_ = journal.Append(root, seatName, "tool_called", fields)
+		if err != nil {
+			if toolError(err) != nil {
+				return errorResult(err), nil
+			}
+			return errorResult(&match.ToolError{Code: playbook.CodeEngineUnavailable, Message: err.Error()}), nil
+		}
+		return engineResult(result)
+	})
+}
+
+func seatAllowsEngineTool(seatName, name string, recipesCap bool) bool {
+	switch seatName {
+	case Player:
+		return name == "search" || name == "detail"
+	case Executor:
+		if name == "search" || name == "detail" || name == "run" || name == "recipe_search" {
+			return true
+		}
+		return recipesCap && isGatedEngineTool(name)
+	default:
+		return false
+	}
+}
+
+func isGatedEngineTool(name string) bool {
+	return name == "register" || name == "import_recipes" || name == "scan"
+}
+
+func hasSeatCapability(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func isExecEngineTool(name string) bool {
+	return name == "run" || name == "recipe_search" || isGatedEngineTool(name)
+}
+
+func engineResult(result engineclient.ToolResult) (*mcp.CallToolResult, error) {
+	var content []mcp.Content
+	for _, item := range result.Content {
+		if item["type"] == "text" {
+			if text, ok := item["text"].(string); ok {
+				content = append(content, &mcp.TextContent{Text: text})
+			}
+		}
+	}
+	if len(content) == 0 {
+		data, _ := json.Marshal(result.Content)
+		content = []mcp.Content{&mcp.TextContent{Text: string(data)}}
+	}
+	var structured json.RawMessage
+	if result.StructuredContent != nil {
+		data, err := json.Marshal(result.StructuredContent)
+		if err != nil {
+			return nil, err
+		}
+		structured = json.RawMessage(data)
+	}
+	return &mcp.CallToolResult{
+		IsError:           result.IsError,
+		Content:           content,
+		StructuredContent: structured,
+	}, nil
 }
 
 func checkKey(root, seatName string) error {

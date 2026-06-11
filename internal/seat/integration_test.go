@@ -26,7 +26,7 @@ failure: END
 `
 
 func TestThreeSeatFlow(t *testing.T) {
-	root := t.TempDir()
+	root := repoWithEngine(t)
 	dir := filepath.Join(root, ".arbiter", "playbook")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -108,7 +108,7 @@ func TestThreeSeatFlow(t *testing.T) {
 }
 
 func TestLoadPlayBookEmptyNameIncludesAvailable(t *testing.T) {
-	root := t.TempDir()
+	root := repoWithEngine(t)
 	dir := filepath.Join(root, ".arbiter", "playbook")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)

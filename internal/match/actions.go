@@ -51,6 +51,51 @@ func (s *Store) ReadPlayBook() (map[string]any, error) {
 	return map[string]any{"playbooks": books, "invalid": invalid}, nil
 }
 
+func (s *Store) ActiveCapabilities() ([]string, error) {
+	out, err := s.withLock(func(m *Match) (*Match, any, error) {
+		if m == nil || m.Status != StatusActive {
+			return nil, []string{}, nil
+		}
+		return nil, append([]string(nil), m.Playbook.Capabilities...), nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out.([]string), nil
+}
+
+func (s *Store) RequireActiveCapability(capability string) error {
+	_, err := s.withLock(func(m *Match) (*Match, any, error) {
+		if m == nil || m.Status != StatusActive || !hasCapability(m.Playbook.Capabilities, capability) {
+			return nil, nil, &ToolError{Code: playbook.CodeCapabilityRevoked, Message: "capability revoked"}
+		}
+		return nil, nil, nil
+	})
+	return err
+}
+
+func (s *Store) CurrentMeta() map[string]any {
+	out, err := s.withLock(func(m *Match) (*Match, any, error) {
+		if m == nil || m.Status != StatusActive || m.Current == nil {
+			return nil, map[string]any{}, nil
+		}
+		return nil, map[string]any{"match_id": m.ID, "round": m.Current.Seq}, nil
+	})
+	if err != nil {
+		return map[string]any{}
+	}
+	return out.(map[string]any)
+}
+
+func hasCapability(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Store) LoadPlayBook(name string) (LoadPlayBookOutput, error) {
 	cat := playbook.ScanDir(s.playbookDir())
 	entry, code := cat.Find(name)

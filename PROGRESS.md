@@ -33,3 +33,4 @@
 | #48 | done | deploy: adopt legacy checkouts (#48) | Red: Adopt undefined; chess playbooks, crun recipes, cipher facts config, derived-state deletion, legacy MCP removal, whole-token checklist, and full gate green. |
 | #51 | done | skills: add freeplay templates (#51) | Red: opts.Openings undefined; arbiter-play fallback, freeplay opening, gear-up scaffold lint, --openings install, and full gate green. |
 | #57 | done | deploy: embed engine with digest (#57) | Red: cannot find module internal/embeddedengine; go:embed engine bundle, init unpack, engines.json digest, spawn-time verification, journal evidence, tamper refusal, and full gate green. |
+| #49 | done | seat: gate engine tools (#49) | Red: buildServerWithRuntime undefined; live tools/list forwarding, QUERY/EXEC children, recipes capability gating, capability_revoked recheck, and full gate green. |

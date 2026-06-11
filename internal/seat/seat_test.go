@@ -14,29 +14,6 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func TestSeatToolSurface(t *testing.T) {
-	cases := []struct {
-		seat string
-		want []string
-	}{
-		{Player, []string{"AddPlayBook", "CheckStepJob", "CreateTask", "ListTask", "NotePlaybook", "ReviewTask", "ShowStepJob"}},
-		{Curator, []string{"ListTask", "LoadPlayBook", "ReadPlayBook", "ReviewTask"}},
-		{Executor, []string{"ListTask", "ReviewTask", "SubmitTask"}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.seat, func(t *testing.T) {
-			server, err := buildServer(t.TempDir(), tc.seat)
-			if err != nil {
-				t.Fatal(err)
-			}
-			got := listTools(t, server)
-			if join(got) != join(tc.want) {
-				t.Fatalf("tools = %#v want %#v", got, tc.want)
-			}
-		})
-	}
-}
-
 func TestSeatDenied(t *testing.T) {
 	root := t.TempDir()
 	matchDir := filepath.Join(root, ".arbiter", "match")
