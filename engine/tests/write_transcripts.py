@@ -66,6 +66,10 @@ SCENARIOS: List[Tuple[str, List[Dict[str, Any]]]] = [
             {"spec": {"kind": "stub", "sleep_ms": 0, "timeout_s": 1, "result": {"overall": "passed"}}},
         ),
     ),
+    _scenario(
+        "custom_start_run_requires_recipe",
+        _request(1, "arbiter/startRun", {"spec": {"kind": "run", "recipe": ""}}),
+    ),
     _scenario("custom_run_status_unknown", _request(1, "arbiter/runStatus", {"run_id": "transcript-missing-run"})),
 ]
 

@@ -120,9 +120,24 @@ def _base_snapshot_id(repo: Path) -> Optional[str]:
             value = current.read_text(encoding="utf-8").strip()
             return value or None
         if current.is_dir():
-            return current.name
+            # The publisher writes a real "current" directory; the snapshot id
+            # lives in its manifest, not in the directory name.
+            return _manifest_snapshot_id(current / "manifest.json") or current.name
     except OSError:
         return None
+    return None
+
+
+def _manifest_snapshot_id(manifest_path: Path) -> Optional[str]:
+    try:
+        raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    snapshot_id = raw.get("snapshot_id")
+    if isinstance(snapshot_id, str) and snapshot_id:
+        return snapshot_id
     return None
 
 

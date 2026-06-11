@@ -72,10 +72,23 @@ func TestSpawnEmbeddedEngineVerifiesDigestAndJournals(t *testing.T) {
 		t.Fatalf("journal = %s", data)
 	}
 
-	if err := os.WriteFile(filepath.Join(repo, ".arbiter", "engine", "arbiter_engine", "__init__.py"), []byte("tampered = True\n"), 0o644); err != nil {
+	// Verification results are memoized per (root, digest) for the process
+	// lifetime, so tampering must be exercised in a fresh repo that has not
+	// yet verified successfully.
+	tampered := t.TempDir()
+	tamperedManifest, err := embeddedengine.Unpack(tampered)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Spawn(context.Background(), RoleQuery, repo); err == nil || !strings.Contains(err.Error(), "embedded engine digest mismatch") {
+	writeJSONFile(t, filepath.Join(tampered, ".arbiter", "run", "engines.json"), map[string]any{
+		"mode":          "embedded",
+		"engine_root":   ".arbiter/engine",
+		"engine_digest": tamperedManifest.Digest,
+	})
+	if err := os.WriteFile(filepath.Join(tampered, ".arbiter", "engine", "arbiter_engine", "__init__.py"), []byte("tampered = True\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Spawn(context.Background(), RoleQuery, tampered); err == nil || !strings.Contains(err.Error(), "embedded engine digest mismatch") {
 		t.Fatalf("err = %v, want digest mismatch", err)
 	}
 }
@@ -252,6 +265,125 @@ else:
 	}
 	if !strings.Contains(string(raw), `"ok":true`) {
 		t.Fatalf("response = %s", raw)
+	}
+}
+
+func TestStdinWriteFailurePoisonsChild(t *testing.T) {
+	dir := t.TempDir()
+	ready := filepath.Join(dir, "ready")
+	script := writeFakeEngine(t, `
+import os, sys, time
+os.close(0)
+open(sys.argv[1], "w", encoding="utf-8").write("ready")
+time.sleep(30)
+`)
+
+	client, err := spawnCommand(context.Background(), RoleExec, dir, []string{pythonBin(), script, ready})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	waitForFile(t, ready)
+	pid := client.cmd.Process.Pid
+
+	_, err = client.Call(context.Background(), "probe", nil)
+	if err == nil {
+		t.Fatal("expected stdin write failure")
+	}
+	if !client.Poisoned() {
+		t.Fatal("client not poisoned after stdin write failure")
+	}
+	waitNoProcess(t, pid)
+	if _, err := client.Call(context.Background(), "probe", nil); !stderrors.Is(err, ErrPoisoned) {
+		t.Fatalf("err = %v, want ErrPoisoned", err)
+	}
+}
+
+func TestSpawnSetsArbiterBinEnv(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "env.txt")
+	script := writeFakeEngine(t, `
+import json, os, sys
+open(sys.argv[1], "w", encoding="utf-8").write(os.environ.get("ARBITER_BIN", ""))
+for line in sys.stdin:
+    req = json.loads(line)
+    sys.stdout.write(json.dumps({"jsonrpc":"2.0","id":req["id"],"result":{"ok":True}}, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+`)
+
+	client, err := spawnCommand(context.Background(), RoleExec, dir, []string{pythonBin(), script, out})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if _, err := client.Call(context.Background(), "probe", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.TrimSpace(string(data))
+	want, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if abs, err := filepath.Abs(want); err == nil {
+		want = abs
+	}
+	if got != want {
+		t.Fatalf("ARBITER_BIN = %q, want %q", got, want)
+	}
+	if !filepath.IsAbs(got) {
+		t.Fatalf("ARBITER_BIN = %q is not absolute", got)
+	}
+}
+
+func TestCallTimeoutEnvOverride(t *testing.T) {
+	cases := []struct {
+		value string
+		want  time.Duration
+	}{
+		{"", defaultCallTimeout},
+		{"abc", defaultCallTimeout},
+		{"0", defaultCallTimeout},
+		{"-3", defaultCallTimeout},
+		{"42", 42 * time.Second},
+	}
+	for _, tc := range cases {
+		t.Setenv(callTimeoutEnv, tc.value)
+		if got := callTimeout(); got != tc.want {
+			t.Fatalf("callTimeout with %s=%q is %v, want %v", callTimeoutEnv, tc.value, got, tc.want)
+		}
+	}
+}
+
+func TestCallTimeoutEnvBoundsCallWithoutParentDeadline(t *testing.T) {
+	t.Setenv(callTimeoutEnv, "1")
+	dir := t.TempDir()
+	script := writeFakeEngine(t, `
+import sys, time
+sys.stdin.readline()
+time.sleep(30)
+`)
+
+	client, err := spawnCommand(context.Background(), RoleExec, dir, []string{pythonBin(), script})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	start := time.Now()
+	_, err = client.Call(context.Background(), "probe", nil)
+	if !stderrors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want deadline exceeded", err)
+	}
+	if elapsed := time.Since(start); elapsed >= 10*time.Second {
+		t.Fatalf("call took %v, want roughly the 1s override", elapsed)
+	}
+	if !client.Poisoned() {
+		t.Fatal("client not poisoned after timeout")
 	}
 }
 
@@ -510,6 +642,18 @@ func pythonBin() string {
 		return python
 	}
 	return "python3"
+}
+
+func waitForFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("file was not created: %s", path)
 }
 
 func readPID(t *testing.T, path string) int {

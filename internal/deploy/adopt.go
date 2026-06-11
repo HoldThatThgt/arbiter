@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 type AdoptReport struct {
@@ -132,8 +134,9 @@ func adoptCipherConfig(root string) (bool, error) {
 }
 
 func renderFactsConfig(legacy string) string {
-	pool := findSectionInt(legacy, "extractor", "worker_count")
-	incremental, hasIncremental := findSectionBool(legacy, "incremental", "enabled")
+	doc := parseLegacyConfig(legacy)
+	pool := sectionInt(doc, "extractor", "worker_count")
+	incremental, hasIncremental := sectionBool(doc, "incremental", "enabled")
 	var b strings.Builder
 	b.WriteString("# Migrated from .cipher/config.yml.\nfacts:\n  extractor: \"cipher-2\"\n")
 	if hasIncremental {
@@ -265,47 +268,60 @@ func firstExisting(root string, rels []string) (string, bool) {
 	return "", false
 }
 
-func findSectionInt(text, section, key string) int {
-	value, ok := findSectionValue(text, section, key)
+// parseLegacyConfig parses the legacy .cipher/config.yml with a real YAML
+// parser so inline comments, quoting, and tab rules follow the spec instead
+// of hand-rolled line splitting. Unparseable input yields an empty document,
+// which makes every key lookup miss, matching the old missing-key behavior.
+func parseLegacyConfig(text string) map[string]any {
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(text), &doc); err != nil {
+		return nil
+	}
+	return doc
+}
+
+func sectionValue(doc map[string]any, section, key string) (any, bool) {
+	body, ok := doc[section].(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	value, ok := body[key]
+	return value, ok
+}
+
+func sectionInt(doc map[string]any, section, key string) int {
+	value, ok := sectionValue(doc, section, key)
 	if !ok {
 		return 0
 	}
-	n, _ := strconv.Atoi(value)
-	return n
+	switch n := value.(type) {
+	case int:
+		return n
+	case string:
+		parsed, _ := strconv.Atoi(strings.TrimSpace(n))
+		return parsed
+	default:
+		return 0
+	}
 }
 
-func findSectionBool(text, section, key string) (bool, bool) {
-	value, ok := findSectionValue(text, section, key)
+func sectionBool(doc map[string]any, section, key string) (bool, bool) {
+	value, ok := sectionValue(doc, section, key)
 	if !ok {
 		return false, false
 	}
-	switch strings.ToLower(value) {
-	case "true":
-		return true, true
-	case "false":
-		return false, true
-	default:
-		return false, false
-	}
-}
-
-func findSectionValue(text, section, key string) (string, bool) {
-	current := ""
-	for _, raw := range strings.Split(text, "\n") {
-		trimmed := strings.TrimSpace(strings.Split(raw, "#")[0])
-		if trimmed == "" {
-			continue
-		}
-		if !strings.HasPrefix(raw, " ") && strings.HasSuffix(trimmed, ":") {
-			current = strings.TrimSuffix(trimmed, ":")
-			continue
-		}
-		if current == section && strings.HasPrefix(strings.TrimSpace(raw), key+":") {
-			parts := strings.SplitN(strings.TrimSpace(raw), ":", 2)
-			return strings.Trim(strings.TrimSpace(parts[1]), `"'`), true
+	switch b := value.(type) {
+	case bool:
+		return b, true
+	case string:
+		switch strings.ToLower(strings.TrimSpace(b)) {
+		case "true":
+			return true, true
+		case "false":
+			return false, true
 		}
 	}
-	return "", false
+	return false, false
 }
 
 func shouldSkipScanDir(root, path, name string) bool {

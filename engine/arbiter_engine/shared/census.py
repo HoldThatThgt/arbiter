@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import os
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
-from typing import Dict, Iterable, List, Mapping, Optional, Tuple
+from pathlib import Path
+from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 
 @dataclass(frozen=True)
@@ -109,15 +110,26 @@ def _walk_files(root: Path, patterns: Tuple[str, ...]) -> Iterable[Tuple[str, Pa
 
 
 def _matches(relpath: str, patterns: Tuple[str, ...]) -> bool:
-    rel = PurePosixPath(relpath)
-    for pattern in patterns:
-        if rel.match(pattern):
+    parts = relpath.split("/")
+    return any(_match_segments(parts, pattern.split("/")) for pattern in patterns)
+
+
+def _match_segments(parts: Sequence[str], pattern: Sequence[str]) -> bool:
+    """Anchored glob match where '**' spans zero or more path segments."""
+    if not pattern:
+        return not parts
+    head = pattern[0]
+    if head == "**":
+        # '**' matches zero segments ...
+        if _match_segments(parts, pattern[1:]):
             return True
-        if "/**/" in pattern:
-            shallow = pattern.replace("/**/", "/")
-            if rel.match(shallow):
-                return True
-    return False
+        # ... or one segment followed by the same pattern again.
+        return bool(parts) and _match_segments(parts[1:], pattern)
+    if not parts:
+        return False
+    if not fnmatch.fnmatchcase(parts[0], head):
+        return False
+    return _match_segments(parts[1:], pattern[1:])
 
 
 def _sha256_file(path: Path) -> str:

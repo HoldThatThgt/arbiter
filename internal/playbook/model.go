@@ -82,7 +82,7 @@ type ResultSpec struct {
 	Tool      string         `json:"tool,omitempty"`      // mcp: 工具名
 	Arguments map[string]any `json:"arguments,omitempty"` // mcp: 工具入参
 
-	Recipe  string         `json:"recipe,omitempty"`  // run: 可选 recipe 名
+	Recipe  string         `json:"recipe,omitempty"`  // run: recipe 名(必填)
 	Tests   []string       `json:"tests,omitempty"`   // run: 测试目标(必填)
 	Options map[string]any `json:"options,omitempty"` // run: 可选执行参数
 

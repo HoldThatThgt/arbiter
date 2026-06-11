@@ -5,10 +5,16 @@ from __future__ import annotations
 import ast
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence, Tuple
 
+
+# Target ids are used to build filesystem paths (run artifacts, compile
+# journals), so they must be path-safe: [A-Za-z0-9._-]+ without a leading dot
+# and without '..' sequences.
+SAFE_TARGET_ID = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]*\Z")
 
 ROOT_KEYS = {"vars", "profiles", "compile_db", "targets"}
 TARGET_KEYS = {
@@ -231,6 +237,12 @@ def _parse_targets(node: Optional[_Node]) -> Tuple[Target, ...]:
         body = _require_mapping(item, "targets entries")
         _reject_unknown(body, TARGET_KEYS)
         target_id = _required_string(body.get("id"), "target.id")
+        if not SAFE_TARGET_ID.fullmatch(target_id) or ".." in target_id:
+            raise RecipeError(
+                body["id"].line,
+                f"target id {target_id!r} must match [A-Za-z0-9._-]+ "
+                "and may not start with '.' or contain '..'",
+            )
         if target_id in seen:
             raise RecipeError(body["id"].line, f"duplicate target id {target_id!r}")
         seen.add(target_id)

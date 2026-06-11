@@ -13,11 +13,15 @@ from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from arbiter_engine.facts import extract_cache
 from arbiter_engine.facts import relocation
+from arbiter_engine.shared import census
 from arbiter_engine.shared import compile_db
 from arbiter_engine.shared import locks
 
 
 Extractor = Callable[[extract_cache.ExtractUnit], Optional[Mapping[str, Any]]]
+
+_HEADER_GLOBS = ("**/*.h", "**/*.hh", "**/*.hpp", "**/*.hxx", "**/*.inl")
+_REPO_HEADERS_KEY = "__repo_headers__"
 
 
 @dataclass(frozen=True)
@@ -80,8 +84,9 @@ def publish_after_build(
         )
 
     compile_db.emit(journals, compile_db_path)
-    units = _units_from_compile_db(compile_db_path)
-    cache = _load_cache(_cache_path(root))
+    units = _units_from_compile_db(compile_db_path, headers_digest=_repo_headers_digest(root))
+    cache_path = _cache_path(root)
+    cache = _load_cache(cache_path)
     pending = [unit for unit in units if unit.key(key_flags=key_flags) not in cache]
 
     extract_start = monotonic()
@@ -92,11 +97,17 @@ def publish_after_build(
         key_flags=tuple(key_flags),
     )
     extract_ms = _elapsed_ms(extract_start, monotonic)
-    cache.update(extracted)
     snapshot_id = _snapshot_id(units, key_flags=key_flags)
 
     with locks.acquire(root, [locks.SNAPSHOT], timeout_s=lock_timeout_s):
-        _store_cache(_cache_path(root), cache)
+        # Re-load under the lock and merge so concurrent publishers do not
+        # overwrite each other's cache entries (lost-update fix). Stale keys
+        # are intentionally NOT pruned: with per-build compile journals an
+        # incremental build only sees a subset of units, so pruning to
+        # current-unit keys would evict still-valid entries.
+        merged = _load_cache(cache_path)
+        merged.update(extracted)
+        _store_cache(cache_path, merged)
         _publish_snapshot(root, snapshot_id, units, warnings)
 
     return PipelineResult(
@@ -140,10 +151,22 @@ def _has_miss_marker(records: Sequence[Mapping[str, Any]]) -> bool:
     return any(record.get("miss") is True for record in records)
 
 
-def _units_from_compile_db(path: Path | str) -> list[extract_cache.ExtractUnit]:
+def _repo_headers_digest(root: Path) -> str:
+    """Digest of every header file under root (census-style walk).
+
+    Used as a single over-approximated include closure: any header edit
+    anywhere in the repo invalidates every cached unit and changes the
+    snapshot id. This trades cache efficiency for correctness until real
+    per-TU include closures are wired in (ADR-0005).
+    """
+    return census.scan(root, _HEADER_GLOBS).digest
+
+
+def _units_from_compile_db(path: Path | str, *, headers_digest: str) -> list[extract_cache.ExtractUnit]:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(data, list):
         return []
+    include_closure = {_REPO_HEADERS_KEY: headers_digest}
     units: list[extract_cache.ExtractUnit] = []
     for item in data:
         if not isinstance(item, dict):
@@ -161,7 +184,7 @@ def _units_from_compile_db(path: Path | str) -> list[extract_cache.ExtractUnit]:
             extract_cache.ExtractUnit(
                 source=str(source),
                 tu_content=content,
-                include_closure={},
+                include_closure=include_closure,
                 flags=arguments,
                 toolchain_id=_toolchain_id(arguments),
             )
@@ -188,8 +211,9 @@ def _extract_pending(
             try:
                 payload = future.result() or {}
             except Exception as exc:  # noqa: BLE001 - warnings preserve per-file failures.
+                # Failed extractions are surfaced as warnings but never enter
+                # the extract cache, so the unit is retried on the next build.
                 warnings.append({"kind": "extract_failed", "file": unit.source, "message": str(exc)})
-                extracted[key] = {"source": unit.source, "failed": True}
                 continue
             extracted[key] = {"source": unit.source, "failed": False}
             raw_warnings = payload.get("warnings") if isinstance(payload, Mapping) else None

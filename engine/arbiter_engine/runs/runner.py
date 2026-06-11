@@ -7,7 +7,7 @@ import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Mapping, Optional, Sequence
 
 from arbiter_engine.runs import recipes
 from arbiter_engine.shared import locks
@@ -16,6 +16,7 @@ from arbiter_engine.shared import locks
 TAIL_BYTES = 4096
 COMPILE_STAGES = {"src_compile", "test_compile"}
 SECRET_NAME = re.compile(r"(^|_)(SECRET|TOKEN|PASSWORD|API_KEY|ACCESS_KEY|PRIVATE_KEY)(_|$)")
+DEFAULT_ARBITER_BIN = "arbiter"
 
 
 class RunnerError(ValueError):
@@ -31,6 +32,24 @@ class StageResult:
     stderr_tail: str = ""
 
 
+def resolve_arbiter_bin(arbiter_bin: Optional[str] = None) -> str:
+    """Resolve the arbiter binary: explicit argument, then $ARBITER_BIN, then PATH lookup."""
+    if arbiter_bin:
+        return arbiter_bin
+    return os.environ.get("ARBITER_BIN") or DEFAULT_ARBITER_BIN
+
+
+def resolve_workdir(repo_root: Path | str, target: recipes.Target) -> Path:
+    """Resolve a target workdir, rejecting paths that escape the repo root."""
+    root = Path(repo_root).resolve()
+    workdir = (root / target.workdir).resolve()
+    if workdir != root and root not in workdir.parents:
+        raise RunnerError(
+            f"target {target.id!r} workdir {target.workdir!r} escapes the repo root"
+        )
+    return workdir
+
+
 def run_stage(
     repo_root: Path | str,
     book: recipes.RecipeBook,
@@ -38,19 +57,22 @@ def run_stage(
     stage: str,
     *,
     profiles: Sequence[str] = (),
-    arbiter_bin: str = "arbiter",
+    arbiter_bin: Optional[str] = None,
     lock_timeout_s: float = 30.0,
 ) -> StageResult:
     root = Path(repo_root)
+    arbiter_bin = resolve_arbiter_bin(arbiter_bin)
     target = book.target(target_id)
     if stage not in target.stages:
         raise RunnerError(f"target {target_id!r} has no stage {stage!r}")
-    workdir = root / target.workdir
+    workdir = resolve_workdir(root, target)
     workdir.mkdir(parents=True, exist_ok=True)
     stage_spec = target.stages[stage]
     env = _stage_env(os.environ, target, stage_spec, book, profiles, stage, arbiter_bin)
 
     with locks.acquire(root, [locks.build_lock(workdir)], timeout_s=lock_timeout_s):
+        if stage in COMPILE_STAGES:
+            _reset_compile_journal(root, workdir, env["ARBITER_BUILD_ID"])
         for command in stage_spec.pre:
             result = _run_command(command, workdir, env, stage_spec.timeout_s)
             if result.exit_code != 0:
@@ -109,9 +131,31 @@ def _append_flags(env: dict[str, str], name: str, flags: Sequence[str]) -> None:
     env[name] = f"{existing} {suffix}".strip()
 
 
-def _inject_cc(env: dict[str, str], name: str, arbiter_bin: str, default: str) -> None:
+def _inject_cc(env: dict[str, str], name: str, arbiter_bin: Optional[str], default: str) -> None:
     real = env.get(name, default)
-    env[name] = f"{arbiter_bin} cc -- {real}"
+    env[name] = f"{resolve_arbiter_bin(arbiter_bin)} cc -- {real}"
+
+
+def _reset_compile_journal(root: Path, workdir: Path, build_id: str) -> None:
+    """Remove stale compile journals for this build id before the stage runs.
+
+    The journal is owned by the build identified by ARBITER_BUILD_ID; records
+    left over from previous builds (including old miss markers) must not leak
+    into publish_after_build.
+    """
+    rel = Path(".arbiter") / "facts" / "run" / f"compile-journal.{build_id}.jsonl"
+    seen: set[Path] = set()
+    for base in (root, workdir):
+        path = base / rel
+        if path in seen:
+            continue
+        seen.add(path)
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
 
 
 def _run_command(

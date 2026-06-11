@@ -23,7 +23,7 @@ func TestSettingsStopHookMerge(t *testing.T) {
 	var settings map[string]any
 	readJSONFile(t, filepath.Join(root, fileSettings), &settings)
 	stops := settings["hooks"].(map[string]any)["Stop"].([]any)
-	if len(stops) != 4 {
+	if len(stops) != 3 {
 		t.Fatalf("stop entries = %d (%#v)", len(stops), stops)
 	}
 	commands := stopCommands(settings)
@@ -43,7 +43,8 @@ func TestSettingsStopHookMerge(t *testing.T) {
 			claimed++
 		}
 	}
-	if !foreign || !collision || !stale || claimed != 1 {
+	// 失效的 arbiter 二进制路径应被改写为当前命令,而非新增重复条目。
+	if !foreign || !collision || stale || claimed != 1 {
 		t.Fatalf("commands = %#v", commands)
 	}
 
@@ -52,8 +53,53 @@ func TestSettingsStopHookMerge(t *testing.T) {
 		t.Fatal(err)
 	}
 	readJSONFile(t, filepath.Join(root, fileSettings), &settings)
-	if n := len(settings["hooks"].(map[string]any)["Stop"].([]any)); n != 4 {
+	if n := len(settings["hooks"].(map[string]any)["Stop"].([]any)); n != 3 {
 		t.Fatalf("stop entries after re-init = %d", n)
+	}
+}
+
+func TestRemoveStripsStaleArbiterStopHooks(t *testing.T) {
+	root := t.TempDir()
+	writeJSONFile(t, filepath.Join(root, fileSettings), map[string]any{
+		"hooks": map[string]any{
+			"Stop": []any{
+				map[string]any{"hooks": []any{map[string]any{"type": "command", "command": "/foreign/tool hook stop"}}},
+				map[string]any{"hooks": []any{map[string]any{"type": "command", "command": "/moved/elsewhere/arbiter hook stop", "timeout": 10}}},
+			},
+		},
+	})
+	opts := testInitOptions()
+	opts.Remove = true
+	if _, err := InitWithOptions(root, opts); err != nil {
+		t.Fatal(err)
+	}
+	var settings map[string]any
+	readJSONFile(t, filepath.Join(root, fileSettings), &settings)
+	commands := stopCommands(settings)
+	if len(commands) != 1 || commands[0] != "/foreign/tool hook stop" {
+		t.Fatalf("commands = %#v", commands)
+	}
+}
+
+func TestIsArbiterStopHookOwnership(t *testing.T) {
+	exe := "/current/arbiter-test"
+	cases := []struct {
+		command string
+		want    bool
+	}{
+		{exe + " hook stop", true},
+		{"/stale/path/arbiter hook stop", true},
+		{"arbiter hook stop", true},
+		{"/foreign/tool hook stop", false},
+		{"/stale/path/arbiter hook start", false},
+		{"/stale/path/arbiter notify", false},
+		{"other-tool notify", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := isArbiterStopHook(tc.command, exe); got != tc.want {
+			t.Errorf("isArbiterStopHook(%q) = %t, want %t", tc.command, got, tc.want)
+		}
 	}
 }
 

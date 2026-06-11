@@ -13,6 +13,9 @@ from typing import Any, Callable, Iterator, Mapping, Optional
 
 BUSY_TIMEOUT_MS = 30000
 
+# DB paths whose schema has already been initialized by this process.
+_INITIALIZED_DB_PATHS: set[str] = set()
+
 
 @dataclass(frozen=True)
 class TargetState:
@@ -26,11 +29,15 @@ class TargetState:
 
 def init(path: Path | str) -> None:
     db_path = Path(path)
+    key = str(db_path.resolve())
+    if key in _INITIALIZED_DB_PATHS:
+        return
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    with connect(db_path) as conn:
+    with contextlib.closing(connect(db_path)) as conn:
         conn.execute("PRAGMA journal_mode=WAL")
         _create_schema(conn)
         conn.commit()
+    _INITIALIZED_DB_PATHS.add(key)
 
 
 def connect(path: Path | str, *, timeout_s: float = 30.0) -> sqlite3.Connection:

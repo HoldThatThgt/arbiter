@@ -1,7 +1,6 @@
 package interpose
 
 import (
-	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -176,21 +175,82 @@ func expandArgs(argv []string) []string {
 }
 
 func readResponseFile(path string) ([]string, error) {
-	f, err := os.Open(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	var args []string
-	scanner := bufio.NewScanner(f)
-	scanner.Split(bufio.ScanWords)
-	for scanner.Scan() {
-		args = append(args, scanner.Text())
+	return shlexSplit(string(data))
+}
+
+// shlexSplit splits response file text with POSIX shlex semantics, matching
+// the Python side's shlex.split in
+// engine/arbiter_engine/shared/compile_db.py _expand_response_files so quoted
+// arguments containing spaces journal identically on both sides:
+//   - tokens separate on space, tab, CR, and LF (shlex.whitespace);
+//   - single quotes are literal with no escapes inside;
+//   - inside double quotes a backslash escapes only `"` and `\` (otherwise
+//     the backslash is kept);
+//   - outside quotes a backslash escapes any single character;
+//   - unterminated quotes and a trailing escape are errors (shlex raises
+//     ValueError), which makes expandArgs fall back to the raw @arg.
+func shlexSplit(text string) ([]string, error) {
+	var (
+		tokens  []string
+		token   []rune
+		have    bool
+		quote   rune
+		escaped bool
+	)
+	for _, r := range text {
+		switch {
+		case escaped:
+			if quote == '"' && r != '"' && r != '\\' {
+				token = append(token, '\\')
+			}
+			token = append(token, r)
+			escaped = false
+		case quote == '\'':
+			if r == '\'' {
+				quote = 0
+			} else {
+				token = append(token, r)
+			}
+		case quote == '"':
+			switch r {
+			case '"':
+				quote = 0
+			case '\\':
+				escaped = true
+			default:
+				token = append(token, r)
+			}
+		case r == '\\':
+			escaped = true
+			have = true
+		case r == '\'' || r == '"':
+			quote = r
+			have = true
+		case r == ' ' || r == '\t' || r == '\r' || r == '\n':
+			if have {
+				tokens = append(tokens, string(token))
+				token = token[:0]
+				have = false
+			}
+		default:
+			token = append(token, r)
+			have = true
+		}
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
+	if escaped {
+		return nil, errors.New("no escaped character")
 	}
-	return args, nil
+	if quote != 0 {
+		return nil, errors.New("no closing quotation")
+	}
+	if have {
+		tokens = append(tokens, string(token))
+	}
+	return tokens, nil
 }
 
 func isSource(arg string) bool {

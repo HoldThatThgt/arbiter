@@ -24,10 +24,13 @@ import (
 // ResultSpec 定义于 playbook 包(共享数据模型);别名保持调用面稳定。
 type ResultSpec = playbook.ResultSpec
 
+// refreshDedupe 记录每个 root+match 最近一次"成功" refresh 的回合键:
+// 只在 Refresh 成功后写入(失败留给同回合下一个 fact 谓词重试),
+// 且每个 root+match 只保留最新回合,天然有界。
 var refreshDedupe = struct {
 	sync.Mutex
-	seen map[string]struct{}
-}{seen: map[string]struct{}{}}
+	seen map[string]string
+}{seen: map[string]string{}}
 
 type Result struct {
 	Spec       ResultSpec `json:"spec"`
@@ -71,12 +74,7 @@ func ExecuteWithMeta(ctx context.Context, root string, spec ResultSpec, meta map
 	case "mcp":
 		return runTool(ctx, root, spec)
 	case "run":
-		// 评估路径经 seat 的引擎子进程(go-engineclient),由 #37/#43 接线;
-		// 在那之前 fail-closed:模式已校验,但绝不在无引擎时給出判定。
-		return Result{}, &SpecError{
-			Code:    playbook.CodeEngineUnavailable,
-			Message: spec.Kind + " predicates evaluate via the seat's engine children; engine wiring lands with #37/#43",
-		}
+		return runRun(ctx, root, spec, meta)
 	case "fact":
 		return runFact(ctx, root, spec, meta)
 	default:
@@ -281,6 +279,7 @@ func runFact(parent context.Context, root string, spec ResultSpec, meta map[stri
 			result.DurationMS = int(time.Since(start).Milliseconds())
 			return result, nil
 		}
+		recordFactsRefreshed(root, meta)
 	}
 	call, err := engine.CallTool(ctx, "search", map[string]any{"query": spec.Query}, callMeta)
 	if err != nil {
@@ -302,6 +301,99 @@ func runFact(parent context.Context, root string, spec ResultSpec, meta map[stri
 		return Result{}, err
 	}
 	verdict, report := CompareFact(expect, evidence)
+	result.Verdict = &verdict
+	result.Evidence = rawEvidence
+	result.ExpectReport = report
+	result.DurationMS = int(time.Since(start).Milliseconds())
+	return result, nil
+}
+
+// runRun 同步执行 run 谓词:经 EXEC 角色的引擎子进程调用其注册的 `run` 工具
+// (engine/arbiter_engine/rpc/__init__.py _DEFAULT_TOOLS),用 ParseRunExpect/CompareRun
+// 产出判定与证据。镜像 runFact 的接线方式;spec.TimeoutS 经调用上下文生效。
+func runRun(parent context.Context, root string, spec ResultSpec, meta map[string]any) (Result, error) {
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(parent, time.Duration(spec.TimeoutS)*time.Second)
+	defer cancel()
+
+	expect, err := ParseRunExpect(spec.Expect)
+	if err != nil {
+		return Result{}, err
+	}
+	engine, err := engineclient.Spawn(ctx, engineclient.RoleExec, root)
+	if err != nil {
+		return Result{}, &SpecError{Code: playbook.CodeEngineUnavailable, Message: "run engine unavailable: " + err.Error()}
+	}
+	defer engine.Close()
+
+	callMeta := map[string]any{"predicate": "run"}
+	for key, value := range meta {
+		callMeta[key] = value
+	}
+	args := map[string]any{"recipe": spec.Recipe}
+	if len(spec.Tests) != 0 {
+		args["tests"] = append([]string(nil), spec.Tests...)
+	}
+	if len(spec.Options) != 0 {
+		args["options"] = spec.Options
+	}
+
+	result := Result{Spec: spec}
+	// 不走 engine.CallTool:run 工具把 overall/passed/failed/per_test/facts
+	// 平铺在 tools/call 的 result 顶层,需要拿原始 envelope 自行解码。
+	raw, err := engine.Call(ctx, "tools/call", map[string]any{"name": "run", "arguments": args, "_meta": callMeta})
+	if err != nil {
+		result.Failure = failureForContext(ctx, "engine_error")
+		result.Output = err.Error()
+		result.DurationMS = int(time.Since(start).Milliseconds())
+		return result, nil
+	}
+	var envelope struct {
+		Result json.RawMessage `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		result.Failure = "engine_error"
+		result.Output = err.Error()
+		result.DurationMS = int(time.Since(start).Milliseconds())
+		return result, nil
+	}
+	var payload struct {
+		RunID   string            `json:"run_id"`
+		Overall string            `json:"overall"`
+		Passed  int               `json:"passed"`
+		Failed  int               `json:"failed"`
+		PerTest []RunPerTest      `json:"per_test"`
+		Facts   *RunFactsEvidence `json:"facts"`
+		IsError bool              `json:"isError"`
+		Content json.RawMessage   `json:"content"`
+	}
+	if err := json.Unmarshal(envelope.Result, &payload); err != nil {
+		result.Failure = "engine_error"
+		result.Output = err.Error()
+		result.DurationMS = int(time.Since(start).Milliseconds())
+		return result, nil
+	}
+	isErr := payload.IsError
+	result.IsError = &isErr
+	result.Output = tailLines(string(payload.Content), spec.OutputLines)
+	if payload.IsError {
+		result.DurationMS = int(time.Since(start).Milliseconds())
+		return result, nil
+	}
+	evidence := RunEvidence{
+		RunID:            payload.RunID,
+		Overall:          payload.Overall,
+		Passed:           payload.Passed,
+		Failed:           payload.Failed,
+		FirstFailureName: FirstRunFailure(payload.PerTest),
+		TestResults:      RunTestResults(payload.PerTest),
+		Facts:            payload.Facts,
+	}
+	rawEvidence, err := json.Marshal(evidence)
+	if err != nil {
+		return Result{}, err
+	}
+	verdict, report := CompareRun(expect, evidence)
 	result.Verdict = &verdict
 	result.Evidence = rawEvidence
 	result.ExpectReport = report
@@ -438,20 +530,35 @@ func factEvidenceFromStructured(payload map[string]any) FactEvidence {
 	}
 }
 
+func refreshDedupeKeys(root string, meta map[string]any) (matchKey, roundKey string, ok bool) {
+	roundSeq, exists := meta["round_seq"]
+	if !exists {
+		return "", "", false
+	}
+	matchID := fmt.Sprint(meta["match_id"])
+	return root + "\x00" + matchID, fmt.Sprint(roundSeq), true
+}
+
 func shouldRefreshFacts(root string, meta map[string]any) bool {
-	roundSeq, ok := meta["round_seq"]
+	matchKey, roundKey, ok := refreshDedupeKeys(root, meta)
 	if !ok {
 		return true
 	}
-	matchID := fmt.Sprint(meta["match_id"])
-	key := root + "\x00" + matchID + "\x00" + fmt.Sprint(roundSeq)
 	refreshDedupe.Lock()
 	defer refreshDedupe.Unlock()
-	if _, exists := refreshDedupe.seen[key]; exists {
-		return false
+	return refreshDedupe.seen[matchKey] != roundKey
+}
+
+// recordFactsRefreshed 只在 engine.Refresh 成功后调用:失败不去重,
+// 同回合的下一个 fact 谓词会再次尝试 refresh。
+func recordFactsRefreshed(root string, meta map[string]any) {
+	matchKey, roundKey, ok := refreshDedupeKeys(root, meta)
+	if !ok {
+		return
 	}
-	refreshDedupe.seen[key] = struct{}{}
-	return true
+	refreshDedupe.Lock()
+	defer refreshDedupe.Unlock()
+	refreshDedupe.seen[matchKey] = roundKey
 }
 
 func stringField(payload map[string]any, name string) string {

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -14,6 +15,9 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
+
+// goalMemoCap 限制 GoalMemo 的条目数:超出时按 StoredAt 淘汰最旧的。
+const goalMemoCap = 32
 
 func (s *Store) goalMemoEnabled() bool {
 	data, err := os.ReadFile(filepath.Join(s.Root, ".arbiter", "config.yml"))
@@ -32,9 +36,11 @@ func (s *Store) goalMemoEnabled() bool {
 }
 
 func (s *Store) goalMemoDigest(m *Match, spec playbook.ResultSpec) (string, error) {
-	census, err := s.goalCensusDigest()
-	if err != nil {
-		return "", err
+	census, ok := s.goalCensusDigest()
+	if !ok {
+		// 普查不可靠(不可读文件、坏目录等):空摘要表示"本次裁决跳过 memo",
+		// 调用方对空摘要既不查也不记,goal 谓词照常真实执行。
+		return "", nil
 	}
 	specJSON, err := json.Marshal(spec)
 	if err != nil {
@@ -57,11 +63,16 @@ func (s *Store) goalMemoDigest(m *Match, spec playbook.ResultSpec) (string, erro
 	return sha256String(raw), nil
 }
 
-func (s *Store) goalCensusDigest() (string, error) {
+// goalCensusDigest 计算工作区内容普查摘要。ok=false 表示普查不可靠
+// (出现不可读的常规文件、不可达目录等),调用方应跳过本次 memo;
+// memo 只是优化,任何普查障碍都绝不能让整次裁决(CheckStepJob)失败。
+func (s *Store) goalCensusDigest() (string, bool) {
 	var entries []string
-	err := filepath.WalkDir(s.Root, func(path string, d os.DirEntry, err error) error {
+	usable := true
+	_ = filepath.WalkDir(s.Root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			return err
+			usable = false
+			return filepath.SkipAll
 		}
 		if d.IsDir() {
 			if path != s.Root {
@@ -72,19 +83,38 @@ func (s *Store) goalCensusDigest() (string, error) {
 			}
 			return nil
 		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
+		rel, relErr := filepath.Rel(s.Root, path)
+		if relErr != nil {
+			usable = false
+			return filepath.SkipAll
 		}
-		rel, err := filepath.Rel(s.Root, path)
-		if err != nil {
-			return err
+		switch {
+		case d.Type()&fs.ModeSymlink != 0:
+			// 符号链接以链接目标字符串参与普查:坏链接也能 Readlink,不会读穿;
+			// 重定向链接会改变摘要,从而正确地作废 memo。
+			target, linkErr := os.Readlink(path)
+			if linkErr != nil {
+				usable = false
+				return filepath.SkipAll
+			}
+			entries = append(entries, filepath.ToSlash(rel)+"\x00link\x00"+sha256String([]byte(target)))
+		case !d.Type().IsRegular():
+			// FIFO/socket/设备文件:读取可能阻塞或失败,直接跳过不入册。
+			return nil
+		default:
+			data, readErr := os.ReadFile(path)
+			if readErr != nil {
+				// 常规文件不可读(EACCES、与删除竞争的 ENOENT 等):
+				// 禁用本次 memo,而不是让裁决整体报错。
+				usable = false
+				return filepath.SkipAll
+			}
+			entries = append(entries, filepath.ToSlash(rel)+"\x00"+sha256String(data))
 		}
-		entries = append(entries, filepath.ToSlash(rel)+"\x00"+sha256String(data))
 		return nil
 	})
-	if err != nil {
-		return "", err
+	if !usable {
+		return "", false
 	}
 	sort.Strings(entries)
 	digest := sha256.New()
@@ -92,7 +122,7 @@ func (s *Store) goalCensusDigest() (string, error) {
 		digest.Write([]byte(entry))
 		digest.Write([]byte{0})
 	}
-	return hex.EncodeToString(digest.Sum(nil)), nil
+	return hex.EncodeToString(digest.Sum(nil)), true
 }
 
 func memoizedGoalReport(entry GoalMemoEntry) *GoalReport {
@@ -111,9 +141,22 @@ func rememberGoalMemo(m *Match, digest string, report *GoalReport) {
 	stored := *report
 	stored.Memoized = false
 	m.GoalMemo[digest] = GoalMemoEntry{
-		Digest:   digest,
 		Report:   stored,
 		StoredAt: utcNow(),
+	}
+	// 防无界增长:只保留最近 goalMemoCap 条。StoredAt 是 UTC RFC3339,
+	// 字典序即时间序;刚写入的条目绝不被淘汰。
+	for len(m.GoalMemo) > goalMemoCap {
+		oldest := ""
+		for key, entry := range m.GoalMemo {
+			if key == digest {
+				continue
+			}
+			if oldest == "" || entry.StoredAt < m.GoalMemo[oldest].StoredAt {
+				oldest = key
+			}
+		}
+		delete(m.GoalMemo, oldest)
 	}
 }
 

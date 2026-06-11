@@ -47,14 +47,16 @@ type GoalPending struct {
 }
 
 type GoalMemoEntry struct {
-	Digest   string     `json:"digest"`
 	Report   GoalReport `json:"report"`
 	StoredAt string     `json:"stored_at"`
 }
 
 type RecipePin struct {
-	BookSHA256 string            `json:"book_sha256"`
-	Targets    map[string]string `json:"targets"`
+	BookSHA256 string `json:"book_sha256"`
+	// Targets 只承载目标 id 的集合(新写入的值恒为空串)。保留 map[string]string
+	// 是为了让旧 state.json(值是逐目标哈希)继续可加载;比较只看键的存在性,
+	// 因为 BookSHA256 相等已保证两本书逐字节一致(见 checkRecipePin)。
+	Targets map[string]string `json:"targets"`
 }
 
 type Round struct {

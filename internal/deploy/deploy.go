@@ -110,7 +110,7 @@ func InitWithOptions(root string, opts Options) (string, error) {
 		}
 		embeddedDigest = manifest.Digest
 	}
-	python := resolvePython(opts.Python)
+	python := ResolvePython(opts.Python)
 	verify := opts.VerifyEngine
 	if verify == nil {
 		verify = verifyEngine
@@ -251,16 +251,9 @@ func mergeSettings(path, exe string, embedded bool) error {
 	if existing, ok := perms["deny"].([]any); ok {
 		deny = existing
 	}
-	for _, item := range generatedDenyRules()[:3] {
+	for _, item := range generatedDenyRules(embedded) {
 		if !hasLineValue(deny, item) {
 			deny = append(deny, item)
-		}
-	}
-	if embedded {
-		for _, item := range generatedDenyRules()[3:] {
-			if !hasLineValue(deny, item) {
-				deny = append(deny, item)
-			}
 		}
 	}
 	perms["deny"] = deny
@@ -268,8 +261,26 @@ func mergeSettings(path, exe string, embedded bool) error {
 	return writeJSON(path, root, 0o644)
 }
 
-// mergeStopHook claims only the exact current command, so foreign hooks with
-// similar trailing words cannot be rewritten.
+// isArbiterStopHook reports whether a Stop hook command is arbiter-owned:
+// either the exact current command, or a command whose first field has
+// basename "arbiter" (or equals the current exe) and which ends with
+// "hook stop". The basename check is the middle ground that lets init and
+// remove clean up hooks left behind by moved or rebuilt arbiter binaries
+// without hijacking foreign hooks that merely end in "hook stop".
+func isArbiterStopHook(command, exe string) bool {
+	if command == exe+" hook stop" {
+		return true
+	}
+	fields := strings.Fields(command)
+	if len(fields) < 3 || fields[len(fields)-2] != "hook" || fields[len(fields)-1] != "stop" {
+		return false
+	}
+	return fields[0] == exe || filepath.Base(fields[0]) == "arbiter"
+}
+
+// mergeStopHook rewrites any arbiter-owned Stop hook to the current command
+// (so stale entries from moved/rebuilt binaries do not accumulate) and drops
+// duplicates; if no arbiter-owned entry exists it appends a fresh one.
 func mergeStopHook(root map[string]any, exe string) {
 	hooks, _ := root["hooks"].(map[string]any)
 	if hooks == nil {
@@ -278,30 +289,48 @@ func mergeStopHook(root map[string]any, exe string) {
 	}
 	stops, _ := hooks["Stop"].([]any)
 	cmd := exe + " hook stop"
-	found := false
+	claimed := false
+	var keptStops []any
 	for _, entry := range stops {
 		em, ok := entry.(map[string]any)
 		if !ok {
+			keptStops = append(keptStops, entry)
 			continue
 		}
 		inner, _ := em["hooks"].([]any)
+		var keptHooks []any
 		for _, h := range inner {
 			hm, ok := h.(map[string]any)
 			if !ok {
+				keptHooks = append(keptHooks, h)
 				continue
 			}
 			c, _ := hm["command"].(string)
-			if c == cmd {
-				found = true
+			if !isArbiterStopHook(c, exe) {
+				keptHooks = append(keptHooks, h)
+				continue
 			}
+			if claimed {
+				continue // drop duplicate arbiter-owned hooks
+			}
+			hm["command"] = cmd
+			claimed = true
+			keptHooks = append(keptHooks, hm)
 		}
+		if len(inner) > 0 {
+			if len(keptHooks) == 0 {
+				continue // entry only held dropped arbiter duplicates
+			}
+			em["hooks"] = keptHooks
+		}
+		keptStops = append(keptStops, em)
 	}
-	if !found {
-		stops = append(stops, map[string]any{
+	if !claimed {
+		keptStops = append(keptStops, map[string]any{
 			"hooks": []any{map[string]any{"type": "command", "command": cmd, "timeout": 10}},
 		})
 	}
-	hooks["Stop"] = stops
+	hooks["Stop"] = keptStops
 }
 
 func appendGitignore(path string, embedded bool) error {
@@ -327,7 +356,7 @@ func remove(root, exe string) error {
 	if err := removeSettings(filepath.Join(root, fileSettings), exe); err != nil {
 		return err
 	}
-	if err := removeGitignore(filepath.Join(root, fileGitignore)); err != nil {
+	if err := removeGitignore(filepath.Join(root, fileGitignore), isEmbeddedDeployment(root)); err != nil {
 		return err
 	}
 	for _, file := range []string{
@@ -373,7 +402,10 @@ func removeSettings(path, exe string) error {
 	perms, _ := root["permissions"].(map[string]any)
 	if perms != nil {
 		if deny, ok := perms["deny"].([]any); ok {
-			perms["deny"] = removeValues(deny, generatedDenyRules())
+			// Remove the full (embedded) set: every generated rule is
+			// arbiter-specific, so stripping rules a non-embedded init never
+			// added is harmless and cleans up mode switches.
+			perms["deny"] = removeValues(deny, generatedDenyRules(true))
 		}
 	}
 	removeStopHook(root, exe)
@@ -386,7 +418,6 @@ func removeStopHook(root map[string]any, exe string) {
 		return
 	}
 	stops, _ := hooks["Stop"].([]any)
-	cmd := exe + " hook stop"
 	var keptStops []any
 	for _, entry := range stops {
 		em, ok := entry.(map[string]any)
@@ -398,7 +429,12 @@ func removeStopHook(root map[string]any, exe string) {
 		var keptHooks []any
 		for _, h := range inner {
 			hm, ok := h.(map[string]any)
-			if !ok || hm["command"] != cmd {
+			if !ok {
+				keptHooks = append(keptHooks, h)
+				continue
+			}
+			command, _ := hm["command"].(string)
+			if !isArbiterStopHook(command, exe) {
 				keptHooks = append(keptHooks, h)
 			}
 		}
@@ -414,7 +450,10 @@ func removeStopHook(root map[string]any, exe string) {
 	}
 }
 
-func removeGitignore(path string) error {
+// removeGitignore strips only the lines this deployment mode would have
+// added (plus documented legacy lines): a non-embedded init never wrote
+// ".arbiter/engine/", so removing it would delete a user's own entry.
+func removeGitignore(path string, embedded bool) error {
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return nil
@@ -422,14 +461,28 @@ func removeGitignore(path string) error {
 	if err != nil {
 		return err
 	}
+	removable := append(generatedGitignoreLines(embedded), legacyGitignoreLines()...)
 	lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
 	var kept []string
 	for _, line := range lines {
-		if line != "" && !hasString(generatedGitignoreLines(true), line) {
+		if line != "" && !hasString(removable, line) {
 			kept = append(kept, line)
 		}
 	}
 	return atomicWrite(path, []byte(strings.Join(kept, "\n")+"\n"), 0o644)
+}
+
+// isEmbeddedDeployment reports whether init unpacked the embedded engine,
+// preferring the engines.json record and falling back to the unpacked engine
+// directory when the record is missing or unreadable.
+func isEmbeddedDeployment(root string) bool {
+	if record, err := readJSON(filepath.Join(root, fileEngines)); err == nil {
+		if mode, _ := record["mode"].(string); mode != "" {
+			return mode == "embedded"
+		}
+	}
+	info, err := os.Stat(filepath.Join(root, embeddedengine.RootRel))
+	return err == nil && info.IsDir()
 }
 
 func removeValues(values []any, remove []string) []any {
@@ -578,8 +631,11 @@ func defaultConfig() string {
 	return "# Arbiter engine config.\nfacts:\n  key_flags: []\n"
 }
 
+// defaultRecipes must stay parseable by the engine's strict RecipeBook v2
+// parser (engine/arbiter_engine/runs/recipes.py), which requires `targets:`
+// to be a sequence and rejects the mapping form `targets: {}`.
 func defaultRecipes() string {
-	return "# Arbiter RecipeBook v2.\ntargets: {}\nprofiles: {}\n"
+	return "# Arbiter RecipeBook v2.\ntargets: []\nprofiles: {}\n"
 }
 
 func now(opts Options) time.Time {
@@ -589,7 +645,12 @@ func now(opts Options) time.Time {
 	return time.Now().UTC()
 }
 
-func resolvePython(python string) string {
+// ResolvePython resolves the engine python interpreter using the deploy
+// resolution order: explicit value, then $ARBITER_ENGINE_PYTHON, then $PYTHON,
+// then "python3", with exec.LookPath applied to the winner when possible.
+// Other packages (e.g. internal/cli) reuse this so all subprocess call sites
+// agree on the interpreter.
+func ResolvePython(python string) string {
 	if python == "" {
 		python = os.Getenv("ARBITER_ENGINE_PYTHON")
 	}
@@ -657,14 +718,19 @@ func isNetworkFilesystem(kind string) bool {
 	return false
 }
 
-func generatedDenyRules() []string {
-	return []string{
+func generatedDenyRules(embedded bool) []string {
+	rules := []string{
 		"Read(.arbiter/playbook/**)",
 		"Read(.arbiter/match/**)",
 		"Read(.claude/agents/arbiter-*.md)",
-		"Edit(.arbiter/engine/**)",
-		"Write(.arbiter/engine/**)",
 	}
+	if embedded {
+		rules = append(rules,
+			"Edit(.arbiter/engine/**)",
+			"Write(.arbiter/engine/**)",
+		)
+	}
+	return rules
 }
 
 func generatedGitignoreLines(embedded bool) []string {
@@ -674,7 +740,6 @@ func generatedGitignoreLines(embedded bool) []string {
 		".arbiter/facts/",
 		".arbiter/runs/",
 		".arbiter/locks/",
-		".arbiter/match/status.json",
 		".claude/agents/arbiter-curator.md",
 		".claude/agents/arbiter-executor.md",
 	}
@@ -682,4 +747,12 @@ func generatedGitignoreLines(embedded bool) []string {
 		lines = append(lines, ".arbiter/engine/")
 	}
 	return lines
+}
+
+// legacyGitignoreLines are entries older arbiter versions appended but current
+// init no longer writes (".arbiter/match/" already covers status.json).
+// removeGitignore still strips them so repos initialized by older binaries do
+// not keep dead generated entries behind.
+func legacyGitignoreLines() []string {
+	return []string{".arbiter/match/status.json"}
 }

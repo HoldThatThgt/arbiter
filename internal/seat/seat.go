@@ -79,10 +79,27 @@ func (r *seatRuntime) Close() {
 	}
 }
 
+// queryEngine returns the seat's QUERY engine, respawning it first if a
+// previous call left it poisoned (cancellation, timeout, protocol fault).
+// r.query is set once before the server starts serving, so no runtime lock
+// is needed here; Respawn serializes on the engine's own mutex.
+func (r *seatRuntime) queryEngine(ctx context.Context) (*engineclient.Engine, error) {
+	if r.query == nil {
+		return nil, fmt.Errorf("query engine unavailable")
+	}
+	if err := respawnIfPoisoned(ctx, r.query); err != nil {
+		return nil, err
+	}
+	return r.query, nil
+}
+
 func (r *seatRuntime) execEngine(ctx context.Context) (*engineclient.Engine, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.exec != nil {
+		if err := respawnIfPoisoned(ctx, r.exec); err != nil {
+			return nil, err
+		}
 		return r.exec, nil
 	}
 	engine, err := engineclient.Spawn(ctx, engineclient.RoleExec, r.root)
@@ -91,6 +108,15 @@ func (r *seatRuntime) execEngine(ctx context.Context) (*engineclient.Engine, err
 	}
 	r.exec = engine
 	return engine, nil
+}
+
+// respawnIfPoisoned replaces a poisoned child so one failed call does not
+// permanently degrade every proxied engine tool for the seat's lifetime.
+func respawnIfPoisoned(ctx context.Context, engine *engineclient.Engine) error {
+	if !engine.Poisoned() {
+		return nil
+	}
+	return engine.Respawn(ctx)
 }
 
 func Run(ctx context.Context, root, seatName string) error {
@@ -196,9 +222,11 @@ func addEngineProxy(server *mcp.Server, root, seatName string, store *match.Stor
 			err = store.RequireActiveCapability("recipes")
 		}
 		if err == nil {
-			engine := runtime.query
+			var engine *engineclient.Engine
 			if isExecEngineTool(decl.Name) {
 				engine, err = runtime.execEngine(ctx)
+			} else {
+				engine, err = runtime.queryEngine(ctx)
 			}
 			if err == nil {
 				result, err = engine.CallTool(ctx, decl.Name, args, store.CurrentMeta())

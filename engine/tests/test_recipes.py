@@ -35,6 +35,25 @@ targets:
         with self.assertRaisesRegex(recipes.RecipeError, "binary must be relative"):
             recipes.parse(text)
 
+    def test_rejects_path_unsafe_target_ids(self):
+        template = """
+targets:
+  - id: {target_id}
+    binary: build/unit
+    harness:
+      kind: gtest
+    test_run:
+      cmd: [build/unit]
+"""
+        for bad_id in ("../evil", "a/b", "a\\b", ".hidden", "a..b", '"with space"'):
+            with self.subTest(target_id=bad_id):
+                with self.assertRaisesRegex(recipes.RecipeError, "target id"):
+                    recipes.parse(template.format(target_id=bad_id))
+        for good_id in ("unit", "unit-2", "unit_2", "unit.v2", "UNIT9"):
+            with self.subTest(target_id=good_id):
+                book = recipes.parse(template.format(target_id=good_id))
+                self.assertEqual(book.targets[0].id, good_id)
+
     def test_load_from_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "recipes.yaml"

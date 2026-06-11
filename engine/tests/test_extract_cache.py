@@ -19,14 +19,33 @@ class ExtractCacheKeyTest(unittest.TestCase):
             unit("src/a.c", flags=("-Iinclude", "-O0", "-g")),
             unit("src/b.c", flags=("-Iinclude", "-O0", "-g")),
         ]
-        asan = [
-            unit("src/a.c", flags=("-Iinclude", "-O2", "-g3", "-fsanitize=address")),
-            unit("src/b.c", flags=("-Iinclude", "-O2", "-g3", "-fsanitize=address")),
+        optimized = [
+            unit("src/a.c", flags=("-Iinclude", "-O2", "-g3", "-fprofile-generate")),
+            unit("src/b.c", flags=("-Iinclude", "-O2", "-g3", "-fprofile-generate")),
         ]
 
         self.assertEqual(
-            extract_cache.changed_sources(plain, asan),
+            extract_cache.changed_sources(plain, optimized),
             (),
+        )
+
+    def test_sanitizer_flags_always_participate_in_key(self):
+        plain = unit("src/a.c", flags=("-Iinclude",))
+        asan = unit("src/a.c", flags=("-Iinclude", "-fsanitize=address"))
+
+        self.assertNotEqual(
+            extract_cache.key_for_unit(plain),
+            extract_cache.key_for_unit(asan),
+        )
+        self.assertEqual(
+            extract_cache.changed_sources([plain], [asan]),
+            ("src/a.c",),
+        )
+        self.assertEqual(
+            extract_cache.clean_semantic_flags(
+                ("-Iinclude", "-O2", "-g3", "-fsanitize=address", "-fprofile-generate", "--coverage")
+            ),
+            ("-Iinclude", "-fsanitize=address"),
         )
 
     def test_feature_define_changes_only_units_with_that_semantic_input(self):
@@ -48,17 +67,17 @@ class ExtractCacheKeyTest(unittest.TestCase):
             ("src/uses_feature.c",),
         )
 
-    def test_key_flags_restores_instrumentation_flag_sensitivity(self):
-        plain = unit("src/a.c", flags=("-Iinclude",))
-        asan = unit("src/a.c", flags=("-Iinclude", "-fsanitize=address"))
+    def test_key_flags_restores_codegen_flag_sensitivity(self):
+        debug = unit("src/a.c", flags=("-Iinclude", "-O0"))
+        optimized = unit("src/a.c", flags=("-Iinclude", "-O2"))
 
         self.assertEqual(
-            extract_cache.key_for_unit(plain),
-            extract_cache.key_for_unit(asan),
+            extract_cache.key_for_unit(debug),
+            extract_cache.key_for_unit(optimized),
         )
         self.assertNotEqual(
-            extract_cache.key_for_unit(plain, key_flags=("-fsanitize=address",)),
-            extract_cache.key_for_unit(asan, key_flags=("-fsanitize=address",)),
+            extract_cache.key_for_unit(debug, key_flags=("-O0", "-O2")),
+            extract_cache.key_for_unit(optimized, key_flags=("-O0", "-O2")),
         )
 
     def test_toolchain_id_and_tu_content_are_keyed(self):

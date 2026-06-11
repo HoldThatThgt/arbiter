@@ -86,6 +86,12 @@ func TestParseGoalAndBudgetIssues(t *testing.T) {
 		{"timeout range", "[SetGoal]\nshell: a\ntimeout_s: 999999\n", IssueBadGoal},
 		{"goal after step", "[STEP] s\n[StepJob]\nx\n[CheckList]\n- a\n[Branch]\nsuccess: END\nfailure: END\n[SetGoal]\nshell: a\n", IssueBadGoal},
 		{"second goal", "[SetGoal]\nshell: a\n\n[SetGoal]\nshell: b\n", IssueBadGoal},
+		// 空 recipe 的 run 谓词会流入引擎 stub 分支并产出空洞 checkmate(#run-recipe)
+		{"run without recipe", "[SetGoal]\nrun:\ntests: [\"a\"]\nexpect: {\"overall\":\"passed\"}\n", IssueBadGoal},
+		// 以下三例与运行期 verify 校验对齐(internal/verify/typed.go)
+		{"run expect empty object", "[SetGoal]\nrun: unit\ntests: [\"a\"]\nexpect: {}\n", IssueBadGoal},
+		{"run tests empty entry", "[SetGoal]\nrun: unit\ntests: [\"\"]\nexpect: {\"overall\":\"passed\"}\n", IssueBadGoal},
+		{"mcp expect not array", "[SetGoal]\nmcp: s t\nexpect: {\"path\":\"x\",\"op\":\"exists\"}\n", IssueBadGoal},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

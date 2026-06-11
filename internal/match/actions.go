@@ -526,7 +526,11 @@ func (s *Store) CheckStepJob(ctx context.Context) (CheckStepJobOutput, error) {
 			return nil, CheckStepJobOutput{Complete: false, Reason: "state_changed", Goal: report}, nil
 		}
 		if pendingDigest != "" {
-			rememberGoalMemo(m, pendingDigest, report)
+			// TOCTOU 防线:goal 执行期间工作区可能已被改写(谓词本身也可能有副作用)。
+			// 重算摘要,与执行前一致才记入 memo;否则静默跳过(见 pollAsyncRunGoal)。
+			if digest, digestErr := s.goalMemoDigest(m, *pendingGoal); digestErr == nil && digest == pendingDigest {
+				rememberGoalMemo(m, pendingDigest, report)
+			}
 		}
 		s.append("goal_checked", map[string]any{"match_id": m.ID, "round": m.Current.Seq, "verdict": report.Verdict, "duration_ms": report.DurationMS, "failure": report.Failure})
 		v := evaluateRound(m) // goal 执行期间可能有重交,重算后裁决

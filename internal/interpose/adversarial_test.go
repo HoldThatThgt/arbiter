@@ -40,6 +40,36 @@ func TestInterposeAdversarialMatrix(t *testing.T) {
 		}
 	})
 
+	t.Run("quoted response file arguments", func(t *testing.T) {
+		// Mirrors the engine's shlex.split expansion in
+		// engine/arbiter_engine/shared/compile_db.py (_expand_response_files,
+		// exercised by engine/tests/test_compile_db.py): quoted paths with
+		// spaces must journal as single tokens.
+		work := t.TempDir()
+		fake, log := fakeCompiler(t, work, 0)
+		src := writeFile(t, work, "src/space dir/hello.c", "int hello;\n")
+		out := filepath.Join(work, "out dir", "hello.o")
+		rsp := writeFile(t, work, "quoted.rsp", fmt.Sprintf("-c \"%s\"\n-o '%s'\n", src, out))
+
+		runCC(t, bin, work, "quoted", fake, "@"+rsp)
+
+		entries := readJournal(t, work, "quoted")
+		if got := entries[0]["src"]; got != src {
+			t.Fatalf("src = %#v want %q", got, src)
+		}
+		if got := entries[0]["out"]; got != out {
+			t.Fatalf("out = %#v want %q", got, out)
+		}
+		argv := stringSlice(t, entries[0]["argv"])
+		want := []string{fake, "-c", src, "-o", out}
+		if strings.Join(argv, "\x00") != strings.Join(want, "\x00") {
+			t.Fatalf("journal argv = %#v want %#v", argv, want)
+		}
+		if !strings.Contains(readText(t, log), "@"+rsp) {
+			t.Fatalf("compiler did not receive original response arg")
+		}
+	})
+
 	t.Run("stacked ccache", func(t *testing.T) {
 		work := t.TempDir()
 		fake, log := fakeCompiler(t, work, 0)
@@ -163,20 +193,17 @@ func TestInterposeAdversarialMatrix(t *testing.T) {
 	})
 }
 
+// requireArbiterCC fails hard when the probe fails: arbiter cc is implemented,
+// so a broken probe is a regression, never a reason to skip the matrix.
 func requireArbiterCC(t *testing.T) string {
 	t.Helper()
 	bin := buildArbiter(t)
 	work := t.TempDir()
 	fake, _ := fakeCompiler(t, work, 0)
-	err := runCCErr(bin, work, "probe", fake, "--probe")
-	if err == nil {
-		return bin
+	if err := runCCErr(bin, work, "probe", fake, "--probe"); err != nil {
+		t.Fatalf("arbiter cc probe failed: %v", err)
 	}
-	if os.Getenv("ARBITER_REQUIRE_CC") == "1" {
-		t.Fatalf("arbiter cc is not implemented: %v", err)
-	}
-	t.Skipf("arbiter cc not implemented until #24: %v", err)
-	return ""
+	return bin
 }
 
 func buildArbiter(t *testing.T) string {

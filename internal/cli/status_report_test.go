@@ -38,6 +38,22 @@ func TestStatusComposesOnRead(t *testing.T) {
 	if !status.Facts.Published || status.Facts.SnapshotID != "s1" || status.Facts.Files != 1 {
 		t.Fatalf("facts = %#v", status.Facts)
 	}
+	if status.Runs.Rows != 0 {
+		t.Fatalf("runs = %#v", status.Runs)
+	}
+}
+
+func TestStatusCountsAsyncRuns(t *testing.T) {
+	root := t.TempDir()
+	writeRunDB(t, filepath.Join(root, ".arbiter", "runs", "state.sqlite"))
+
+	status, err := Status(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Runs.Rows != 2 {
+		t.Fatalf("runs = %#v, want 2 rows", status.Runs)
+	}
 }
 
 func TestReportJoinsJournalRuns(t *testing.T) {
@@ -52,14 +68,36 @@ func TestReportJoinsJournalRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The unrelated run r2 exists in async_runs but is outside match m1's
+	// journal, so the match-scoped report must exclude it.
 	if report.MatchID != "m1" || len(report.Runs) != 1 {
 		t.Fatalf("report = %#v", report)
 	}
-	if report.Runs[0].RunID != "r1" || report.Runs[0].Overall != "failed" {
+	row := report.Runs[0]
+	if row.RunID != "r1" || row.Overall != "failed" || row.State != "completed" {
+		t.Fatalf("runs = %#v", report.Runs)
+	}
+	if row.TargetID != "unit" || row.Profile != "debug" {
 		t.Fatalf("runs = %#v", report.Runs)
 	}
 	if len(report.TaskRuns) != 1 || report.TaskRuns[0].TaskID != "T1" || report.TaskRuns[0].Overall != "failed" {
 		t.Fatalf("task runs = %#v", report.TaskRuns)
+	}
+}
+
+func TestReportWithoutMatchListsAllAsyncRuns(t *testing.T) {
+	root := t.TempDir()
+	writeRunDB(t, filepath.Join(root, ".arbiter", "runs", "state.sqlite"))
+
+	report, err := Report(root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Runs) != 2 || report.Runs[0].RunID != "r1" || report.Runs[1].RunID != "r2" {
+		t.Fatalf("runs = %#v", report.Runs)
+	}
+	if report.Runs[1].State != "running" || report.Runs[1].Overall != "" {
+		t.Fatalf("runs = %#v", report.Runs)
 	}
 }
 
@@ -96,29 +134,39 @@ func writeJSONL(t *testing.T, path string, values ...map[string]any) {
 	}
 }
 
+// writeRunDB seeds the async_runs schema exactly as the engine creates it
+// (engine/arbiter_engine/runs/state.py _create_schema, written by
+// engine/arbiter_engine/runs/async_runs.py): r1 is a finished recipe run for
+// match m1's journal, r2 is an unrelated still-running run.
 func writeRunDB(t *testing.T, path string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	script := `
-import sqlite3, sys
+import json, sqlite3, sys
 conn = sqlite3.connect(sys.argv[1])
 conn.executescript("""
-CREATE TABLE run (
+CREATE TABLE async_runs (
   run_id TEXT PRIMARY KEY,
-  match_id TEXT,
-  task_id TEXT,
-  round INTEGER,
-  target_id TEXT NOT NULL,
-  profile TEXT NOT NULL,
   state TEXT NOT NULL,
-  overall TEXT,
+  spec_json TEXT NOT NULL,
+  result_json TEXT,
+  worker_pid INTEGER,
   started_at REAL NOT NULL,
-  finished_at REAL
+  updated_at REAL NOT NULL
 );
-INSERT INTO run VALUES ('r1','m1','T1',1,'unit','debug','completed','failed',1.0,2.0);
 """)
+spec = {"kind": "run", "recipe": "unit", "options": {"profiles": ["debug"]}}
+result = {"overall": "failed"}
+conn.execute(
+    "INSERT INTO async_runs VALUES (?,?,?,?,?,?,?)",
+    ("r1", "completed", json.dumps(spec), json.dumps(result), None, 1.0, 2.0),
+)
+conn.execute(
+    "INSERT INTO async_runs VALUES (?,?,?,?,?,?,?)",
+    ("r2", "running", json.dumps({"kind": "stub"}), None, 4242, 3.0, 3.0),
+)
 conn.commit()
 `
 	cmd := exec.Command("python3", "-c", script, path)

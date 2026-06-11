@@ -1,6 +1,8 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from arbiter_engine import errors
 from arbiter_engine.runs import recipes
@@ -76,6 +78,98 @@ class RunnerTest(unittest.TestCase):
 
             self.assertEqual(ctx.exception.data["kind"], "lock_timeout")
             self.assertTrue(ctx.exception.data["lock"].startswith("build/"))
+
+    def test_arbiter_bin_resolves_from_environment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            book = recipes.parse(
+                """
+targets:
+  - id: unit
+    binary: build/unit
+    harness:
+      kind: gtest
+    src_compile:
+      cmd: [/bin/sh, -c, "printf '%s' \\"$CC\\" > cc.txt"]
+"""
+            )
+
+            with mock.patch.dict(os.environ, {"ARBITER_BIN": "/abs/path/arbiter"}):
+                explicit = runner.resolve_arbiter_bin("/explicit/arbiter")
+                from_env = runner.resolve_arbiter_bin(None)
+                result = runner.run_stage(root, book, "unit", "src_compile")
+
+            self.assertEqual(explicit, "/explicit/arbiter")
+            self.assertEqual(from_env, "/abs/path/arbiter")
+            self.assertEqual(result.exit_code, 0)
+            self.assertEqual(
+                (root / "cc.txt").read_text(encoding="utf-8"),
+                "/abs/path/arbiter cc -- cc",
+            )
+
+        env = dict(os.environ)
+        env.pop("ARBITER_BIN", None)
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(runner.resolve_arbiter_bin(None), "arbiter")
+
+    def test_workdir_escape_raises_runner_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            root.mkdir()
+            book = recipes.parse(
+                """
+targets:
+  - id: unit
+    binary: build/unit
+    workdir: ../outside
+    harness:
+      kind: gtest
+    test_run:
+      cmd: [/bin/sh, -c, "true"]
+"""
+            )
+
+            with self.assertRaisesRegex(runner.RunnerError, "escapes the repo root"):
+                runner.run_stage(root, book, "unit", "test_run")
+            self.assertFalse((Path(tmp) / "outside").exists())
+
+    def test_stale_compile_journal_is_removed_before_compile_stage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            journal = root / ".arbiter" / "facts" / "run" / "compile-journal.unit-src_compile.jsonl"
+            journal.parent.mkdir(parents=True)
+            journal.write_text('{"miss":true,"stale":"previous-build"}\n', encoding="utf-8")
+            book = recipes.parse(
+                """
+targets:
+  - id: unit
+    binary: build/unit
+    harness:
+      kind: gtest
+    src_compile:
+      cmd: [/bin/sh, -c, "true"]
+    test_run:
+      cmd: [/bin/sh, -c, "true"]
+"""
+            )
+
+            result = runner.run_stage(root, book, "unit", "src_compile")
+
+            self.assertEqual(result.exit_code, 0)
+            self.assertFalse(journal.exists(), "stale journal must not survive a new build")
+
+    def test_non_compile_stage_keeps_existing_journals(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            journal = root / ".arbiter" / "facts" / "run" / "compile-journal.unit-src_compile.jsonl"
+            journal.parent.mkdir(parents=True)
+            journal.write_text('{"argv":["cc"]}\n', encoding="utf-8")
+            book = recipes.parse(RUNNER_RECIPE)
+
+            result = runner.run_stage(root, book, "unit", "test_run")
+
+            self.assertEqual(result.exit_code, 0)
+            self.assertTrue(journal.exists())
 
     def test_env_secret_names_are_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:

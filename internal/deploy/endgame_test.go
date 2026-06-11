@@ -17,17 +17,17 @@ import (
 )
 
 type endgameDemoResult struct {
-	InitOK                  bool
-	IntroOK                 bool
-	PlayOK                  bool
-	ProvenRecipes           int
-	SnapshotID              string
-	Openings                []string
-	MacroChecklist          []deploy.ChecklistItem
-	ASanReusedPlainSnapshot bool
-	TailMS                  int
-	TerminalMatch           string
-	TaskVerdicts            []string
+	InitOK              bool
+	IntroOK             bool
+	PlayOK              bool
+	ProvenRecipes       int
+	SnapshotID          string
+	Openings            []string
+	MacroChecklist      []deploy.ChecklistItem
+	ASanRekeyedSnapshot bool
+	TailMS              int
+	TerminalMatch       string
+	TaskVerdicts        []string
 }
 
 func TestEndgameDemoFixtureZeroCeremony(t *testing.T) {
@@ -45,8 +45,8 @@ func TestEndgameDemoFixtureZeroCeremony(t *testing.T) {
 	if len(demo.MacroChecklist) == 0 {
 		t.Fatal("intro macro scan produced no checklist evidence")
 	}
-	if !demo.ASanReusedPlainSnapshot {
-		t.Fatalf("asan profile did not reuse the plain snapshot extraction cache")
+	if !demo.ASanRekeyedSnapshot {
+		t.Fatalf("asan profile did not re-extract under its own cache key")
 	}
 	if demo.TailMS < 0 || demo.TailMS > 1000 {
 		t.Fatalf("tail_ms = %d, want fixture budget <= 1000", demo.TailMS)
@@ -96,23 +96,26 @@ func runEndgameDemoFixture(t *testing.T) endgameDemoResult {
 	if !probe.PlainPublished || !probe.ASanPublished {
 		t.Fatalf("intro probe did not publish facts: %#v", probe)
 	}
-	if !probe.SameSnapshot || probe.Extractions != 1 {
-		t.Fatalf("asan did not reuse plain extraction: %#v", probe)
+	// Sanitizer flags are semantic (they change preprocessor state), so the
+	// asan profile must publish its own snapshot from a fresh extraction
+	// instead of reusing the plain build's cache entries.
+	if probe.SameSnapshot || probe.Extractions != 2 {
+		t.Fatalf("asan unexpectedly reused plain extraction: %#v", probe)
 	}
 
 	verdicts, terminal := runFreeplayFix(t, root)
 	return endgameDemoResult{
-		InitOK:                  fileExists(filepath.Join(root, ".claude", "skills", "arbiter-intro", "SKILL.md")),
-		IntroOK:                 probe.PlainPublished && len(macros.Checklist) > 0,
-		PlayOK:                  terminal == match.StatusFinishedSuccess,
-		ProvenRecipes:           1,
-		SnapshotID:              probe.SnapshotID,
-		Openings:                deployedOpenings(t, root),
-		MacroChecklist:          macros.Checklist,
-		ASanReusedPlainSnapshot: probe.SameSnapshot && probe.Extractions == 1,
-		TailMS:                  probe.TailMS,
-		TerminalMatch:           terminal,
-		TaskVerdicts:            verdicts,
+		InitOK:              fileExists(filepath.Join(root, ".claude", "skills", "arbiter-intro", "SKILL.md")),
+		IntroOK:             probe.PlainPublished && len(macros.Checklist) > 0,
+		PlayOK:              terminal == match.StatusFinishedSuccess,
+		ProvenRecipes:       1,
+		SnapshotID:          probe.SnapshotID,
+		Openings:            deployedOpenings(t, root),
+		MacroChecklist:      macros.Checklist,
+		ASanRekeyedSnapshot: !probe.SameSnapshot && probe.Extractions == 2,
+		TailMS:              probe.TailMS,
+		TerminalMatch:       terminal,
+		TaskVerdicts:        verdicts,
 	}
 }
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import signal
@@ -51,16 +52,32 @@ def run_status(repo: Path, run_id: str) -> dict[str, Any]:
 
     db_path = _db_path(repo)
     _init_db(db_path)
-    with sqlite3.connect(str(db_path)) as conn:
+    with contextlib.closing(sqlite3.connect(str(db_path), timeout=30)) as conn:
         row = conn.execute(
-            "SELECT state, result_json FROM async_runs WHERE run_id = ?",
+            "SELECT state, result_json, worker_pid FROM async_runs WHERE run_id = ?",
             (run_id,),
         ).fetchone()
 
     if row is None:
         return {"run_id": run_id, "state": "unknown"}
 
-    state, result_json = row
+    state, result_json, worker_pid = row
+    if state == "running" and worker_pid is not None and not _pid_alive(int(worker_pid)):
+        # The worker died without recording a result; fail the row so callers
+        # are not wedged on a run that can never finish.
+        lost = {"overall": "failed", "failure": "worker_lost"}
+        if _finish_if_running(db_path, run_id, "failed", lost):
+            return {"run_id": run_id, "state": "failed", "result": lost}
+        # The worker won the race and finished after our read; re-read the row.
+        with contextlib.closing(sqlite3.connect(str(db_path), timeout=30)) as conn:
+            row = conn.execute(
+                "SELECT state, result_json, worker_pid FROM async_runs WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+        if row is None:
+            return {"run_id": run_id, "state": "unknown"}
+        state, result_json, worker_pid = row
+
     response: dict[str, Any] = {"run_id": run_id, "state": state}
     if result_json:
         response["result"] = json.loads(result_json)
@@ -99,6 +116,18 @@ def _validate_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
     recipe = spec.get("recipe", "")
     if recipe is not None and not isinstance(recipe, str):
         raise RPCError(-32602, "invalid params", {"kind": "invalid_params", "field": "recipe"})
+    if kind == "run" and (not isinstance(recipe, str) or not recipe.strip()):
+        # kind=="run" specs REQUIRE a non-empty recipe; stub execution must
+        # never be reachable from a recipe-less run spec.
+        raise RPCError(
+            -32602,
+            "invalid params",
+            {
+                "kind": "invalid_params",
+                "field": "recipe",
+                "detail": "kind=\"run\" requires a non-empty recipe",
+            },
+        )
     tests = spec.get("tests", [])
     if not isinstance(tests, list) or not all(isinstance(item, str) for item in tests):
         raise RPCError(-32602, "invalid params", {"kind": "invalid_params", "field": "tests"})
@@ -124,7 +153,7 @@ def _init_db(path: Path) -> None:
 
 def _insert_run(path: Path, run_id: str, spec: Mapping[str, Any]) -> None:
     now = time.time()
-    with sqlite3.connect(str(path), timeout=30) as conn:
+    with contextlib.closing(sqlite3.connect(str(path), timeout=30)) as conn:
         conn.execute(
             """
             INSERT INTO async_runs
@@ -171,22 +200,42 @@ def _spawn_worker(path: Path, run_id: str, spec: Mapping[str, Any]) -> None:
 def _worker_main(path: Path, run_id: str, spec: Mapping[str, Any]) -> None:
     _record_worker(path, run_id, os.getpid())
     try:
+        _arm_deadline(spec)
         result = _run_payload(path, run_id, spec)
+        signal.alarm(0)
         _finish(path, run_id, "completed", result)
         os._exit(0)
     except _PayloadTimeout:
+        signal.alarm(0)
         _finish(path, run_id, "failed", {"overall": "failed", "failure": "timeout"})
         os._exit(0)
     except BaseException as exc:
+        signal.alarm(0)
         _log_worker_error(path, run_id, exc)
         _finish(path, run_id, "failed", {"overall": "failed", "failure": type(exc).__name__})
         os._exit(1)
 
 
+def _arm_deadline(spec: Mapping[str, Any]) -> None:
+    """Arm a SIGALRM deadline so the spec timeout_s applies to every payload kind."""
+    timeout_s = spec.get("timeout_s")
+    if isinstance(timeout_s, int) and not isinstance(timeout_s, bool) and timeout_s > 0:
+        signal.signal(signal.SIGALRM, _deadline_expired)
+        signal.alarm(timeout_s)
+
+
+def _deadline_expired(signum: int, frame: Any) -> None:
+    del signum, frame
+    raise _PayloadTimeout()
+
+
 def _run_payload(path: Path, run_id: str, spec: Mapping[str, Any]) -> Mapping[str, Any]:
-    options = spec.get("options", {})
-    stub_requested = isinstance(options, Mapping) and "stub_result" in options
-    if spec.get("kind") == "run" and spec.get("recipe") and not stub_requested:
+    if spec.get("kind") == "run":
+        recipe = spec.get("recipe")
+        if not isinstance(recipe, str) or not recipe.strip():
+            # Defense in depth: _validate_spec rejects these at startRun time.
+            # A kind=="run" spec must never fall through to the stub path.
+            raise ValueError('kind="run" spec requires a non-empty recipe')
         return _run_recipe(path, run_id, spec)
     sleep_s = float(spec["sleep_ms"]) / 1000.0
     command = "import time; time.sleep(%r)" % sleep_s
@@ -232,7 +281,7 @@ def _repo_from_db(path: Path) -> Path:
 
 
 def _record_worker(path: Path, run_id: str, pid: int) -> None:
-    with sqlite3.connect(str(path), timeout=30) as conn:
+    with contextlib.closing(sqlite3.connect(str(path), timeout=30)) as conn:
         conn.execute(
             "UPDATE async_runs SET worker_pid = ?, updated_at = ? WHERE run_id = ?",
             (pid, time.time(), run_id),
@@ -241,7 +290,7 @@ def _record_worker(path: Path, run_id: str, pid: int) -> None:
 
 
 def _finish(path: Path, run_id: str, state: str, result: Mapping[str, Any]) -> None:
-    with sqlite3.connect(str(path), timeout=30) as conn:
+    with contextlib.closing(sqlite3.connect(str(path), timeout=30)) as conn:
         conn.execute(
             """
             UPDATE async_runs
@@ -251,6 +300,32 @@ def _finish(path: Path, run_id: str, state: str, result: Mapping[str, Any]) -> N
             (state, json.dumps(dict(result), sort_keys=True, separators=(",", ":")), time.time(), run_id),
         )
         conn.commit()
+
+
+def _finish_if_running(path: Path, run_id: str, state: str, result: Mapping[str, Any]) -> bool:
+    with contextlib.closing(sqlite3.connect(str(path), timeout=30)) as conn:
+        cursor = conn.execute(
+            """
+            UPDATE async_runs
+            SET state = ?, result_json = ?, updated_at = ?
+            WHERE run_id = ? AND state = 'running'
+            """,
+            (state, json.dumps(dict(result), sort_keys=True, separators=(",", ":")), time.time(), run_id),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def _kill_process_group(pid: int) -> None:

@@ -173,6 +173,26 @@ success: END
 failure: END
 `,
 		},
+		{
+			name: "run verify without recipe",
+			body: `---
+name: n
+description: d
+---
+[Verify] repro
+run:
+tests: ["Suite.Case"]
+expect: {"overall":"passed"}
+[STEP] a
+[StepJob]
+job
+[CheckList]
+- item
+[Branch]
+success: END
+failure: END
+`,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

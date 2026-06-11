@@ -83,6 +83,91 @@ class RunToolsTest(unittest.TestCase):
             self.assertEqual(response["error"]["data"]["kind"], "invalid_args")
             self.assertEqual(response["error"]["data"]["bad_options"], ["surprise"])
 
+    def test_force_recompile_is_no_longer_accepted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fake_gtest(root / "fake_gtest.sh", failed=False)
+            self.write_recipe(root)
+
+            response = response_for(
+                tool_call("run", {"recipe": "unit", "options": {"force_recompile": True}}),
+                root,
+            )
+
+            self.assertEqual(response["error"]["data"]["kind"], "invalid_args")
+            self.assertEqual(response["error"]["data"]["bad_options"], ["force_recompile"])
+
+    def test_unknown_recipe_is_invalid_args_not_a_crash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fake_gtest(root / "fake_gtest.sh", failed=False)
+            self.write_recipe(root)
+
+            response = response_for(tool_call("run", {"recipe": "no-such-recipe"}), root)
+
+            self.assertEqual(response["error"]["code"], -32602)
+            self.assertEqual(response["error"]["data"]["kind"], "invalid_args")
+            self.assertEqual(response["error"]["data"]["field"], "recipe")
+            self.assertIn("no-such-recipe", response["error"]["data"]["detail"])
+
+    def test_fail_fast_is_passed_to_the_gtest_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fake_gtest(root / "fake_gtest.sh", failed=False)
+            self.write_recipe(root)
+
+            response = response_for(
+                tool_call(
+                    "run",
+                    {
+                        "recipe": "unit",
+                        "options": {"harness_options": {"gtest": {"fail_fast": True}}},
+                    },
+                ),
+                root,
+            )
+
+            self.assertFalse(response["result"]["isError"])
+            self.assertIn(
+                "--gtest_fail_fast", (root / "args.log").read_text(encoding="utf-8")
+            )
+
+    def test_gtest_timeout_s_bounds_the_test_run_stage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            slow = root / "slow_gtest.sh"
+            slow.write_text("#!/bin/sh\nsleep 5\n", encoding="utf-8")
+            slow.chmod(0o755)
+            recipe = root / ".arbiter" / "recipes.yaml"
+            recipe.parent.mkdir(parents=True)
+            recipe.write_text(
+                f"""
+targets:
+  - id: unit
+    binary: slow_gtest.sh
+    harness:
+      kind: gtest
+    test_run:
+      cmd: [{str(slow)}]
+""",
+                encoding="utf-8",
+            )
+
+            response = response_for(
+                tool_call(
+                    "run",
+                    {
+                        "recipe": "unit",
+                        "options": {"harness_options": {"gtest": {"timeout_s": 1}}},
+                    },
+                ),
+                root,
+            )
+
+            result = response["result"]
+            self.assertEqual(result["overall"], "failed")
+            self.assertEqual(result["failure"], "timeout")
+
     def write_recipe(self, root):
         recipe = root / ".arbiter" / "recipes.yaml"
         recipe.parent.mkdir(parents=True)

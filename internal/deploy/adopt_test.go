@@ -89,6 +89,44 @@ func TestAdoptIsIdempotentAndDoesNotRewriteChecklistFiles(t *testing.T) {
 	}
 }
 
+func TestAdoptCipherConfigHonorsInlineComments(t *testing.T) {
+	root := t.TempDir()
+	// The old hand-rolled parser fed "8 # eight workers" to Atoi (dropping
+	// the setting) and refused "false # disabled" as a bool.
+	writeText(t, filepath.Join(root, ".cipher", "config.yml"),
+		"extractor:\n  worker_count: 8 # eight workers\nincremental:\n  enabled: false # disabled for now\n")
+	if _, err := Adopt(root); err != nil {
+		t.Fatal(err)
+	}
+	config := readText(t, filepath.Join(root, ".arbiter", "config.yml"))
+	for _, want := range []string{"pool: 8", "incremental: false"} {
+		if !strings.Contains(config, want) {
+			t.Fatalf("config missing %q:\n%s", want, config)
+		}
+	}
+}
+
+func TestAdoptCipherConfigDoesNotLeakTabNestedSections(t *testing.T) {
+	root := t.TempDir()
+	// Tabs are invalid YAML indentation. The old parser misread the
+	// tab-indented "extractor:" as a top-level section and leaked
+	// worker_count out of a foreign subtree; a real YAML parser must not.
+	writeText(t, filepath.Join(root, ".cipher", "config.yml"),
+		"wrapper:\n\textractor:\n\t\tworker_count: 9\n")
+	if _, err := Adopt(root); err != nil {
+		t.Fatal(err)
+	}
+	config := readText(t, filepath.Join(root, ".arbiter", "config.yml"))
+	if strings.Contains(config, "pool:") {
+		t.Fatalf("tab-nested worker_count leaked into config:\n%s", config)
+	}
+	for _, want := range []string{"facts:", "# wrapper:"} {
+		if !strings.Contains(config, want) {
+			t.Fatalf("config missing %q:\n%s", want, config)
+		}
+	}
+}
+
 func writeText(t *testing.T, path, text string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

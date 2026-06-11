@@ -53,7 +53,11 @@ func (s *Store) pollAsyncRunGoal(ctx context.Context, pending GoalPending) (Chec
 		}
 		m.GoalPending = nil
 		if pending.MemoDigest != "" {
-			rememberGoalMemo(m, pending.MemoDigest, report)
+			// TOCTOU 防线:run 执行期间工作区可能已被改写。重算摘要,
+			// 只有与执行前一致(工作区未变)才记入 memo;否则静默跳过。
+			if digest, digestErr := s.goalMemoDigest(m, pending.Spec); digestErr == nil && digest == pending.MemoDigest {
+				rememberGoalMemo(m, pending.MemoDigest, report)
+			}
 		}
 		s.append("goal_checked", map[string]any{"match_id": m.ID, "round": m.Current.Seq, "verdict": report.Verdict, "run_id": pending.RunID, "failure": report.Failure})
 		v := evaluateRound(m)
@@ -97,14 +101,26 @@ func (s *Store) pollRunGoal(ctx context.Context, pending GoalPending) (*GoalRepo
 	if err != nil {
 		return nil, false, err
 	}
-	if status.State == "running" {
+	return resolveRunGoalStatus(pending, status)
+}
+
+// resolveRunGoalStatus 把引擎的 runStatus 翻译成裁决结论。
+// 只有终态(completed/failed)产出 GoalReport;"unknown"(引擎查无此 run 行)
+// 或任何未识别状态都按引擎不可用返回错误 —— 由调用方包装成可重试的
+// engine_unavailable ToolError,GoalPending 原样保留,绝不伪造 Overall="failed" 定局。
+func resolveRunGoalStatus(pending GoalPending, status engineclient.RunStatus) (*GoalReport, bool, error) {
+	switch status.State {
+	case "running":
 		return nil, true, nil
+	case "completed", "failed":
+		report, err := runGoalReport(pending, status)
+		if err != nil {
+			return nil, false, err
+		}
+		return report, false, nil
+	default:
+		return nil, false, fmt.Errorf("engine run %s reported unrecognized state %q", pending.RunID, status.State)
 	}
-	report, err := runGoalReport(pending, status)
-	if err != nil {
-		return nil, false, err
-	}
-	return report, false, nil
 }
 
 func engineRunSpec(spec playbook.ResultSpec) map[string]any {
@@ -143,6 +159,7 @@ func runGoalReport(pending GoalPending, status engineclient.RunStatus) (*GoalRep
 		Failed           int                      `json:"failed"`
 		FirstFailureName string                   `json:"first_failure_name"`
 		TestResults      map[string]string        `json:"test_results"`
+		PerTest          []verify.RunPerTest      `json:"per_test"`
 		Facts            *verify.RunFactsEvidence `json:"facts"`
 		IsError          *bool                    `json:"isError"`
 		IsErrorSnake     *bool                    `json:"is_error"`
@@ -164,6 +181,20 @@ func runGoalReport(pending GoalPending, status engineclient.RunStatus) (*GoalRep
 	if isError == nil {
 		isError = payload.IsErrorSnake
 	}
+	// 规范形态是引擎的 per_test 数组(gtest.py RunResult.to_json):
+	// 摊平成 expect.test.name 使用的 "Suite.Name" → status;legacy 的
+	// test_results 键仍接受,且按原行为覆盖同名条目。
+	testResults := verify.RunTestResults(payload.PerTest)
+	if testResults == nil {
+		testResults = payload.TestResults
+	} else {
+		for name, result := range payload.TestResults {
+			testResults[name] = result
+		}
+	}
+	if payload.FirstFailureName == "" {
+		payload.FirstFailureName = verify.FirstRunFailure(payload.PerTest)
+	}
 	expect, err := verify.ParseRunExpect(pending.Spec.Expect)
 	if err != nil {
 		return nil, err
@@ -174,7 +205,7 @@ func runGoalReport(pending GoalPending, status engineclient.RunStatus) (*GoalRep
 		Passed:           payload.Passed,
 		Failed:           payload.Failed,
 		FirstFailureName: payload.FirstFailureName,
-		TestResults:      payload.TestResults,
+		TestResults:      testResults,
 		Facts:            payload.Facts,
 	})
 	verdict := TaskFail

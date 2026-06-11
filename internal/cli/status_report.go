@@ -8,7 +8,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+
+	"github.com/HoldThatThgt/arbiter/internal/deploy"
 )
 
 const (
@@ -75,7 +78,7 @@ func Status(root string) (StatusResult, error) {
 	if match == nil {
 		match = map[string]any{"status": "absent"}
 	}
-	runs, err := readRunRows(root, "")
+	rows, err := readRunCount(root)
 	if err != nil {
 		return StatusResult{}, err
 	}
@@ -84,7 +87,7 @@ func Status(root string) (StatusResult, error) {
 		Match:  match,
 		Engine: readEngineStatus(root),
 		Facts:  readFactsStatus(root),
-		Runs:   RunsStatus{Rows: len(runs)},
+		Runs:   RunsStatus{Rows: rows},
 	}, nil
 }
 
@@ -93,7 +96,7 @@ func Report(root, matchID string) (ReportResult, error) {
 	if err != nil {
 		return ReportResult{}, err
 	}
-	runs, err := readRunRows(root, matchID)
+	runs, err := readRunRows(root)
 	if err != nil {
 		return ReportResult{}, err
 	}
@@ -102,11 +105,13 @@ func Report(root, matchID string) (ReportResult, error) {
 		byRunID[row.RunID] = row
 	}
 	var taskRuns []TaskRun
+	eventRunIDs := map[string]bool{}
 	for _, event := range events {
 		runID, _ := event["run_id"].(string)
 		if runID == "" {
 			continue
 		}
+		eventRunIDs[runID] = true
 		row, ok := byRunID[runID]
 		if !ok {
 			continue
@@ -124,6 +129,17 @@ func Report(root, matchID string) (ReportResult, error) {
 			Overall: row.Overall,
 			State:   row.State,
 		})
+	}
+	if matchID != "" {
+		// async_runs has no match column, so scope runs to the match via the
+		// journal's run_id references.
+		var scoped []RunRow
+		for _, row := range runs {
+			if eventRunIDs[row.RunID] {
+				scoped = append(scoped, row)
+			}
+		}
+		runs = scoped
 	}
 	return ReportResult{
 		Schema:   ReportSchema,
@@ -218,29 +234,86 @@ func readJournal(path, matchID string) ([]map[string]any, error) {
 	return events, scanner.Err()
 }
 
-func readRunRows(root, matchID string) ([]RunRow, error) {
-	dbPath := filepath.Join(root, ".arbiter", "runs", "state.sqlite")
+func runDBPath(root string) string {
+	return filepath.Join(root, ".arbiter", "runs", "state.sqlite")
+}
+
+// readRunCount is the lightweight status-path helper: it asks sqlite for a
+// COUNT(*) instead of materializing every async run row.
+func readRunCount(root string) (int, error) {
+	dbPath := runDBPath(root)
+	if _, err := os.Stat(dbPath); errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	script := `
+import sqlite3, sys
+conn = sqlite3.connect(sys.argv[1])
+try:
+    row = conn.execute("SELECT COUNT(*) FROM async_runs").fetchone()
+    print(row[0] if row else 0)
+except sqlite3.Error:
+    print(0)
+`
+	cmd := exec.Command(pythonBin(), "-c", script, dbPath)
+	output, err := cmd.Output()
+	if err != nil {
+		return 0, err
+	}
+	count, err := strconv.Atoi(strings.TrimSpace(string(output)))
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+// readRunRows reads the async_runs table, which is the table the engine
+// actually writes for arbiter/startRun goals (see
+// engine/arbiter_engine/runs/async_runs.py). The table carries run_id, state,
+// spec_json, and result_json; overall comes from result_json, target/profile
+// from the spec's recipe/options where present, and fields the source lacks
+// (match, task, round) stay empty — Report correlates runs to a match via
+// journal run_ids instead.
+func readRunRows(root string) ([]RunRow, error) {
+	dbPath := runDBPath(root)
 	if _, err := os.Stat(dbPath); errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	script := `
-import json, os, sqlite3, sys
-db, match_id = sys.argv[1], sys.argv[2]
-if not os.path.exists(db):
-    print("[]")
-    raise SystemExit(0)
-conn = sqlite3.connect(db)
+import json, sqlite3, sys
+conn = sqlite3.connect(sys.argv[1])
 conn.row_factory = sqlite3.Row
 try:
-    if match_id:
-        rows = conn.execute("SELECT run_id, match_id, task_id, round, target_id, profile, state, overall FROM run WHERE match_id = ? ORDER BY started_at, run_id", (match_id,)).fetchall()
-    else:
-        rows = conn.execute("SELECT run_id, match_id, task_id, round, target_id, profile, state, overall FROM run ORDER BY started_at, run_id").fetchall()
+    rows = conn.execute("SELECT run_id, state, spec_json, result_json FROM async_runs ORDER BY started_at, run_id").fetchall()
 except sqlite3.Error:
     rows = []
-print(json.dumps([dict(row) for row in rows], separators=(",", ":")))
+out = []
+for row in rows:
+    item = {"run_id": row["run_id"], "state": row["state"]}
+    try:
+        spec = json.loads(row["spec_json"]) if row["spec_json"] else {}
+    except ValueError:
+        spec = {}
+    if isinstance(spec, dict):
+        recipe = spec.get("recipe")
+        if isinstance(recipe, str):
+            item["target_id"] = recipe
+        options = spec.get("options")
+        if isinstance(options, dict):
+            profiles = options.get("profiles")
+            if isinstance(profiles, list) and all(isinstance(p, str) for p in profiles):
+                item["profile"] = ",".join(profiles)
+    try:
+        result = json.loads(row["result_json"]) if row["result_json"] else {}
+    except ValueError:
+        result = {}
+    if isinstance(result, dict):
+        overall = result.get("overall")
+        if isinstance(overall, str):
+            item["overall"] = overall
+    out.append(item)
+print(json.dumps(out, separators=(",", ":")))
 `
-	cmd := exec.Command(pythonBin(), "-c", script, dbPath, matchID)
+	cmd := exec.Command(pythonBin(), "-c", script, dbPath)
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -253,9 +326,6 @@ print(json.dumps([dict(row) for row in rows], separators=(",", ":")))
 	for _, item := range raw {
 		rows = append(rows, RunRow{
 			RunID:    stringValue(item["run_id"]),
-			MatchID:  stringValue(item["match_id"]),
-			TaskID:   stringValue(item["task_id"]),
-			Round:    intValue(item["round"]),
 			TargetID: stringValue(item["target_id"]),
 			Profile:  stringValue(item["profile"]),
 			State:    stringValue(item["state"]),
@@ -265,11 +335,10 @@ print(json.dumps([dict(row) for row in rows], separators=(",", ":")))
 	return rows, nil
 }
 
+// pythonBin shares deploy's interpreter resolution order:
+// ARBITER_ENGINE_PYTHON, then PYTHON, then python3, via exec.LookPath.
 func pythonBin() string {
-	if python := os.Getenv("PYTHON"); python != "" {
-		return python
-	}
-	return "python3"
+	return deploy.ResolvePython("")
 }
 
 func stringValue(value any) string {
@@ -278,17 +347,6 @@ func stringValue(value any) string {
 	}
 	text, _ := value.(string)
 	return text
-}
-
-func intValue(value any) int {
-	switch n := value.(type) {
-	case float64:
-		return int(n)
-	case int:
-		return n
-	default:
-		return 0
-	}
 }
 
 func JSON(value any) ([]byte, error) {

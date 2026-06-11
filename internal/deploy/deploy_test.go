@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -287,6 +288,87 @@ func TestRemoveRoundTripPreservesForeignContent(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(root, path)); !os.IsNotExist(err) {
 			t.Fatalf("%s still exists or stat failed: %v", path, err)
 		}
+	}
+}
+
+// TestDefaultRecipesParsesWithEngineParser proves the default recipes file is
+// valid for the engine's strict RecipeBook v2 parser, which rejects the
+// mapping form `targets: {}` with "targets must be a sequence".
+func TestDefaultRecipesParsesWithEngineParser(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	script := `
+import sys
+sys.path.insert(0, sys.argv[1])
+from arbiter_engine.runs import recipes
+recipes.parse(sys.stdin.read())
+`
+	cmd := exec.Command(python, "-c", script, filepath.Join("..", "..", "engine"))
+	cmd.Stdin = strings.NewReader(defaultRecipes())
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("engine parser rejected defaultRecipes(): %v\n%s", err, out)
+	}
+}
+
+func TestGitignoreLifecycleNonEmbedded(t *testing.T) {
+	root := t.TempDir()
+	// ".arbiter/engine/" is the user's own entry here (non-embedded init
+	// never writes it); ".arbiter/match/status.json" mimics a line appended
+	// by an older arbiter version.
+	writeText(t, filepath.Join(root, fileGitignore), "node_modules/\n.arbiter/engine/\n.arbiter/match/status.json\n")
+	if _, err := InitWithOptions(root, testInitOptions()); err != nil {
+		t.Fatal(err)
+	}
+	after := readText(t, filepath.Join(root, fileGitignore))
+	if strings.Count(after, ".arbiter/match/status.json") != 1 {
+		t.Fatalf("init duplicated or dropped pre-existing legacy line:\n%s", after)
+	}
+	if !strings.Contains(after, ".arbiter/match/\n") {
+		t.Fatalf("init did not append generated lines:\n%s", after)
+	}
+
+	opts := testInitOptions()
+	opts.Remove = true
+	if _, err := InitWithOptions(root, opts); err != nil {
+		t.Fatal(err)
+	}
+	got := readText(t, filepath.Join(root, fileGitignore))
+	// Generated and legacy lines go; the user's ".arbiter/engine/" stays
+	// because the non-embedded deployment never owned it.
+	if got != "node_modules/\n.arbiter/engine/\n" {
+		t.Fatalf("gitignore after remove = %q", got)
+	}
+}
+
+func TestGitignoreInitOmitsRedundantStatusLine(t *testing.T) {
+	root := t.TempDir()
+	if _, err := InitWithOptions(root, testInitOptions()); err != nil {
+		t.Fatal(err)
+	}
+	got := readText(t, filepath.Join(root, fileGitignore))
+	if strings.Contains(got, ".arbiter/match/status.json") {
+		t.Fatalf("init wrote redundant status.json line (covered by .arbiter/match/):\n%s", got)
+	}
+}
+
+func TestGitignoreRemoveStripsEmbeddedEngineLine(t *testing.T) {
+	root := t.TempDir()
+	opts := testInitOptions()
+	opts.EmbeddedEngine = true
+	if _, err := InitWithOptions(root, opts); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(readText(t, filepath.Join(root, fileGitignore)), ".arbiter/engine/\n") {
+		t.Fatal("embedded init did not append .arbiter/engine/")
+	}
+	opts.Remove = true
+	if _, err := InitWithOptions(root, opts); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(readText(t, filepath.Join(root, fileGitignore)), ".arbiter/engine/") {
+		t.Fatal("embedded remove kept .arbiter/engine/")
 	}
 }
 

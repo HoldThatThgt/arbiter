@@ -38,11 +38,18 @@ user path; gear-up is a templated convention in every opening playbook.
 ## ADR-0005 — Two caches, two keys (2026-06-11, accepted)
 Build cache keys on full flags + profile. Extraction cache keys on (TU content, include-closure
 content, allowlist-cleaned semantic flags, toolchain id) — the allowlist strips codegen-only
-flags (`-O*`, `-g*`, `-fsanitize=*`, `--coverage`, `-fprofile-*`), so profile switches re-extract
-nothing and feature-flag changes re-extract only their include-closure cone. Known blind spot:
-compiler-injected instrumentation macros (`__SANITIZE_*`, `__has_feature(*_sanitizer)`);
-`/arbiter-intro` runs a whole-token scan and recommends `facts.key_flags` — user-confirmed,
-never silently written into committed config. **Consequences:** memoization/cache digests fold
+flags (`-O*`, `-g*`, `--coverage`, `-fprofile-*`), so profile switches re-extract nothing.
+`-fsanitize=*` is always kept in the key: sanitizers inject preprocessor state (`__SANITIZE_*`,
+`__has_feature(*_sanitizer)`), so a sanitizer build never silently reuses plain-build facts.
+`facts.key_flags` remains the user-confirmed opt-in for restoring sensitivity to the remaining
+stripped dimensions (`-O*`/`-g*`); `/arbiter-intro` recommends it, never silently written into
+committed config. Known blind spot: per-TU include closures are not yet wired — the publish
+pipeline over-approximates with a single repo-wide headers digest (census walk of
+`*.h/*.hh/*.hpp/*.hxx/*.inl` under root, excluding `.git`/`.arbiter`) folded into every unit's
+include closure as `__repo_headers__`, so ANY header edit invalidates ALL cached units and
+changes the snapshot id. That is correct but coarse: feature-flag header changes re-extract
+everything rather than only their include-closure cone, until real per-TU closures land.
+**Consequences:** memoization/cache digests fold
 in toolchain hash, goal-spec hash, recipe-book hash; goal memoization ships default-off.
 
 ## ADR-0006 — Typed ResultSpec kinds run/fact; deny-self mcp guard (2026-06-11, accepted)

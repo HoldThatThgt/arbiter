@@ -106,7 +106,80 @@ targets:
             self.assertEqual(result.failure, "missing_result_file")
             self.assertEqual(result.per_test, ())
 
-    def test_src_compile_publishes_facts_and_profile_switch_hits_extract_cache(self):
+    def test_test_run_timeout_returns_failed_result_instead_of_raising(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            slow = root / "slow_gtest.sh"
+            slow.write_text("#!/bin/sh\nsleep 5\n", encoding="utf-8")
+            slow.chmod(0o755)
+            book = recipes.parse(
+                f"""
+targets:
+  - id: slow
+    binary: slow_gtest.sh
+    harness:
+      kind: gtest
+    test_run:
+      cmd: [{str(slow)}]
+      timeout_s: 1
+"""
+            )
+
+            result = gtest.run_target(root, book, "slow", run_id="r-timeout")
+
+            self.assertEqual(result.overall, "failed")
+            self.assertEqual(result.failure, "timeout")
+            self.assertIn("timeout", result.stderr_tail)
+
+    def test_harness_timeout_override_beats_stage_timeout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            slow = root / "slow_gtest.sh"
+            slow.write_text("#!/bin/sh\nsleep 5\n", encoding="utf-8")
+            slow.chmod(0o755)
+            book = recipes.parse(
+                f"""
+targets:
+  - id: slow
+    binary: slow_gtest.sh
+    harness:
+      kind: gtest
+    test_run:
+      cmd: [{str(slow)}]
+      timeout_s: 600
+"""
+            )
+
+            result = gtest.run_target(root, book, "slow", run_id="r-override", timeout_s=1)
+
+            self.assertEqual(result.overall, "failed")
+            self.assertEqual(result.failure, "timeout")
+
+    def test_workdir_escape_is_a_failed_result_not_a_crash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            root.mkdir()
+            book = recipes.parse(
+                """
+targets:
+  - id: unit
+    binary: build/unit
+    workdir: ../outside
+    harness:
+      kind: gtest
+    test_run:
+      cmd: [build/unit]
+"""
+            )
+
+            result = gtest.run_target(root, book, "unit", run_id="r-escape")
+
+            self.assertEqual(result.overall, "failed")
+            self.assertEqual(result.failure, "workdir_escape")
+            self.assertIn("escapes the repo root", result.stderr_tail)
+            self.assertFalse((Path(tmp) / "outside").exists())
+
+    def test_src_compile_publishes_facts_and_sanitizer_profile_reextracts(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "src").mkdir()
@@ -165,7 +238,11 @@ targets:
             self.assertEqual(asan.overall, "passed")
             self.assertTrue(plain.facts["published"])
             self.assertTrue(asan.to_json()["facts"]["published"])
-            self.assertEqual(extracted, [str((root / "src" / "a.c").resolve())])
+            # -fsanitize=* is semantic (sanitizer macros change preprocessor
+            # state), so the asan profile must re-extract rather than hit the
+            # plain-build extract cache (ADR-0005).
+            source = str((root / "src" / "a.c").resolve())
+            self.assertEqual(extracted, [source, source])
             self.assertIn("-fsanitize=address", (root / "cflags.log").read_text(encoding="utf-8"))
 
     def write_fake_arbiter(self, path):

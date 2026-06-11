@@ -39,6 +39,44 @@ type RunFactsEvidence struct {
 	SnapshotID string `json:"snapshot_id,omitempty"`
 }
 
+// RunPerTest 是引擎 run 结果 per_test 数组的一项
+// (engine/arbiter_engine/runs/gtest.py RunResult.to_json,只取裁决需要的字段)。
+type RunPerTest struct {
+	Suite  string `json:"suite"`
+	Name   string `json:"name"`
+	Status string `json:"status"`
+}
+
+// RunTestResults 把引擎 per_test 数组摊平成 expect.test.name 使用的
+// "Suite.Name" → status 映射(与 gtest 的 'Suite.Case' 命名一致)。
+func RunTestResults(perTest []RunPerTest) map[string]string {
+	if len(perTest) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(perTest))
+	for _, test := range perTest {
+		out[runTestKey(test)] = test.Status
+	}
+	return out
+}
+
+// FirstRunFailure 返回 per_test 中第一个 status=="failed" 的 "Suite.Name";无失败时为空。
+func FirstRunFailure(perTest []RunPerTest) string {
+	for _, test := range perTest {
+		if test.Status == "failed" {
+			return runTestKey(test)
+		}
+	}
+	return ""
+}
+
+func runTestKey(test RunPerTest) string {
+	if test.Suite == "" {
+		return test.Name
+	}
+	return test.Suite + "." + test.Name
+}
+
 type FactEvidence struct {
 	SnapshotID   string `json:"snapshot_id"`
 	OverlayID    string `json:"overlay_id,omitempty"`
@@ -286,6 +324,10 @@ func CompareRun(expect RunExpect, ev RunEvidence) (bool, []ClauseReport) {
 		if ev.Facts != nil {
 			actual = ev.Facts.Published
 			ok = ev.Facts.Published == *expect.Facts.Published
+		} else {
+			// 证据没有 facts 节 ⇒ 未发布:published:false 应当通过,
+			// published:true 仍然失败;Actual 记为 nil(缺席)。
+			ok = !*expect.Facts.Published
 		}
 		report = append(report, ClauseReport{
 			Path: "facts.published", Op: "eq",
@@ -388,6 +430,11 @@ func validateTyped(spec ResultSpec) error {
 	case "run":
 		if err := rejectForeign(spec, "run", foreignShellMCP, foreignFact); err != nil {
 			return err
+		}
+		// 空 recipe 的 run 谓词会落入引擎的 stub 分支并产出空洞的 checkmate;
+		// 引擎在 startRun 同样拒绝(async_runs._validate_spec),这里提交期先封死。
+		if strings.TrimSpace(spec.Recipe) == "" {
+			return badResult("run spec requires recipe")
 		}
 		if len(spec.Tests) == 0 {
 			return badResult("run spec requires tests[]")

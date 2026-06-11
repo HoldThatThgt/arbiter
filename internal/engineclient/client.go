@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -26,9 +27,18 @@ const (
 	RoleQuery EngineRole = "QUERY"
 	RoleExec  EngineRole = "EXEC"
 
+	// defaultCallTimeout bounds calls whose parent context carries no
+	// deadline. Override per process with callTimeoutEnv.
 	defaultCallTimeout = 600 * time.Second
 	maxCallTimeout     = 3600 * time.Second
 	closeGrace         = 5 * time.Second
+
+	// callTimeoutEnv (ARBITER_ENGINE_CALL_TIMEOUT_S) overrides
+	// defaultCallTimeout with a positive integer number of seconds, for
+	// recipe stages that legitimately run longer than 600s. Invalid or
+	// absent values keep the default. Calls whose parent context already
+	// has a deadline are unaffected (maxCallTimeout still caps those).
+	callTimeoutEnv = "ARBITER_ENGINE_CALL_TIMEOUT_S"
 )
 
 var (
@@ -194,6 +204,16 @@ func spawnCommand(ctx context.Context, role EngineRole, repo string, argv []stri
 }
 
 func spawnConfigured(ctx context.Context, cfg spawnConfig) (*Engine, error) {
+	// ARBITER_BIN tells engine-side compile stages where the arbiter binary
+	// lives so they can build CC='<arbiter> cc -- <real>' interposition
+	// without relying on PATH. Left unset when the executable path is
+	// unknown.
+	if bin, err := os.Executable(); err == nil {
+		if abs, absErr := filepath.Abs(bin); absErr == nil {
+			bin = abs
+		}
+		cfg.env = setEnv(cfg.env, "ARBITER_BIN", bin)
+	}
 	engine := &Engine{cfg: cfg}
 	if err := engine.startLocked(ctx); err != nil {
 		return nil, err
@@ -353,6 +373,9 @@ func (e *Engine) Call(ctx context.Context, method string, params any) (json.RawM
 	}
 	data = append(data, '\n')
 	if _, err := e.stdin.Write(data); err != nil {
+		// A failed or partial stdin write means the child is dead (EPIPE)
+		// or the line protocol is desynchronized; it must not be reused.
+		e.poisonLocked()
 		return nil, err
 	}
 
@@ -474,9 +497,21 @@ func killProcessGroup(cmd *exec.Cmd) error {
 	return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 }
 
+// callTimeout returns the deadline budget for calls without a parent
+// deadline: the value of ARBITER_ENGINE_CALL_TIMEOUT_S (positive integer
+// seconds) when set and valid, defaultCallTimeout otherwise.
+func callTimeout() time.Duration {
+	if raw := os.Getenv(callTimeoutEnv); raw != "" {
+		if secs, err := strconv.Atoi(raw); err == nil && secs > 0 {
+			return time.Duration(secs) * time.Second
+		}
+	}
+	return defaultCallTimeout
+}
+
 func boundedCallContext(parent context.Context) (context.Context, context.CancelFunc) {
 	now := time.Now()
-	limit := now.Add(defaultCallTimeout)
+	limit := now.Add(callTimeout())
 	if deadline, ok := parent.Deadline(); ok {
 		limit = deadline
 		if deadline.Sub(now) > maxCallTimeout {

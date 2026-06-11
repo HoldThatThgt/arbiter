@@ -63,13 +63,14 @@ def clean_semantic_flags(flags: Iterable[str], *, key_flags: Iterable[str] = ())
 
 
 def _is_codegen_flag(flag: str) -> bool:
+    # NOTE: -fsanitize=* is deliberately NOT treated as codegen-only.
+    # Sanitizers inject preprocessor state (__SANITIZE_*, __has_feature(*_sanitizer)),
+    # so sanitizer flags always participate in the semantic key (ADR-0005).
     if flag in {"--coverage", "-coverage", "-c", "-S", "-E"}:
         return True
     if flag == "-O" or flag.startswith("-O"):
         return True
     if flag == "-g" or flag.startswith("-g"):
-        return True
-    if flag.startswith("-fsanitize="):
         return True
     if flag.startswith("-fprofile-"):
         return True

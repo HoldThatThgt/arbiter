@@ -3,6 +3,7 @@ package verify
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -41,17 +42,19 @@ func TestValidateClosedSets(t *testing.T) {
 		name string
 		spec ResultSpec
 	}{
-		{"run missing tests", ResultSpec{Kind: "run", Expect: mustRaw(t, `{"overall":"passed"}`)}},
-		{"run missing expect", ResultSpec{Kind: "run", Tests: []string{"t"}}},
-		{"run with shell command", ResultSpec{Kind: "run", Command: "true", Tests: []string{"t"}, Expect: mustRaw(t, `{"overall":"passed"}`)}},
-		{"run with mcp server", ResultSpec{Kind: "run", Server: "x", Tests: []string{"t"}, Expect: mustRaw(t, `{"overall":"passed"}`)}},
-		{"run unknown expect key", ResultSpec{Kind: "run", Tests: []string{"t"}, Expect: mustRaw(t, `{"overall":"passed","junk":1}`)}},
-		{"run overall wrong type", ResultSpec{Kind: "run", Tests: []string{"t"}, Expect: mustRaw(t, `{"overall":7}`)}},
-		{"run one_of empty", ResultSpec{Kind: "run", Tests: []string{"t"}, Expect: mustRaw(t, `{"overall":{"one_of":[]}}`)}},
-		{"run expect empty", ResultSpec{Kind: "run", Tests: []string{"t"}, Expect: mustRaw(t, `{}`)}},
-		{"run test clause incomplete", ResultSpec{Kind: "run", Tests: []string{"t"}, Expect: mustRaw(t, `{"test":{"name":"x"}}`)}},
-		{"run facts clause empty", ResultSpec{Kind: "run", Tests: []string{"t"}, Expect: mustRaw(t, `{"facts":{}}`)}},
-		{"run facts clause unknown key", ResultSpec{Kind: "run", Tests: []string{"t"}, Expect: mustRaw(t, `{"facts":{"published":true,"junk":1}}`)}},
+		{"run missing recipe", ResultSpec{Kind: "run", Tests: []string{"t"}, Expect: mustRaw(t, `{"overall":"passed"}`)}},
+		{"run blank recipe", ResultSpec{Kind: "run", Recipe: "  ", Tests: []string{"t"}, Expect: mustRaw(t, `{"overall":"passed"}`)}},
+		{"run missing tests", ResultSpec{Kind: "run", Recipe: "unit", Expect: mustRaw(t, `{"overall":"passed"}`)}},
+		{"run missing expect", ResultSpec{Kind: "run", Recipe: "unit", Tests: []string{"t"}}},
+		{"run with shell command", ResultSpec{Kind: "run", Recipe: "unit", Command: "true", Tests: []string{"t"}, Expect: mustRaw(t, `{"overall":"passed"}`)}},
+		{"run with mcp server", ResultSpec{Kind: "run", Recipe: "unit", Server: "x", Tests: []string{"t"}, Expect: mustRaw(t, `{"overall":"passed"}`)}},
+		{"run unknown expect key", ResultSpec{Kind: "run", Recipe: "unit", Tests: []string{"t"}, Expect: mustRaw(t, `{"overall":"passed","junk":1}`)}},
+		{"run overall wrong type", ResultSpec{Kind: "run", Recipe: "unit", Tests: []string{"t"}, Expect: mustRaw(t, `{"overall":7}`)}},
+		{"run one_of empty", ResultSpec{Kind: "run", Recipe: "unit", Tests: []string{"t"}, Expect: mustRaw(t, `{"overall":{"one_of":[]}}`)}},
+		{"run expect empty", ResultSpec{Kind: "run", Recipe: "unit", Tests: []string{"t"}, Expect: mustRaw(t, `{}`)}},
+		{"run test clause incomplete", ResultSpec{Kind: "run", Recipe: "unit", Tests: []string{"t"}, Expect: mustRaw(t, `{"test":{"name":"x"}}`)}},
+		{"run facts clause empty", ResultSpec{Kind: "run", Recipe: "unit", Tests: []string{"t"}, Expect: mustRaw(t, `{"facts":{}}`)}},
+		{"run facts clause unknown key", ResultSpec{Kind: "run", Recipe: "unit", Tests: []string{"t"}, Expect: mustRaw(t, `{"facts":{"published":true,"junk":1}}`)}},
 		{"fact missing query", ResultSpec{Kind: "fact", Expect: mustRaw(t, `{"min_results":1}`)}},
 		{"fact missing expect", ResultSpec{Kind: "fact", Query: "sym:Foo"}},
 		{"fact with tool", ResultSpec{Kind: "fact", Tool: "x", Query: "sym:Foo", Expect: mustRaw(t, `{"min_results":1}`)}},
@@ -176,7 +179,7 @@ func TestCompareMCPExpectOpsFailClosed(t *testing.T) {
 
 func TestValidateAcceptsWellFormedTypedSpecs(t *testing.T) {
 	good := []ResultSpec{
-		{Kind: "run", Tests: []string{"suite.case"}, Expect: mustRaw(t, `{"overall":"passed"}`)},
+		{Kind: "run", Recipe: "unit", Tests: []string{"suite.case"}, Expect: mustRaw(t, `{"overall":"passed"}`)},
 		{Kind: "run", Recipe: "unit", Tests: []string{"a", "b"}, Options: map[string]any{"profile": "fast"}, Expect: mustRaw(t, `{"overall":{"one_of":["passed","flaky"]},"max_failed":0,"min_passed":2,"test":{"name":"a","result":"passed"},"facts":{"published":true}}`)},
 		{Kind: "fact", Query: "sym:Router", Expect: mustRaw(t, `{"min_results":1,"max_results":10,"complete":true,"reachable":true,"total_at_least":1}`)},
 	}
@@ -323,20 +326,165 @@ func TestExecuteFactPredicateUsesEngineSearchAndRefresh(t *testing.T) {
 	}
 }
 
+// run 谓词只有在引擎子进程根本无法 spawn 时才报 engine_unavailable
+// (其余引擎故障以 result.Failure fail-closed,不再有 #37/#43 占位分支)。
 func TestExecuteTypedRunFailsClosedWithoutEngine(t *testing.T) {
-	for _, kind := range []string{"run"} {
-		spec := ResultSpec{Kind: kind}
-		if kind == "run" {
-			spec.Tests = []string{"t"}
-			spec.Expect = mustRaw(t, `{"overall":"passed"}`)
+	t.Setenv("PYTHON", filepath.Join(t.TempDir(), "missing-python"))
+	spec := ResultSpec{
+		Kind:   "run",
+		Recipe: "unit",
+		Tests:  []string{"t"},
+		Expect: mustRaw(t, `{"overall":"passed"}`),
+	}
+	_, err := Execute(context.Background(), t.TempDir(), spec)
+	if code := specCode(err); code != playbook.CodeEngineUnavailable {
+		t.Fatalf("code = %q, want %q (err=%v)", code, playbook.CodeEngineUnavailable, err)
+	}
+	if err != nil && !strings.Contains(err.Error(), "engine") {
+		t.Fatalf("error should mention engine: %v", err)
+	}
+}
+
+// 快乐路径:经真实引擎的 run 工具执行假 gtest recipe,产出判定/证据/逐条对照。
+func TestExecuteRunPredicateUsesEngineRunTool(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("PYTHONPATH", filepath.Join(verifyRepoRoot(t), "engine"))
+	writeRunFixture(t, root)
+
+	result, err := Execute(context.Background(), root, ResultSpec{
+		Kind:   "run",
+		Recipe: "unit",
+		Tests:  []string{"Suite.Pass"},
+		Expect: mustRaw(t, `{"overall":"passed","min_passed":1,"test":{"name":"Suite.Pass","result":"passed"}}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !Pass(result) || result.Verdict == nil || !*result.Verdict {
+		t.Fatalf("run predicate did not pass: %#v", result)
+	}
+	var evidence RunEvidence
+	if err := json.Unmarshal(result.Evidence, &evidence); err != nil {
+		t.Fatal(err)
+	}
+	if evidence.Overall != "passed" || evidence.Passed != 1 || evidence.TestResults["Suite.Pass"] != "passed" {
+		t.Fatalf("evidence = %#v", evidence)
+	}
+	if len(result.ExpectReport) != 3 {
+		t.Fatalf("expect report = %#v", result.ExpectReport)
+	}
+}
+
+// writeRunFixture 写一份引擎可执行的 v2 recipes.yaml 与假 gtest 脚本。
+func writeRunFixture(t *testing.T, root string) {
+	t.Helper()
+	script := filepath.Join(root, "fake_gtest.sh")
+	body := "#!/bin/sh\n" +
+		"for arg in \"$@\"; do\n" +
+		"  case \"$arg\" in --gtest_output=xml:*) out=\"${arg#--gtest_output=xml:}\" ;; esac\n" +
+		"done\n" +
+		"mkdir -p \"$(dirname \"$out\")\"\n" +
+		"printf '%s\\n' '<testsuites tests=\"1\" failures=\"0\"><testsuite name=\"Suite\"><testcase classname=\"Suite\" name=\"Pass\" time=\"0.001\"/></testsuite></testsuites>' > \"$out\"\n" +
+		"exit 0\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	recipes := "targets:\n" +
+		"  - id: unit\n" +
+		"    harness:\n" +
+		"      kind: gtest\n" +
+		"    test_run:\n" +
+		"      cmd: [" + script + "]\n"
+	if err := os.MkdirAll(filepath.Join(root, ".arbiter"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".arbiter", "recipes.yaml"), []byte(recipes), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// facts.published 的双极性:证据缺 facts 节 ⇒ 未发布。
+func TestCompareRunFactsPublishedAbsentFacts(t *testing.T) {
+	wantAbsent, err := ParseRunExpect(mustRaw(t, `{"facts":{"published":false}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok, report := CompareRun(wantAbsent, RunEvidence{Overall: "passed"})
+	if !ok {
+		t.Fatalf("published:false must pass on absent facts: %#v", report)
+	}
+	if len(report) != 1 || report[0].Actual != nil {
+		t.Fatalf("actual must be recorded as absent: %#v", report)
+	}
+
+	wantPublished, err := ParseRunExpect(mustRaw(t, `{"facts":{"published":true}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok, report = CompareRun(wantPublished, RunEvidence{Overall: "passed"})
+	if ok {
+		t.Fatalf("published:true must fail on absent facts: %#v", report)
+	}
+	if len(report) != 1 || report[0].Actual != nil {
+		t.Fatalf("actual must be recorded as absent: %#v", report)
+	}
+}
+
+func TestRunPerTestHelpers(t *testing.T) {
+	perTest := []RunPerTest{
+		{Suite: "Suite", Name: "Pass", Status: "passed"},
+		{Suite: "Suite", Name: "Skip", Status: "skipped"},
+		{Suite: "Suite", Name: "Boom", Status: "failed"},
+		{Name: "Loose", Status: "failed"},
+	}
+	results := RunTestResults(perTest)
+	if results["Suite.Pass"] != "passed" || results["Suite.Boom"] != "failed" || results["Loose"] != "failed" {
+		t.Fatalf("results = %#v", results)
+	}
+	if first := FirstRunFailure(perTest); first != "Suite.Boom" {
+		t.Fatalf("first failure = %q", first)
+	}
+	if RunTestResults(nil) != nil {
+		t.Fatal("empty per_test should produce nil map")
+	}
+	if FirstRunFailure(nil) != "" {
+		t.Fatal("no failures should yield empty name")
+	}
+}
+
+func TestRefreshDedupeRecordsOnlySuccessAndLatestRound(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "repo")
+	meta1 := map[string]any{"match_id": "m1", "round_seq": 1}
+	if !shouldRefreshFacts(root, meta1) {
+		t.Fatal("first sighting must refresh")
+	}
+	// 失败路径不记录:再次询问仍要求 refresh
+	if !shouldRefreshFacts(root, meta1) {
+		t.Fatal("unrecorded round must still refresh")
+	}
+	recordFactsRefreshed(root, meta1)
+	if shouldRefreshFacts(root, meta1) {
+		t.Fatal("recorded round must dedupe")
+	}
+	meta2 := map[string]any{"match_id": "m1", "round_seq": 2}
+	if !shouldRefreshFacts(root, meta2) {
+		t.Fatal("new round must refresh")
+	}
+	recordFactsRefreshed(root, meta2)
+	if shouldRefreshFacts(root, meta2) {
+		t.Fatal("latest round must dedupe")
+	}
+	// 同一 root+match 只保留最新回合的键,不随回合数增长
+	refreshDedupe.Lock()
+	defer refreshDedupe.Unlock()
+	count := 0
+	for key := range refreshDedupe.seen {
+		if strings.HasPrefix(key, root+"\x00m1") {
+			count++
 		}
-		_, err := Execute(context.Background(), t.TempDir(), spec)
-		if code := specCode(err); code != playbook.CodeEngineUnavailable {
-			t.Fatalf("%s: code = %q, want %q (err=%v)", kind, code, playbook.CodeEngineUnavailable, err)
-		}
-		if err != nil && !strings.Contains(err.Error(), "engine") {
-			t.Fatalf("%s: error should mention engine: %v", kind, err)
-		}
+	}
+	if count != 1 {
+		t.Fatalf("dedupe entries for match = %d, want 1", count)
 	}
 }
 

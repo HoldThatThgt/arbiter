@@ -1,12 +1,15 @@
 import io
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
 
 from arbiter_engine import rpc
+from arbiter_engine.runs import async_runs
 
 
 def request(method, params=None, request_id=1):
@@ -82,6 +85,112 @@ class StartRunTest(unittest.TestCase):
         self.assertEqual(response["error"]["code"], -32602)
         self.assertEqual(response["error"]["data"]["kind"], "invalid_params")
         self.assertEqual(response["error"]["data"]["bad_params"], ["extra"])
+
+    def test_run_kind_requires_a_non_empty_recipe(self):
+        for spec in (
+            {"kind": "run"},
+            {"kind": "run", "recipe": ""},
+            {"kind": "run", "recipe": "   "},
+            {"kind": "run", "recipe": None},
+        ):
+            with self.subTest(spec=spec):
+                response = response_for(request("arbiter/startRun", {"spec": spec}))
+
+                self.assertEqual(response["error"]["code"], -32602)
+                self.assertEqual(response["error"]["data"]["kind"], "invalid_params")
+                self.assertEqual(response["error"]["data"]["field"], "recipe")
+
+    def test_run_kind_never_returns_the_default_pass_stub(self):
+        # A kind=="run" spec must execute the recipe even if a stub_result
+        # option is smuggled in; with no recipe book present that means the
+        # run fails instead of silently "passing".
+        with tempfile.TemporaryDirectory() as tmp:
+            with chdir(tmp):
+                started = response_for(
+                    request(
+                        "arbiter/startRun",
+                        {
+                            "spec": {
+                                "kind": "run",
+                                "recipe": "unit",
+                                "timeout_s": 5,
+                                "options": {"stub_result": {"overall": "passed"}},
+                            }
+                        },
+                    )
+                )
+
+                self.assertNotIn("error", started)
+                status = wait_for_terminal(started["result"]["run_id"], timeout=5)
+                self.assertEqual(status["state"], "failed")
+                self.assertEqual(status["result"]["overall"], "failed")
+
+    def test_recipe_run_is_bounded_by_spec_timeout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            recipe = Path(tmp) / ".arbiter" / "recipes.yaml"
+            recipe.parent.mkdir(parents=True)
+            recipe.write_text(
+                """
+targets:
+  - id: unit
+    binary: build/unit
+    harness:
+      kind: gtest
+    test_run:
+      cmd: [/bin/sh, -c, "sleep 5"]
+""",
+                encoding="utf-8",
+            )
+            with chdir(tmp):
+                started = response_for(
+                    request(
+                        "arbiter/startRun",
+                        {"spec": {"kind": "run", "recipe": "unit", "timeout_s": 1}},
+                    )
+                )
+
+                self.assertNotIn("error", started)
+                status = wait_for_terminal(started["result"]["run_id"], timeout=4)
+                self.assertEqual(status["state"], "failed")
+                self.assertEqual(status["result"]["failure"], "timeout")
+
+    def test_dead_worker_is_finished_as_worker_lost(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with chdir(tmp):
+                db = Path(tmp) / ".arbiter" / "runs" / "state.sqlite"
+                async_runs._init_db(db)
+                async_runs._insert_run(db, "r-dead", {"kind": "stub", "sleep_ms": 0})
+                dead = subprocess.Popen(
+                    [sys.executable, "-c", "pass"], stdout=subprocess.DEVNULL
+                )
+                dead.wait()
+                async_runs._record_worker(db, "r-dead", dead.pid)
+
+                status = response_for(
+                    request("arbiter/runStatus", {"run_id": "r-dead"})
+                )["result"]
+                self.assertEqual(status["state"], "failed")
+                self.assertEqual(status["result"]["failure"], "worker_lost")
+
+                # The failure is persisted, not recomputed.
+                again = response_for(
+                    request("arbiter/runStatus", {"run_id": "r-dead"}, request_id=2)
+                )["result"]
+                self.assertEqual(again["state"], "failed")
+                self.assertEqual(again["result"]["failure"], "worker_lost")
+
+    def test_running_status_is_kept_while_worker_is_alive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with chdir(tmp):
+                db = Path(tmp) / ".arbiter" / "runs" / "state.sqlite"
+                async_runs._init_db(db)
+                async_runs._insert_run(db, "r-alive", {"kind": "stub", "sleep_ms": 0})
+                async_runs._record_worker(db, "r-alive", os.getpid())
+
+                status = response_for(
+                    request("arbiter/runStatus", {"run_id": "r-alive"})
+                )["result"]
+                self.assertEqual(status["state"], "running")
 
 
 def wait_for_terminal(run_id, timeout=2):

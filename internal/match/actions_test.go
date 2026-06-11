@@ -233,7 +233,8 @@ func TestLoadPlayBookPinsRecipes(t *testing.T) {
 	}
 	state := readStateFile(t, root)
 	pin := state.RecipesPin
-	if pin.BookSHA256 == "" || pin.Targets["unit"] == "" {
+	_, pinned := pin.Targets["unit"]
+	if pin.BookSHA256 == "" || !pinned {
 		t.Fatalf("recipes pin = %#v", pin)
 	}
 }
@@ -304,13 +305,15 @@ func TestSubmitTaskSummaryValidation(t *testing.T) {
 	}
 }
 
+// writeRecipes 写引擎 RecipeBook v2 形态的 recipes.yaml:targets 是 sequence,
+// 每项以 `- id: <name>` 开头(engine/arbiter_engine/runs/recipes.py _parse_targets)。
 func writeRecipes(t *testing.T, root, id, body string) {
 	t.Helper()
 	path := filepath.Join(root, ".arbiter", "recipes.yaml")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	text := "targets:\n  " + id + ":\n"
+	text := "targets:\n  - id: " + id + "\n"
 	for _, line := range strings.Split(strings.TrimSuffix(body, "\n"), "\n") {
 		text += "    " + line + "\n"
 	}

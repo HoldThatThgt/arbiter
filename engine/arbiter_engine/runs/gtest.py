@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
@@ -77,16 +76,31 @@ def run_target(
     run_id: str,
     tests: Sequence[str] = (),
     profiles: Sequence[str] = (),
-    arbiter_bin: str = "arbiter",
+    arbiter_bin: Optional[str] = None,
+    fail_fast: bool = False,
+    timeout_s: Optional[int] = None,
     facts_extractor: Optional[pipeline.Extractor] = None,
     facts_key_flags: Sequence[str] = (),
 ) -> RunResult:
     root = Path(repo_root)
+    arbiter_bin = runner.resolve_arbiter_bin(arbiter_bin)
     target = book.target(target_id)
     if target.harness.kind != "gtest":
         raise errors.harness_unavailable(target.harness.kind)
     if "test_run" not in target.stages:
         raise runner.RunnerError(f"target {target_id!r} has no test_run stage")
+    try:
+        workdir = runner.resolve_workdir(root, target)
+    except runner.RunnerError as exc:
+        return RunResult(
+            run_id=run_id,
+            overall="failed",
+            passed=0,
+            failed=0,
+            skipped=0,
+            failure="workdir_escape",
+            stderr_tail=str(exc),
+        )
     facts = _run_compile_stages(
         root,
         book,
@@ -113,20 +127,27 @@ def run_target(
     run_dir.mkdir(parents=True, exist_ok=True)
     xml_path = run_dir / f"{target_id}.xml"
     command = list(stage.cmd) + [f"--gtest_output=xml:{xml_path}"]
+    if fail_fast:
+        command.append("--gtest_fail_fast")
     if tests:
         command.append("--gtest_filter=" + ":".join(tests))
-    workdir = root / target.workdir
     env = runner._stage_env(os.environ, target, stage, book, profiles, "test_run", arbiter_bin)
-    proc = subprocess.run(
-        command,
-        cwd=str(workdir),
-        env=env,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=stage.timeout_s,
-        check=False,
-    )
+    stage_timeout = timeout_s if timeout_s is not None else stage.timeout_s
+    # runner._run_command maps subprocess.TimeoutExpired to exit code 124 with
+    # a tail message instead of letting the exception propagate.
+    proc = runner._run_command(command, workdir, env, stage_timeout)
+    if proc.exit_code == 124 and not xml_path.exists():
+        return RunResult(
+            run_id=run_id,
+            overall="failed",
+            passed=0,
+            failed=0,
+            skipped=0,
+            facts=facts.get("facts"),
+            failure="timeout",
+            stdout_tail=proc.stdout_tail,
+            stderr_tail=proc.stderr_tail,
+        )
     if not xml_path.exists():
         return RunResult(
             run_id=run_id,
@@ -136,8 +157,8 @@ def run_target(
             skipped=0,
             facts=facts.get("facts"),
             failure="missing_result_file",
-            stdout_tail=runner._tail(proc.stdout),
-            stderr_tail=runner._tail(proc.stderr),
+            stdout_tail=proc.stdout_tail,
+            stderr_tail=proc.stderr_tail,
         )
     try:
         result = parse_xml(xml_path, run_id=run_id)
@@ -150,10 +171,10 @@ def run_target(
             skipped=0,
             facts=facts.get("facts"),
             failure="invalid_result_file",
-            stdout_tail=runner._tail(proc.stdout),
-            stderr_tail=runner._tail(proc.stderr),
+            stdout_tail=proc.stdout_tail,
+            stderr_tail=proc.stderr_tail,
         )
-    if proc.returncode != 0 and result.failed == 0:
+    if proc.exit_code != 0 and result.failed == 0:
         return RunResult(
             run_id=run_id,
             overall="failed",
@@ -163,8 +184,8 @@ def run_target(
             per_test=result.per_test,
             facts=facts.get("facts"),
             failure="exit_code",
-            stdout_tail=runner._tail(proc.stdout),
-            stderr_tail=runner._tail(proc.stderr),
+            stdout_tail=proc.stdout_tail,
+            stderr_tail=proc.stderr_tail,
         )
     if facts.get("facts") is not None:
         result = _with_facts(result, facts["facts"])

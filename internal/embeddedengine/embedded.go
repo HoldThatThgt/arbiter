@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sync"
 
 	enginebundle "github.com/HoldThatThgt/arbiter/engine"
 )
@@ -49,7 +50,31 @@ func Unpack(repo string) (Manifest, error) {
 	return manifest, nil
 }
 
+// verifiedCache memoizes successful verifications for the lifetime of the
+// process, keyed by (engine root, expected digest). Verify runs on every
+// Spawn, and a full tree hash per poll is wasteful. Trade-off: if the
+// on-disk tree is modified after a successful verification, this process
+// will not notice until restart. That is acceptable because the cache only
+// guards against crash/partial-write corruption at unpack time, not against
+// a concurrent writer with access to the tree.
+var (
+	verifiedMu    sync.Mutex
+	verifiedCache = map[verifiedKey]Manifest{}
+)
+
+type verifiedKey struct {
+	root   string
+	digest string
+}
+
 func Verify(repo, expected string) (Manifest, error) {
+	key := verifiedKey{root: filepath.Join(repo, RootRel), digest: expected}
+	verifiedMu.Lock()
+	cached, ok := verifiedCache[key]
+	verifiedMu.Unlock()
+	if ok {
+		return cached, nil
+	}
 	manifest, err := Digest(repo)
 	if err != nil {
 		return Manifest{}, err
@@ -57,6 +82,9 @@ func Verify(repo, expected string) (Manifest, error) {
 	if manifest.Digest != expected {
 		return manifest, fmt.Errorf("embedded engine digest mismatch: expected %s found %s", expected, manifest.Digest)
 	}
+	verifiedMu.Lock()
+	verifiedCache[key] = manifest
+	verifiedMu.Unlock()
 	return manifest, nil
 }
 
@@ -112,6 +140,12 @@ func writeFile(path string, data []byte) error {
 		return err
 	}
 	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	// Sync before rename so a crash cannot leave a renamed-but-empty file;
+	// digest verification depends on these files being intact.
+	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
 		return err
 	}

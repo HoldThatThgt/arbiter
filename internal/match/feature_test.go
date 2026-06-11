@@ -3,9 +3,11 @@ package match
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"syscall"
 	"testing"
 	"time"
 
@@ -147,6 +149,109 @@ func TestGoalMemoInvalidatesOnNewFile(t *testing.T) {
 	}
 }
 
+func TestGoalMemoRecordedWhenWorkspaceUnchanged(t *testing.T) {
+	root := repoWithBook(t, "g.md", goalBook("exit 0"))
+	writeConfig(t, root, "match:\n  goal_memo: true\n")
+	writeText(t, filepath.Join(root, "src", "a.c"), "int a;\n")
+	store := New(root, "test")
+	if _, err := store.LoadPlayBook("goalflow"); err != nil {
+		t.Fatal(err)
+	}
+
+	out := passRound(t, store)
+
+	if !out.Checkmate || out.Goal == nil || out.Goal.Memoized {
+		t.Fatalf("checkmate = %#v", out)
+	}
+	state := readStateFile(t, root)
+	if len(state.GoalMemo) != 1 {
+		t.Fatalf("goal memo = %#v", state.GoalMemo)
+	}
+}
+
+func TestGoalMemoSkippedWhenGoalMutatesWorkspace(t *testing.T) {
+	// goal 谓词本身改写工作区:执行前后普查不一致,绝不能把这次 pass 记入 memo(TOCTOU)。
+	root := repoWithBook(t, "g.md", goalBook("sh -c 'echo mutated > side-effect.txt; exit 0'"))
+	writeConfig(t, root, "match:\n  goal_memo: true\n")
+	writeText(t, filepath.Join(root, "src", "a.c"), "int a;\n")
+	store := New(root, "test")
+	if _, err := store.LoadPlayBook("goalflow"); err != nil {
+		t.Fatal(err)
+	}
+
+	out := passRound(t, store)
+
+	if !out.Checkmate || out.Goal == nil || out.Goal.Verdict != TaskPass {
+		t.Fatalf("checkmate = %#v", out)
+	}
+	if data := readText(t, filepath.Join(root, "side-effect.txt")); data != "mutated\n" {
+		t.Fatalf("side effect = %q", data)
+	}
+	state := readStateFile(t, root)
+	if len(state.GoalMemo) != 0 {
+		t.Fatalf("memo recorded despite workspace mutation: %#v", state.GoalMemo)
+	}
+}
+
+func TestGoalCensusDigestHazards(t *testing.T) {
+	root := t.TempDir()
+	store := New(root, "test")
+	writeText(t, filepath.Join(root, "src", "a.c"), "int a;\n")
+	base, ok := store.goalCensusDigest()
+	if !ok || base == "" {
+		t.Fatalf("base census ok=%v digest=%q", ok, base)
+	}
+
+	// FIFO 不参与普查也不阻塞/报错
+	if err := syscall.Mkfifo(filepath.Join(root, "pipe"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withFifo, ok := store.goalCensusDigest()
+	if !ok || withFifo != base {
+		t.Fatalf("fifo must be skipped: ok=%v changed=%v", ok, withFifo != base)
+	}
+
+	// 坏符号链接按链接目标参与普查,不报错
+	if err := os.Symlink("missing-target", filepath.Join(root, "dangling")); err != nil {
+		t.Fatal(err)
+	}
+	withLink, ok := store.goalCensusDigest()
+	if !ok {
+		t.Fatal("dangling symlink must not disable census")
+	}
+	if withLink == base {
+		t.Fatal("symlink should participate in census digest")
+	}
+
+	// 不可读的常规文件:禁用本次 memo(ok=false),而不是报错
+	if os.Geteuid() == 0 {
+		t.Log("running as root: skipping unreadable-file case")
+		return
+	}
+	secret := filepath.Join(root, "secret.txt")
+	writeText(t, secret, "hidden\n")
+	if err := os.Chmod(secret, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(secret, 0o644) })
+	if _, ok := store.goalCensusDigest(); ok {
+		t.Fatal("unreadable regular file must disable memoization")
+	}
+}
+
+func TestGoalMemoCapEviction(t *testing.T) {
+	m := &Match{}
+	for i := 0; i < goalMemoCap+5; i++ {
+		rememberGoalMemo(m, fmt.Sprintf("digest-%03d", i), &GoalReport{Verdict: TaskPass})
+	}
+	if len(m.GoalMemo) != goalMemoCap {
+		t.Fatalf("memo size = %d, want %d", len(m.GoalMemo), goalMemoCap)
+	}
+	if _, ok := m.GoalMemo[fmt.Sprintf("digest-%03d", goalMemoCap+4)]; !ok {
+		t.Fatalf("newest entry evicted: %#v", m.GoalMemo)
+	}
+}
+
 func TestAsyncRunGoalFalseCheckmateAcrossRestart(t *testing.T) {
 	const runGoalBook = `---
 name: run-goal
@@ -156,7 +261,6 @@ description: async run goal
 [SetGoal]
 run: unit
 tests: ["Suite.Case"]
-options: {"stub_result":{"overall":"failed","isError":false,"passed":0,"failed":1}}
 expect: {"overall":"passed"}
 
 [STEP] only
@@ -170,7 +274,9 @@ failure: only
 `
 	root := repoWithBook(t, "run.md", runGoalBook)
 	t.Setenv("PYTHONPATH", checkoutEnginePath(t))
-	writeRecipes(t, root, "unit", "cmd: make test\n")
+	// 引擎对 kind=="run" 永远执行真实 recipe(stub 分支不可达):用一个必败的假 gtest。
+	script := writeFakeGtest(t, root, true)
+	writeRecipes(t, root, "unit", "harness:\n  kind: gtest\ntest_run:\n  cmd: ["+script+"]\n")
 	store := New(root, "test")
 	if _, err := store.LoadPlayBook("run-goal"); err != nil {
 		t.Fatal(err)
@@ -193,7 +299,7 @@ failure: only
 
 	restarted := New(root, "test")
 	var settled CheckStepJobOutput
-	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
 		settled, err = restarted.CheckStepJob(context.Background())
 		if err != nil {
 			t.Fatal(err)
@@ -218,6 +324,30 @@ func checkoutEnginePath(t *testing.T) string {
 		t.Fatal("runtime.Caller failed")
 	}
 	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", "..", "engine"))
+}
+
+// writeFakeGtest 写一个伪 gtest 可执行:解析 --gtest_output=xml:<path>,
+// 落一份单用例的 gtest XML(failed 控制成败)后按结果退出。
+func writeFakeGtest(t *testing.T, root string, failed bool) string {
+	t.Helper()
+	xml := `<testsuites tests="1" failures="0"><testsuite name="Suite"><testcase classname="Suite" name="Case" time="0.001"/></testsuite></testsuites>`
+	exit := "exit 0"
+	if failed {
+		xml = `<testsuites tests="1" failures="1"><testsuite name="Suite"><testcase classname="Suite" name="Case"><failure message="bad"/></testcase></testsuite></testsuites>`
+		exit = "exit 1"
+	}
+	body := "#!/bin/sh\n" +
+		"for arg in \"$@\"; do\n" +
+		"  case \"$arg\" in --gtest_output=xml:*) out=\"${arg#--gtest_output=xml:}\" ;; esac\n" +
+		"done\n" +
+		"mkdir -p \"$(dirname \"$out\")\"\n" +
+		"printf '%s\\n' '" + xml + "' > \"$out\"\n" +
+		exit + "\n"
+	path := filepath.Join(root, "fake_gtest.sh")
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func TestAddPlayBook(t *testing.T) {
@@ -351,7 +481,6 @@ func seedGoalMemo(t *testing.T, store *Store) {
 		}
 		m.GoalMemo = map[string]GoalMemoEntry{
 			digest: {
-				Digest: digest,
 				Report: GoalReport{
 					Verdict: TaskPass,
 					Output:  "memoized pass",

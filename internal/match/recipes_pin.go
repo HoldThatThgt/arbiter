@@ -32,21 +32,19 @@ func (s *Store) currentRecipesPin() (RecipePin, error) {
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return RecipePin{}, err
 	}
+	// 引擎 RecipeBook v2(engine/arbiter_engine/runs/recipes.py _parse_targets):
+	// targets 是一个 sequence,每项是带 `id` 标量的 mapping。这里只摘取 id 集合;
+	// 逐目标内容无需哈希 —— BookSHA256 已唯一确定整本书(见 checkRecipePin)。
 	targets := mappingValue(documentRoot(&doc), "targets")
-	if targets == nil || targets.Kind != yaml.MappingNode {
+	if targets == nil || targets.Kind != yaml.SequenceNode {
 		return pin, nil
 	}
-	for i := 0; i+1 < len(targets.Content); i += 2 {
-		key := targets.Content[i]
-		value := targets.Content[i+1]
-		if key.Kind != yaml.ScalarNode || key.Value == "" {
+	for _, entry := range targets.Content {
+		id := mappingValue(entry, "id")
+		if id == nil || id.Kind != yaml.ScalarNode || id.Value == "" {
 			continue
 		}
-		encoded, err := yaml.Marshal(value)
-		if err != nil {
-			return RecipePin{}, err
-		}
-		pin.Targets[key.Value] = sha256Hex(encoded)
+		pin.Targets[id.Value] = ""
 	}
 	return pin, nil
 }
@@ -67,9 +65,9 @@ func (s *Store) checkRecipePin(m *Match, spec playbook.ResultSpec) error {
 	if spec.Recipe == "" {
 		return nil
 	}
-	expected, expectedOK := pinned.Targets[spec.Recipe]
-	found, foundOK := current.Targets[spec.Recipe]
-	if !expectedOK || !foundOK || expected != found {
+	// 走到这里 BookSHA256 已相等 ⇒ 当前书与封盘时逐字节一致,逐目标哈希比较是死代码;
+	// 唯一还需要回答的问题是该 recipe 是否存在于书中。
+	if _, ok := current.Targets[spec.Recipe]; !ok {
 		s.journalRecipePinMismatch(m, spec, pinned, current)
 		return &ToolError{Code: playbook.CodeRecipePinMismatch, Message: "recipe pin mismatch"}
 	}
@@ -84,8 +82,10 @@ func (s *Store) journalRecipePinMismatch(m *Match, spec playbook.ResultSpec, pin
 		"found_book":    current.BookSHA256,
 	}
 	if spec.Recipe != "" {
-		fields["expected_target"] = pinned.Targets[spec.Recipe]
-		fields["found_target"] = current.Targets[spec.Recipe]
+		_, expectedOK := pinned.Targets[spec.Recipe]
+		_, foundOK := current.Targets[spec.Recipe]
+		fields["expected_target"] = expectedOK
+		fields["found_target"] = foundOK
 	}
 	s.append("recipe_pin_mismatch", fields)
 }

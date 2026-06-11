@@ -11,6 +11,7 @@ from arbiter_engine import config
 from arbiter_engine import rpc
 from arbiter_engine.facts import view
 from arbiter_engine.shared import locks
+from arbiter_engine.shared import pipeline
 
 
 @contextmanager
@@ -83,6 +84,43 @@ class FactsReconcileTest(unittest.TestCase):
             self.assertEqual(executor["overlay_id"], first["overlay_id"])
             self.assertEqual(executor["view_state"], "overlay")
             self.assertNotEqual(second["overlay_id"], first["overlay_id"])
+
+    def test_refresh_reports_published_snapshot_id_not_directory_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir(parents=True)
+            (root / "src" / "a.c").write_text("int a(void) { return 1; }\n", encoding="utf-8")
+            journal = root / ".arbiter" / "facts" / "run" / "compile-journal.b1.jsonl"
+            journal.parent.mkdir(parents=True, exist_ok=True)
+            journal.write_text(
+                json.dumps(
+                    {
+                        "argv": ["clang", "-c", "src/a.c", "-o", "build/a.o"],
+                        "cwd": str(root),
+                        "src": "src/a.c",
+                        "out": "build/a.o",
+                    },
+                    separators=(",", ":"),
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            published = pipeline.publish_after_build(root, [journal], root / "compile_commands.json")
+            fact_view = view.refresh(root, view.AccessContext(role="QUERY", seat="player"))
+
+            self.assertTrue(published.published)
+            self.assertEqual(fact_view.base_snapshot_id, published.snapshot_id)
+            self.assertNotEqual(fact_view.base_snapshot_id, "current")
+
+    def test_missing_snapshot_manifest_falls_back_to_directory_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".arbiter" / "facts" / "snapshots" / "current").mkdir(parents=True)
+
+            fact_view = view.read_published(root)
+
+            self.assertEqual(fact_view.base_snapshot_id, "current")
 
     def test_refresh_is_writer_only_and_ttl_knob_is_deleted(self):
         with tempfile.TemporaryDirectory() as tmp, working_dir(tmp), engine_env(role="EXEC", seat="player"):

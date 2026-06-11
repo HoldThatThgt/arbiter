@@ -47,12 +47,7 @@ class Tool:
             "inputSchema": dict(self.input_schema),
         }
         if self.title is not None:
-            row = {
-                "name": self.name,
-                "title": self.title,
-                "description": self.description,
-                "inputSchema": dict(self.input_schema),
-            }
+            row["title"] = self.title
         if self.output_schema is not None:
             row["outputSchema"] = dict(self.output_schema)
         return row
@@ -99,6 +94,8 @@ def serve(stdin: TextIO, stdout: TextIO, router: Optional[Router] = None) -> Non
             continue
         else:
             response = _dispatch_line(line, active_router)
+        if response is None:
+            continue
         stdout.write(json.dumps(response, separators=(",", ":")) + "\n")
         stdout.flush()
 
@@ -123,17 +120,33 @@ def default_router() -> Router:
     return router
 
 
-def _dispatch_line(line: str, router: Router) -> dict[str, Any]:
+def _dispatch_line(line: str, router: Router) -> Optional[dict[str, Any]]:
     try:
         request = json.loads(line)
     except json.JSONDecodeError as exc:
         return _error(None, -32700, "parse error", {"kind": "invalid_json", "detail": str(exc)})
 
+    # JSON-RPC notifications (no "id" key) never receive a response; errors
+    # raised while handling them are dropped silently per spec.
+    is_notification = isinstance(request, dict) and "id" not in request
     try:
-        return _dispatch(request, router)
+        response: Optional[dict[str, Any]] = _dispatch(request, router)
     except RPCError as exc:
         request_id = request.get("id") if isinstance(request, dict) else None
-        return _error(request_id, exc.code, exc.message, exc.data)
+        response = _error(request_id, exc.code, exc.message, exc.data)
+    except Exception as exc:  # noqa: BLE001 - the serve loop must never die on a request
+        request_id = request.get("id") if isinstance(request, dict) else None
+        response = _error(
+            request_id,
+            -32603,
+            "internal error",
+            {
+                "kind": "internal_error",
+                "exception": type(exc).__name__,
+                "detail": str(exc),
+            },
+        )
+    return None if is_notification else response
 
 
 def _dispatch(request: Any, router: Router) -> dict[str, Any]:
@@ -513,9 +526,25 @@ def _run_tool(context: Context, arguments: Mapping[str, Any]) -> Mapping[str, An
     options = arguments.get("options", {})
     if not isinstance(options, dict):
         raise RPCError(-32602, "invalid arguments", {"kind": "invalid_args", "field": "options"})
-    profiles = _validate_run_options(options)
+    run_options = _validate_run_options(options)
     book = _load_committed_recipe_book()
-    result = gtest.run_target(Path.cwd(), book, recipe_id, run_id=uuid.uuid4().hex, tests=tests, profiles=profiles)
+    try:
+        result = gtest.run_target(
+            Path.cwd(),
+            book,
+            recipe_id,
+            run_id=uuid.uuid4().hex,
+            tests=tests,
+            profiles=run_options.profiles,
+            fail_fast=run_options.fail_fast,
+            timeout_s=run_options.timeout_s,
+        )
+    except KeyError as exc:
+        raise RPCError(
+            -32602,
+            "invalid arguments",
+            {"kind": "invalid_args", "field": "recipe", "detail": f"unknown recipe {recipe_id!r}"},
+        ) from exc
     payload = result.to_json()
     payload["isError"] = False
     payload["content"] = [{"type": "text", "text": f"{recipe_id}: {result.overall}"}]
@@ -603,8 +632,15 @@ def _load_committed_recipe_book() -> recipes.RecipeBook:
         ) from exc
 
 
-def _validate_run_options(options: Mapping[str, Any]) -> tuple[str, ...]:
-    allowed = {"profiles", "harness_options", "force_recompile"}
+@dataclass(frozen=True)
+class _RunOptions:
+    profiles: tuple[str, ...] = ()
+    fail_fast: bool = False
+    timeout_s: Optional[int] = None
+
+
+def _validate_run_options(options: Mapping[str, Any]) -> _RunOptions:
+    allowed = {"profiles", "harness_options"}
     unknown = sorted(set(options) - allowed)
     if unknown:
         raise RPCError(-32602, "invalid arguments", {"kind": "invalid_args", "bad_options": unknown})
@@ -627,7 +663,23 @@ def _validate_run_options(options: Mapping[str, Any]) -> tuple[str, ...]:
     unknown_gtest = sorted(set(gtest_options) - {"fail_fast", "timeout_s"})
     if unknown_gtest:
         raise RPCError(-32602, "invalid arguments", {"kind": "invalid_args", "bad_gtest_options": unknown_gtest})
-    return tuple(profiles)
+    fail_fast = gtest_options.get("fail_fast", False)
+    if not isinstance(fail_fast, bool):
+        raise RPCError(
+            -32602,
+            "invalid arguments",
+            {"kind": "invalid_args", "field": "options.harness_options.gtest.fail_fast"},
+        )
+    timeout_s = gtest_options.get("timeout_s")
+    if timeout_s is not None and (
+        not isinstance(timeout_s, int) or isinstance(timeout_s, bool) or timeout_s < 1
+    ):
+        raise RPCError(
+            -32602,
+            "invalid arguments",
+            {"kind": "invalid_args", "field": "options.harness_options.gtest.timeout_s"},
+        )
+    return _RunOptions(profiles=tuple(profiles), fail_fast=fail_fast, timeout_s=timeout_s)
 
 
 def _result(request_id: Any, result: Mapping[str, Any]) -> dict[str, Any]:
@@ -664,7 +716,6 @@ _DEFAULT_TOOLS = (
                     "type": "object",
                     "properties": {
                         "profiles": {"type": "array", "items": {"type": "string"}},
-                        "force_recompile": {"type": "boolean"},
                         "harness_options": {
                             "type": "object",
                             "properties": {
