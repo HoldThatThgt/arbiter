@@ -36,6 +36,56 @@ func TestInitOpeningsWritesFreeplay(t *testing.T) {
 	if book.Entry != "gear-up" {
 		t.Fatalf("entry = %q", book.Entry)
 	}
+	for _, name := range []string{"gold-digger.md", "recipe-derivation.md", "regression-triage.md"} {
+		if _, issues := playbook.ParseFile(filepath.Join(root, ".arbiter", "playbook", name)); len(issues) != 0 {
+			t.Fatalf("missing or invalid %s: %#v", name, issues)
+		}
+	}
+}
+
+func TestBaseOpeningTemplatesParse(t *testing.T) {
+	cases := []struct {
+		file       string
+		name       string
+		capability string
+		verify     []string
+	}{
+		{
+			file:   "gold-digger.md",
+			name:   "gold-digger",
+			verify: []string{"gear-up-published", "repro-fails", "repro-passes"},
+		},
+		{
+			file:       "recipe-derivation.md",
+			name:       "recipe-derivation",
+			capability: "recipes",
+			verify:     []string{"gear-up-published", "candidate-proven"},
+		},
+		{
+			file:   "regression-triage.md",
+			name:   "regression-triage",
+			verify: []string{"gear-up-published", "suite-green"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			book, issues := playbook.ParseBytes(tc.file, []byte(mustTemplate("templates/"+tc.file)))
+			if len(issues) != 0 {
+				t.Fatalf("%s issues = %#v", tc.file, issues)
+			}
+			if book.Name != tc.name || book.Entry != "gear-up" {
+				t.Fatalf("%s name/entry = %q/%q", tc.file, book.Name, book.Entry)
+			}
+			if tc.capability != "" && strings.Join(book.Capabilities, ",") != tc.capability {
+				t.Fatalf("%s capabilities = %#v", tc.file, book.Capabilities)
+			}
+			for _, name := range tc.verify {
+				if _, ok := book.Verify[name]; !ok {
+					t.Fatalf("%s missing verify %q in %#v", tc.file, name, book.Verify)
+				}
+			}
+		})
+	}
 }
 
 func TestPlaybookCreateScaffoldParsesAndStartsWithGearUp(t *testing.T) {

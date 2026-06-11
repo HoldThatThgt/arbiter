@@ -133,8 +133,10 @@ func InitWithOptions(root string, opts Options) (string, error) {
 		return "", err
 	}
 	if opts.Openings {
-		if err := writeIfMissing(filepath.Join(root, dirPlaybook, "freeplay.md"), mustTemplate("templates/freeplay.md"), 0o644); err != nil {
-			return "", err
+		for _, opening := range baseOpenings {
+			if err := writeIfMissing(filepath.Join(root, dirPlaybook, opening.file), mustTemplate(opening.template), 0o644); err != nil {
+				return "", err
+			}
 		}
 	}
 	if err := writeIfMissing(filepath.Join(root, fileConfig), defaultConfig(), 0o644); err != nil {
@@ -177,6 +179,16 @@ func InitWithOptions(root string, opts Options) (string, error) {
 		return "", err
 	}
 	return guidance(replacedMCP, opts.NoExecutor), nil
+}
+
+var baseOpenings = []struct {
+	file     string
+	template string
+}{
+	{"freeplay.md", "templates/freeplay.md"},
+	{"gold-digger.md", "templates/gold-digger.md"},
+	{"recipe-derivation.md", "templates/recipe-derivation.md"},
+	{"regression-triage.md", "templates/regression-triage.md"},
 }
 
 func MCPConfigPath(root string) string {

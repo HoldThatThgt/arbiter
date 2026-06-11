@@ -26,7 +26,8 @@ every durable change is proven or reported as a checklist item.
    to confirm because facts relevance is a semantic choice.
 6. Run the first gear-up task through the proven `src_compile` recipe with the selected profile.
    The predicate is `{"overall":"passed","facts":{"published":true}}`.
-7. Ensure the base openings exist: `freeplay`, `gold-digger`, and `recipe-derivation`.
+7. Ensure the base openings exist: `freeplay`, `gold-digger`, `recipe-derivation`, and
+   `regression-triage`.
 
 ## Checkmate
 
