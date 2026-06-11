@@ -41,3 +41,4 @@
 | M6/M7 exit | question | openings: ship base library (#56) | Full gate green; M6 facts handoff/cache/miss tests green; deploy/openings/intro/seat checks green. REVIEWER-QUESTION: The full fresh-clone intro-to-play demo appears to be the later #58 acceptance item; is this overlap intentional? |
 | #53 | done | match: add goal memoization (#53) | Red: store.goalMemoEnabled undefined; default-off goal memoization, digest folded over census/spec/recipe/toolchain, memo skip, new-file invalidation, and full gate green. |
 | #54 | done | cli: compose status and report (#54) | Red: undefined: Status; status compose-on-read, frozen JSON schema tags, report journal/run join through stdlib sqlite3, and full gate green. |
+| #55 | done | hardening: add contention suite (#55) | Red: undefined: exerciseEightWayExecutorContention; 8-way executor SubmitTask fan-out and 8-way compile-stage build-lock serialization tests, and full gate green. |
