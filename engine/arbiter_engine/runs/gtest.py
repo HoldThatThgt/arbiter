@@ -10,8 +10,10 @@ from pathlib import Path
 from typing import Mapping, Optional, Sequence, Tuple
 
 from arbiter_engine import errors
+from arbiter_engine.runs import guidance
 from arbiter_engine.runs import recipes
 from arbiter_engine.runs import runner
+from arbiter_engine.runs.guidance import GuidanceEntry
 
 
 @dataclass(frozen=True)
@@ -32,6 +34,7 @@ class RunResult:
     failed: int
     skipped: int
     per_test: Tuple[PerTest, ...] = ()
+    guidance: Tuple[GuidanceEntry, ...] = ()
     failure: Optional[str] = None
     stdout_tail: str = ""
     stderr_tail: str = ""
@@ -57,6 +60,8 @@ class RunResult:
         }
         if self.failure is not None:
             out["failure"] = self.failure
+        if self.guidance:
+            out["guidance"] = [entry.to_json() for entry in self.guidance]
         return out
 
 
@@ -131,6 +136,8 @@ def run_target(
             stdout_tail=runner._tail(proc.stdout),
             stderr_tail=runner._tail(proc.stderr),
         )
+    if result.overall == "failed":
+        return _with_guidance(result, guidance.for_result(root, result))
     return result
 
 
@@ -194,3 +201,18 @@ def _elapsed_ms(raw: str) -> int:
         return int(round(float(raw) * 1000))
     except ValueError:
         return 0
+
+
+def _with_guidance(result: RunResult, entries: Tuple[GuidanceEntry, ...]) -> RunResult:
+    return RunResult(
+        run_id=result.run_id,
+        overall=result.overall,
+        passed=result.passed,
+        failed=result.failed,
+        skipped=result.skipped,
+        per_test=result.per_test,
+        guidance=entries,
+        failure=result.failure,
+        stdout_tail=result.stdout_tail,
+        stderr_tail=result.stderr_tail,
+    )

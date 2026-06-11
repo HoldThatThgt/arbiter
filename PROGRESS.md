@@ -19,3 +19,5 @@
 | #28 | done | runs: execute recipe stages (#28) | Red: cannot import runs.runner; pre/cmd/post execution, profile overlays, src_compile cc injection, build lock, env lint, and full gate green. |
 | #29 | done | runs: add gtest adapter (#29) | Red: cannot import runs.gtest; injected XML output, result-file-only parsing, repeated occurrences, empty suite, missing-file fail-closed, and full gate green. |
 | #31 | done | runs: wire run tools on chassis (#31) | Red: run/register still returned stubs; real run/register/import/search handlers, harness_options.gtest schema, transcripts twice, replay tests, and full gate green. |
+| #32 | done | runs: add failure guidance (#32) | Red: cannot import runs.guidance; stub read_index file:line guidance, empty-without-index degradation, cap at four, gtest integration, and full gate green. |
+| M5 exit | question | runs: add failure guidance (#32) | Full gate green; TestAsyncRunGoalFalseCheckmateAcrossRestart green; stale-cache polarity covered by test_build_cache; 8-way contention suite is not present until #55, so parallel-throughput claim remains downgraded per ADR-0009. |
