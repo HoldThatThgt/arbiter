@@ -154,6 +154,7 @@ func (s *Store) SubmitTask(ctx context.Context, taskID, summary, report string, 
 		return SubmitTaskOutput{}, &ToolError{Code: playbook.CodeBadSummary, Message: fmt.Sprintf("summary exceeds %d bytes", playbook.MaxSummaryBytes)}
 	}
 	var roundSeq int
+	var matchID string
 	out, err := s.withLock(func(m *Match) (*Match, any, error) {
 		if m == nil || m.Status != StatusActive || m.Current == nil {
 			return nil, nil, &ToolError{Code: playbook.CodeNoActiveMatch, Message: "no active match"}
@@ -168,6 +169,7 @@ func (s *Store) SubmitTask(ctx context.Context, taskID, summary, report string, 
 		}
 		if _, ok := findCurrentTask(m, taskID); ok {
 			roundSeq = m.RoundSeq
+			matchID = m.ID
 			return nil, nil, nil
 		}
 		if findHistoryTask(m, taskID) != nil {
@@ -180,7 +182,7 @@ func (s *Store) SubmitTask(ctx context.Context, taskID, summary, report string, 
 	}
 	_ = out
 
-	result, err := verify.Execute(ctx, s.Root, spec)
+	result, err := verify.ExecuteWithMeta(ctx, s.Root, spec, map[string]any{"match_id": matchID, "round_seq": roundSeq})
 	if err != nil {
 		return SubmitTaskOutput{}, specError(err)
 	}

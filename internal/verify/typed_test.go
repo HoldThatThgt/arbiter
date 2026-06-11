@@ -3,6 +3,8 @@ package verify
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -264,15 +266,40 @@ func TestCompareFactClauses(t *testing.T) {
 	}
 }
 
-func TestExecuteTypedKindsFailClosedWithoutEngine(t *testing.T) {
-	for _, kind := range []string{"run", "fact"} {
+func TestExecuteFactPredicateUsesEngineSearchAndRefresh(t *testing.T) {
+	root := verifyRepoRoot(t)
+	result, err := Execute(context.Background(), root, ResultSpec{
+		Kind:   "fact",
+		Query:  "alpha",
+		Expect: mustRaw(t, `{"max_results":0,"complete":true}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !Pass(result) || result.Verdict == nil || !*result.Verdict {
+		t.Fatalf("fact predicate did not pass: %#v", result)
+	}
+	var evidence FactEvidence
+	if err := json.Unmarshal(result.Evidence, &evidence); err != nil {
+		t.Fatal(err)
+	}
+	if evidence.ViewState != "overlay" || evidence.OverlayID == "" {
+		t.Fatalf("evidence missing refreshed overlay: %#v", evidence)
+	}
+	if evidence.ResultCount != 0 || !evidence.Complete {
+		t.Fatalf("evidence counters = %#v", evidence)
+	}
+	if len(result.ExpectReport) != 2 {
+		t.Fatalf("expect report = %#v", result.ExpectReport)
+	}
+}
+
+func TestExecuteTypedRunFailsClosedWithoutEngine(t *testing.T) {
+	for _, kind := range []string{"run"} {
 		spec := ResultSpec{Kind: kind}
 		if kind == "run" {
 			spec.Tests = []string{"t"}
 			spec.Expect = mustRaw(t, `{"overall":"passed"}`)
-		} else {
-			spec.Query = "sym:Foo"
-			spec.Expect = mustRaw(t, `{"min_results":1}`)
 		}
 		_, err := Execute(context.Background(), t.TempDir(), spec)
 		if code := specCode(err); code != playbook.CodeEngineUnavailable {
@@ -282,6 +309,15 @@ func TestExecuteTypedKindsFailClosedWithoutEngine(t *testing.T) {
 			t.Fatalf("%s: error should mention engine: %v", kind, err)
 		}
 	}
+}
+
+func verifyRepoRoot(t *testing.T) string {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
 }
 
 func TestPassConsultsTypedVerdictFirst(t *testing.T) {

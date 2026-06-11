@@ -10,10 +10,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/HoldThatThgt/arbiter/internal/deploy"
+	"github.com/HoldThatThgt/arbiter/internal/engineclient"
 	"github.com/HoldThatThgt/arbiter/internal/playbook"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -21,6 +23,11 @@ import (
 
 // ResultSpec 定义于 playbook 包(共享数据模型);别名保持调用面稳定。
 type ResultSpec = playbook.ResultSpec
+
+var refreshDedupe = struct {
+	sync.Mutex
+	seen map[string]struct{}
+}{seen: map[string]struct{}{}}
 
 type Result struct {
 	Spec       ResultSpec `json:"spec"`
@@ -50,6 +57,10 @@ func (e *SpecError) Error() string {
 }
 
 func Execute(ctx context.Context, root string, spec ResultSpec) (Result, error) {
+	return ExecuteWithMeta(ctx, root, spec, nil)
+}
+
+func ExecuteWithMeta(ctx context.Context, root string, spec ResultSpec, meta map[string]any) (Result, error) {
 	spec = normalize(spec)
 	if err := Validate(spec); err != nil {
 		return Result{}, err
@@ -59,13 +70,15 @@ func Execute(ctx context.Context, root string, spec ResultSpec) (Result, error) 
 		return runShell(ctx, root, spec), nil
 	case "mcp":
 		return runTool(ctx, root, spec)
-	case "run", "fact":
+	case "run":
 		// 评估路径经 seat 的引擎子进程(go-engineclient),由 #37/#43 接线;
 		// 在那之前 fail-closed:模式已校验,但绝不在无引擎时給出判定。
 		return Result{}, &SpecError{
 			Code:    playbook.CodeEngineUnavailable,
 			Message: spec.Kind + " predicates evaluate via the seat's engine children; engine wiring lands with #37/#43",
 		}
+	case "fact":
+		return runFact(ctx, root, spec, meta)
 	default:
 		return Result{}, &SpecError{Code: playbook.CodeBadResult, Message: "unknown result kind"}
 	}
@@ -241,6 +254,61 @@ func runTool(parent context.Context, root string, spec ResultSpec) (Result, erro
 	return result, nil
 }
 
+func runFact(parent context.Context, root string, spec ResultSpec, meta map[string]any) (Result, error) {
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(parent, time.Duration(spec.TimeoutS)*time.Second)
+	defer cancel()
+
+	expect, err := ParseFactExpect(spec.Expect)
+	if err != nil {
+		return Result{}, err
+	}
+	engine, err := engineclient.Spawn(ctx, engineclient.RoleQuery, root)
+	if err != nil {
+		return Result{}, &SpecError{Code: playbook.CodeEngineUnavailable, Message: "fact engine unavailable: " + err.Error()}
+	}
+	defer engine.Close()
+
+	callMeta := map[string]any{"predicate": "fact"}
+	for key, value := range meta {
+		callMeta[key] = value
+	}
+	result := Result{Spec: spec}
+	if shouldRefreshFacts(root, meta) {
+		if _, err := engine.Refresh(ctx, map[string]any{}, callMeta); err != nil {
+			result.Failure = failureForContext(ctx, "engine_error")
+			result.Output = err.Error()
+			result.DurationMS = int(time.Since(start).Milliseconds())
+			return result, nil
+		}
+	}
+	call, err := engine.CallTool(ctx, "search", map[string]any{"query": spec.Query}, callMeta)
+	if err != nil {
+		result.Failure = failureForContext(ctx, "engine_error")
+		result.Output = err.Error()
+		result.DurationMS = int(time.Since(start).Milliseconds())
+		return result, nil
+	}
+	isErr := call.IsError
+	result.IsError = &isErr
+	result.Output = tailLines(engineToolText(call), spec.OutputLines)
+	if call.IsError {
+		result.DurationMS = int(time.Since(start).Milliseconds())
+		return result, nil
+	}
+	evidence := factEvidenceFromStructured(call.StructuredContent)
+	rawEvidence, err := json.Marshal(evidence)
+	if err != nil {
+		return Result{}, err
+	}
+	verdict, report := CompareFact(expect, evidence)
+	result.Verdict = &verdict
+	result.Evidence = rawEvidence
+	result.ExpectReport = report
+	result.DurationMS = int(time.Since(start).Milliseconds())
+	return result, nil
+}
+
 type mcpFile struct {
 	Servers map[string]serverConfig `json:"mcpServers"`
 }
@@ -347,6 +415,67 @@ func mcpPayload(result *mcp.CallToolResult) (any, error) {
 	}
 	payload["isError"] = result.IsError
 	return payload, nil
+}
+
+func engineToolText(result engineclient.ToolResult) string {
+	data, err := json.Marshal(result.Content)
+	if err != nil {
+		return fmt.Sprint(result.Content)
+	}
+	return string(data)
+}
+
+func factEvidenceFromStructured(payload map[string]any) FactEvidence {
+	resultCount := intField(payload, "result_count", 0)
+	return FactEvidence{
+		SnapshotID:   stringField(payload, "base_snapshot_id"),
+		OverlayID:    stringField(payload, "overlay_id"),
+		ViewState:    stringField(payload, "view_state"),
+		ResultCount:  resultCount,
+		Complete:     boolField(payload, "complete", !boolField(payload, "truncated", false)),
+		Reachable:    boolField(payload, "reachable", false),
+		TotalResults: intField(payload, "total", resultCount),
+	}
+}
+
+func shouldRefreshFacts(root string, meta map[string]any) bool {
+	roundSeq, ok := meta["round_seq"]
+	if !ok {
+		return true
+	}
+	matchID := fmt.Sprint(meta["match_id"])
+	key := root + "\x00" + matchID + "\x00" + fmt.Sprint(roundSeq)
+	refreshDedupe.Lock()
+	defer refreshDedupe.Unlock()
+	if _, exists := refreshDedupe.seen[key]; exists {
+		return false
+	}
+	refreshDedupe.seen[key] = struct{}{}
+	return true
+}
+
+func stringField(payload map[string]any, name string) string {
+	value, _ := payload[name].(string)
+	return value
+}
+
+func boolField(payload map[string]any, name string, fallback bool) bool {
+	value, ok := payload[name].(bool)
+	if !ok {
+		return fallback
+	}
+	return value
+}
+
+func intField(payload map[string]any, name string, fallback int) int {
+	switch value := payload[name].(type) {
+	case int:
+		return value
+	case float64:
+		return int(value)
+	default:
+		return fallback
+	}
 }
 
 type capBuffer struct {

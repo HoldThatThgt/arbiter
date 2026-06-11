@@ -78,6 +78,17 @@ type AsyncRunStatus struct {
 	Result json.RawMessage `json:"result,omitempty"`
 }
 
+// RefreshResult is the arbiter/refresh response.
+type RefreshResult struct {
+	Refreshed        bool           `json:"refreshed"`
+	Scope            map[string]any `json:"scope"`
+	ViewState        string         `json:"view_state"`
+	BaseSnapshotID   string         `json:"base_snapshot_id,omitempty"`
+	OverlayID        string         `json:"overlay_id,omitempty"`
+	StaleSourceCount int            `json:"stale_source_count"`
+	PendingTaskCount int            `json:"pending_task_count"`
+}
+
 // Spawn starts the Python engine stub for one role in repo.
 func Spawn(ctx context.Context, role EngineRole, repo string) (*Engine, error) {
 	if role != RoleQuery && role != RoleExec {
@@ -210,6 +221,26 @@ func (e *Engine) CallTool(ctx context.Context, name string, args, meta any) (Too
 	var result ToolResult
 	if err := decodeResult(data, &result); err != nil {
 		return ToolResult{}, err
+	}
+	return result, nil
+}
+
+// Refresh asks the QUERY engine to reconcile facts before fact predicates.
+func (e *Engine) Refresh(ctx context.Context, scope, meta any) (RefreshResult, error) {
+	if scope == nil {
+		scope = map[string]any{}
+	}
+	params := map[string]any{"scope": scope}
+	if meta != nil {
+		params["_meta"] = meta
+	}
+	data, err := e.Call(ctx, "arbiter/refresh", params)
+	if err != nil {
+		return RefreshResult{}, err
+	}
+	var result RefreshResult
+	if err := decodeResult(data, &result); err != nil {
+		return RefreshResult{}, err
 	}
 	return result, nil
 }
