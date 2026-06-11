@@ -2,7 +2,7 @@
 
 PYTHON ?= python3
 
-.PHONY: build test test-go test-py fmt-check
+.PHONY: build test test-go test-py fmt-check transcripts
 
 build:
 	go build ./cmd/arbiter
@@ -18,3 +18,6 @@ test-py:
 
 fmt-check:
 	@test -z "$$(gofmt -l .)" || (gofmt -l . && exit 1)
+
+transcripts:
+	PYTHONPATH=engine $(PYTHON) engine/tests/write_transcripts.py

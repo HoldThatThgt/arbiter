@@ -1,0 +1,4 @@
+{"type":"request","message":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"client":"transcript-replay"}}}
+{"type":"response","message":{"jsonrpc":"2.0","id":1,"result":{"engine":"arbiter-engine","version":"dev","capabilities":{"tools":true}}},"allow_volatile":[]}
+{"type":"request","message":{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ping","arguments":{"message":"hello"}}}}
+{"type":"response","message":{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"pong: hello"}],"isError":false}},"allow_volatile":[]}
