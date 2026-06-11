@@ -57,7 +57,13 @@ func TestValidateClosedSets(t *testing.T) {
 		{"shell with recipe", ResultSpec{Kind: "shell", Command: "true", Recipe: "r"}},
 		{"shell with query", ResultSpec{Kind: "shell", Command: "true", Query: "q"}},
 		{"mcp with tests", ResultSpec{Kind: "mcp", Server: "s", Tool: "t", Tests: []string{"x"}}},
-		{"mcp with expect", ResultSpec{Kind: "mcp", Server: "s", Tool: "t", Expect: mustRaw(t, `{"min_results":1}`)}},
+		{"shell with expect", ResultSpec{Kind: "shell", Command: "true", Expect: mustRaw(t, `[{"path":"x","op":"exists"}]`)}},
+		{"mcp expect not array", ResultSpec{Kind: "mcp", Server: "s", Tool: "t", Expect: mustRaw(t, `{"path":"x","op":"exists"}`)}},
+		{"mcp expect too many", ResultSpec{Kind: "mcp", Server: "s", Tool: "t", Expect: mustRaw(t, `[{"path":"a","op":"exists"},{"path":"b","op":"exists"},{"path":"c","op":"exists"},{"path":"d","op":"exists"},{"path":"e","op":"exists"},{"path":"f","op":"exists"},{"path":"g","op":"exists"},{"path":"h","op":"exists"},{"path":"i","op":"exists"}]`)}},
+		{"mcp expect unknown op", ResultSpec{Kind: "mcp", Server: "s", Tool: "t", Expect: mustRaw(t, `[{"path":"x","op":"contains","value":"ok"}]`)}},
+		{"mcp expect wildcard path", ResultSpec{Kind: "mcp", Server: "s", Tool: "t", Expect: mustRaw(t, `[{"path":"content.*.text","op":"exists"}]`)}},
+		{"mcp expect object value", ResultSpec{Kind: "mcp", Server: "s", Tool: "t", Expect: mustRaw(t, `[{"path":"x","op":"eq","value":{"bad":true}}]`)}},
+		{"mcp expect missing value", ResultSpec{Kind: "mcp", Server: "s", Tool: "t", Expect: mustRaw(t, `[{"path":"x","op":"eq"}]`)}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -65,6 +71,102 @@ func TestValidateClosedSets(t *testing.T) {
 				t.Fatalf("code = %q, want %q", code, playbook.CodeBadResult)
 			}
 		})
+	}
+}
+
+func TestValidateAcceptsMCPExpectClauses(t *testing.T) {
+	spec := ResultSpec{
+		Kind:   "mcp",
+		Server: "foreign",
+		Tool:   "probe",
+		Expect: mustRaw(t, `[
+			{"path":"isError","op":"eq","value":false},
+			{"path":"content.0.text","op":"exists"},
+			{"path":"count","op":"ge","value":1}
+		]`),
+	}
+	if err := Validate(spec); err != nil {
+		t.Fatalf("unexpected validation error: %v", err)
+	}
+}
+
+func TestMCPExpectClausesDriveVerdictAndReport(t *testing.T) {
+	root := t.TempDir()
+	stub := copiedSelf(t)
+	writeMCP(t, root, map[string]any{
+		"ok": map[string]any{
+			"type":    "stdio",
+			"command": stub,
+			"env":     map[string]any{"ARBITER_TEST_STUB": "1", "ARBITER_TEST_MODE": "ok"},
+		},
+	})
+
+	pass, err := Execute(context.Background(), root, ResultSpec{
+		Kind:   "mcp",
+		Server: "ok",
+		Tool:   "probe",
+		Expect: mustRaw(t, `[
+			{"path":"isError","op":"eq","value":false},
+			{"path":"content.0.text","op":"eq","value":"ok"}
+		]`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !Pass(pass) || pass.Verdict == nil || len(pass.ExpectReport) != 2 {
+		t.Fatalf("pass result = %#v", pass)
+	}
+
+	fail, err := Execute(context.Background(), root, ResultSpec{
+		Kind:   "mcp",
+		Server: "ok",
+		Tool:   "probe",
+		Expect: mustRaw(t, `[{"path":"content.0.text","op":"eq","value":"nope"}]`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if Pass(fail) || fail.Verdict == nil || *fail.Verdict {
+		t.Fatalf("fail result = %#v", fail)
+	}
+	if len(fail.ExpectReport) != 1 || fail.ExpectReport[0].OK {
+		t.Fatalf("fail report = %#v", fail.ExpectReport)
+	}
+}
+
+func TestCompareMCPExpectOpsFailClosed(t *testing.T) {
+	payload := map[string]any{
+		"n": float64(3),
+		"s": "ok",
+		"b": true,
+	}
+	pass, err := ParseMCPExpect(mustRaw(t, `[
+		{"path":"n","op":"ge","value":2},
+		{"path":"n","op":"le","value":4},
+		{"path":"s","op":"ne","value":"bad"},
+		{"path":"b","op":"exists"}
+	]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, report := CompareMCP(pass, payload); !ok {
+		t.Fatalf("expected pass: %#v", report)
+	}
+
+	failures := []string{
+		`[{"path":"missing","op":"exists"}]`,
+		`[{"path":"missing","op":"eq","value":1}]`,
+		`[{"path":"s","op":"ge","value":1}]`,
+		`[{"path":"n","op":"ne","value":"3"}]`,
+	}
+	for _, raw := range failures {
+		expect, err := ParseMCPExpect(mustRaw(t, raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ok, report := CompareMCP(expect, payload); ok {
+			t.Fatalf("%s unexpectedly passed: %#v", raw, report)
+		}
 	}
 }
 

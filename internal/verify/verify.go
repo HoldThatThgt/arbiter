@@ -88,9 +88,15 @@ func Validate(spec ResultSpec) error {
 	if spec.Kind == "shell" && strings.TrimSpace(spec.Command) == "" {
 		return &SpecError{Code: playbook.CodeBadResult, Message: "empty shell command"}
 	}
+	if spec.Kind == "shell" && len(spec.Expect) != 0 {
+		return &SpecError{Code: playbook.CodeBadResult, Message: "shell spec must not set expect"}
+	}
 	if spec.Kind == "mcp" {
 		if strings.TrimSpace(spec.Server) == "" || strings.TrimSpace(spec.Tool) == "" {
 			return &SpecError{Code: playbook.CodeBadResult, Message: "incomplete mcp result"}
+		}
+		if _, err := ParseMCPExpect(spec.Expect); err != nil {
+			return err
 		}
 	}
 	if spec.TimeoutS < 0 || spec.TimeoutS > playbook.MaxTimeoutS {
@@ -214,6 +220,22 @@ func runTool(parent context.Context, root string, spec ResultSpec) (Result, erro
 	}
 	isErr := call.IsError
 	result.IsError = &isErr
+	if len(spec.Expect) != 0 {
+		expect, err := ParseMCPExpect(spec.Expect)
+		if err != nil {
+			return Result{}, err
+		}
+		payload, err := mcpPayload(call)
+		if err != nil {
+			result.Failure = "expect_decode_error"
+			result.Output = err.Error()
+			result.DurationMS = int(time.Since(start).Milliseconds())
+			return result, nil
+		}
+		verdict, report := CompareMCP(expect, payload)
+		result.Verdict = &verdict
+		result.ExpectReport = report
+	}
 	result.Output = tailLines(contentText(call), spec.OutputLines)
 	result.DurationMS = int(time.Since(start).Milliseconds())
 	return result, nil
@@ -304,6 +326,19 @@ func contentText(result *mcp.CallToolResult) string {
 		return fmt.Sprint(result.Content)
 	}
 	return string(data)
+}
+
+func mcpPayload(result *mcp.CallToolResult) (any, error) {
+	data, err := json.Marshal(result)
+	if err != nil {
+		return nil, err
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, err
+	}
+	payload["isError"] = result.IsError
+	return payload, nil
 }
 
 type capBuffer struct {
