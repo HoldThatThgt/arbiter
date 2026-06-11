@@ -30,7 +30,8 @@ type LoadPlayBookInput struct {
 }
 
 type CreateTaskInput struct {
-	Request string `json:"request"`
+	Request  string   `json:"request"`
+	FactRefs []string `json:"fact_refs,omitempty"`
 }
 
 type SubmitTaskInput struct {
@@ -152,12 +153,16 @@ func addShowStepJob(server *mcp.Server, root string, store *match.Store) {
 }
 
 func addCreateTask(server *mcp.Server, root string, store *match.Store) {
-	add(server, root, store.Seat, "CreateTask", "Create a task", objectSchema(map[string]any{"request": stringSchema()}, []string{"request"}), func(ctx context.Context, raw json.RawMessage) (any, error) {
+	props := map[string]any{
+		"request":   stringSchema(),
+		"fact_refs": map[string]any{"type": "array", "items": stringSchema()},
+	}
+	add(server, root, store.Seat, "CreateTask", "Create a task", objectSchema(props, []string{"request"}), func(ctx context.Context, raw json.RawMessage) (any, error) {
 		var in CreateTaskInput
 		if err := decode(raw, &in); err != nil {
 			return nil, err
 		}
-		return store.CreateTask(in.Request)
+		return store.CreateTaskWithFacts(in.Request, in.FactRefs)
 	})
 }
 

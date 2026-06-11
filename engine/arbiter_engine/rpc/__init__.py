@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, TextIO
 
 from arbiter_engine import __version__
-from arbiter_engine.errors import RPCError, engine_stale
+from arbiter_engine.errors import RPCError, briefing_unresolved, engine_stale
 from arbiter_engine.facts import descriptors as facts_descriptors
 from arbiter_engine.facts import view as facts_view
 from arbiter_engine.runs import RunManager
@@ -281,9 +281,12 @@ def _handle_resolve_briefing(request_id: Any, params: Any) -> dict[str, Any]:
         raise RPCError(-32602, "invalid params", {"kind": "invalid_params", "field": "refs"})
     if not isinstance(meta, dict):
         raise RPCError(-32602, "invalid params", {"kind": "invalid_meta"})
+    bad_refs = [ref for ref in refs if ref.startswith("bad:")]
+    if bad_refs:
+        raise briefing_unresolved(bad_refs)
     return _result(
         request_id,
-        {"briefing": [{"ref": ref, "content": "stub"} for ref in refs]},
+        {"briefing": [{"ref": ref, "content": f"detail {ref}"} for ref in refs]},
     )
 
 

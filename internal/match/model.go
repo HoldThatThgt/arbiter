@@ -58,12 +58,18 @@ type Round struct {
 }
 
 type Task struct {
-	ID      string         `json:"id"`
-	Request string         `json:"request"`
-	Status  string         `json:"status"`
-	Summary string         `json:"summary,omitempty"` // executor 提交的一句话结果概要
-	Report  string         `json:"report,omitempty"`
-	Result  *verify.Result `json:"result,omitempty"`
+	ID       string         `json:"id"`
+	Request  string         `json:"request"`
+	Status   string         `json:"status"`
+	Briefing []BriefingCard `json:"briefing,omitempty"`
+	Summary  string         `json:"summary,omitempty"` // executor 提交的一句话结果概要
+	Report   string         `json:"report,omitempty"`
+	Result   *verify.Result `json:"result,omitempty"`
+}
+
+type BriefingCard struct {
+	Ref     string `json:"ref"`
+	Content string `json:"content"`
 }
 
 type ToolError struct {
@@ -162,6 +168,7 @@ type ReviewTaskOutput struct {
 	Archived bool           `json:"archived"`
 	Status   string         `json:"status"`
 	Request  string         `json:"request"`
+	Briefing []BriefingCard `json:"briefing,omitempty"`
 	Summary  string         `json:"summary,omitempty"`
 	Report   string         `json:"report,omitempty"`
 	Result   *verify.Result `json:"result,omitempty"`

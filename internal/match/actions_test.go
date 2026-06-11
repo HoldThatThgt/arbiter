@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -115,6 +116,62 @@ func TestFailureBranchAndFinish(t *testing.T) {
 	}
 	if out.NextStep != "first" {
 		t.Fatalf("failure branch = %#v", out)
+	}
+}
+
+func TestCreateTaskResolvesFactBriefingAndPrunesArchived(t *testing.T) {
+	root := repoWithBook(t, "flow.md", twoStepBook)
+	linkEngine(t, root)
+	store := New(root, "test")
+	if _, err := store.LoadPlayBook("flow"); err != nil {
+		t.Fatal(err)
+	}
+	task, err := store.CreateTaskWithFacts("use the fact", []string{"fact:alpha"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	review, err := store.ReviewTask(task.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(review.Briefing) != 1 || review.Briefing[0].Ref != "fact:alpha" {
+		t.Fatalf("briefing = %#v", review.Briefing)
+	}
+	if _, err := store.SubmitTask(context.Background(), task.TaskID, "done", "r", verify.ResultSpec{Kind: "shell", Command: "exit 0"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CheckStepJob(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	archived, err := store.ReviewTask(task.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !archived.Archived || len(archived.Briefing) != 0 {
+		t.Fatalf("archived briefing was not pruned: %#v", archived)
+	}
+	data, err := os.ReadFile(filepath.Join(root, ".arbiter", "match", "log", "journal.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "fact:alpha") {
+		t.Fatalf("journal did not retain briefing ref: %s", data)
+	}
+}
+
+func TestCreateTaskFactRefsFailClosed(t *testing.T) {
+	root := repoWithBook(t, "flow.md", twoStepBook)
+	linkEngine(t, root)
+	store := New(root, "test")
+	if _, err := store.LoadPlayBook("flow"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateTaskWithFacts("bad ref", []string{"bad:missing"}); toolCode(err) != playbook.CodeBriefingUnresolved {
+		t.Fatalf("bad ref err = %#v", err)
+	}
+	refs := []string{"a", "b", "c", "d", "e", "f", "g", "h", "i"}
+	if _, err := store.CreateTaskWithFacts("too many", refs); toolCode(err) != playbook.CodeBriefingUnresolved {
+		t.Fatalf("too many refs err = %#v", err)
 	}
 }
 
@@ -453,4 +510,16 @@ func repoWithBook(t *testing.T, name, body string) string {
 		t.Fatal(err)
 	}
 	return root
+}
+
+func linkEngine(t *testing.T, root string) {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	repo := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+	if err := os.Symlink(filepath.Join(repo, "engine"), filepath.Join(root, "engine")); err != nil {
+		t.Fatal(err)
+	}
 }

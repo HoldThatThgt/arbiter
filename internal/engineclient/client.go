@@ -89,6 +89,17 @@ type RefreshResult struct {
 	PendingTaskCount int            `json:"pending_task_count"`
 }
 
+// BriefingCard is one resolved fact card returned by arbiter/resolveBriefing.
+type BriefingCard struct {
+	Ref     string `json:"ref"`
+	Content string `json:"content"`
+}
+
+// ResolveBriefingResult is the arbiter/resolveBriefing response.
+type ResolveBriefingResult struct {
+	Briefing []BriefingCard `json:"briefing"`
+}
+
 // Spawn starts the Python engine stub for one role in repo.
 func Spawn(ctx context.Context, role EngineRole, repo string) (*Engine, error) {
 	if role != RoleQuery && role != RoleExec {
@@ -241,6 +252,23 @@ func (e *Engine) Refresh(ctx context.Context, scope, meta any) (RefreshResult, e
 	var result RefreshResult
 	if err := decodeResult(data, &result); err != nil {
 		return RefreshResult{}, err
+	}
+	return result, nil
+}
+
+// ResolveBriefing resolves fact refs into bounded briefing cards.
+func (e *Engine) ResolveBriefing(ctx context.Context, refs []string, meta any) (ResolveBriefingResult, error) {
+	params := map[string]any{"refs": refs}
+	if meta != nil {
+		params["_meta"] = meta
+	}
+	data, err := e.Call(ctx, "arbiter/resolveBriefing", params)
+	if err != nil {
+		return ResolveBriefingResult{}, err
+	}
+	var result ResolveBriefingResult
+	if err := decodeResult(data, &result); err != nil {
+		return ResolveBriefingResult{}, err
 	}
 	return result, nil
 }

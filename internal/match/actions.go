@@ -2,14 +2,22 @@ package match
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/HoldThatThgt/arbiter/internal/engineclient"
 	"github.com/HoldThatThgt/arbiter/internal/playbook"
 	"github.com/HoldThatThgt/arbiter/internal/verify"
+)
+
+const (
+	maxFactRefs      = 8
+	maxBriefingBytes = 8 * 1024
 )
 
 func (s *Store) ReadPlayBook() (map[string]any, error) {
@@ -125,24 +133,85 @@ func (s *Store) ShowStepJob() (ShowStepJobOutput, error) {
 }
 
 func (s *Store) CreateTask(request string) (CreateTaskOutput, error) {
+	return s.CreateTaskWithFacts(request, nil)
+}
+
+func (s *Store) CreateTaskWithFacts(request string, factRefs []string) (CreateTaskOutput, error) {
 	request = strings.TrimSpace(request)
 	if request == "" {
 		return CreateTaskOutput{}, &ToolError{Code: playbook.CodeEmptyRequest, Message: "request is empty"}
+	}
+	briefing, err := s.resolveBriefing(factRefs)
+	if err != nil {
+		return CreateTaskOutput{}, err
 	}
 	out, err := s.withLock(func(m *Match) (*Match, any, error) {
 		if m == nil || m.Status != StatusActive || m.Current == nil {
 			return nil, nil, &ToolError{Code: playbook.CodeNoActiveMatch, Message: "no active match"}
 		}
 		m.TaskSeq++
-		task := Task{ID: fmt.Sprintf("T%d", m.TaskSeq), Request: request, Status: TaskOpen}
+		task := Task{ID: fmt.Sprintf("T%d", m.TaskSeq), Request: request, Status: TaskOpen, Briefing: briefing}
 		m.Current.Tasks = append(m.Current.Tasks, task)
-		s.append("task_created", map[string]any{"match_id": m.ID, "task": task.ID, "request": task.Request})
+		fields := map[string]any{"match_id": m.ID, "task": task.ID, "request": task.Request}
+		if len(briefing) > 0 {
+			fields["briefing"] = briefing
+		}
+		s.append("task_created", fields)
 		return m, CreateTaskOutput{TaskID: task.ID, StepID: m.Current.StepID}, nil
 	})
 	if err != nil {
 		return CreateTaskOutput{}, err
 	}
 	return out.(CreateTaskOutput), nil
+}
+
+func (s *Store) resolveBriefing(factRefs []string) ([]BriefingCard, error) {
+	if len(factRefs) == 0 {
+		return nil, nil
+	}
+	if len(factRefs) > maxFactRefs {
+		return nil, &ToolError{Code: playbook.CodeBriefingUnresolved, Message: "briefing unresolved", Data: map[string]any{"bad_refs": factRefs}}
+	}
+	for _, ref := range factRefs {
+		if strings.TrimSpace(ref) == "" {
+			return nil, &ToolError{Code: playbook.CodeBriefingUnresolved, Message: "briefing unresolved", Data: map[string]any{"bad_refs": []string{ref}}}
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(playbook.DefaultTimeoutS)*time.Second)
+	defer cancel()
+	engine, err := engineclient.Spawn(ctx, engineclient.RoleQuery, s.Root)
+	if err != nil {
+		return nil, &ToolError{Code: playbook.CodeEngineUnavailable, Message: "engine unavailable: " + err.Error()}
+	}
+	defer engine.Close()
+	resolved, err := engine.ResolveBriefing(ctx, factRefs, map[string]any{"purpose": "briefing"})
+	if err != nil {
+		var engineErr *engineclient.EngineError
+		if errors.As(err, &engineErr) && engineErr.Kind == playbook.CodeBriefingUnresolved {
+			return nil, &ToolError{Code: playbook.CodeBriefingUnresolved, Message: "briefing unresolved", Data: jsonRawObject(engineErr.Data)}
+		}
+		return nil, &ToolError{Code: playbook.CodeEngineUnavailable, Message: "engine unavailable: " + err.Error()}
+	}
+	briefing := make([]BriefingCard, 0, len(resolved.Briefing))
+	for _, card := range resolved.Briefing {
+		briefing = append(briefing, BriefingCard{Ref: card.Ref, Content: card.Content})
+	}
+	data, err := json.Marshal(briefing)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxBriefingBytes {
+		return nil, &ToolError{Code: playbook.CodeBriefingUnresolved, Message: "briefing unresolved", Data: map[string]any{"reason": "briefing_too_large"}}
+	}
+	return briefing, nil
+}
+
+func jsonRawObject(raw json.RawMessage) map[string]any {
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return map[string]any{}
+	}
+	return out
 }
 
 func (s *Store) SubmitTask(ctx context.Context, taskID, summary, report string, spec verify.ResultSpec) (SubmitTaskOutput, error) {
@@ -275,6 +344,9 @@ func evaluateRound(m *Match) roundVerdict {
 // settle 在锁内归档当前回合并推进/终局。checkmate 表示 goal 谓词已通过。
 func (s *Store) settle(m *Match, v roundVerdict, checkmate bool, goal *GoalReport) (*Match, CheckStepJobOutput) {
 	archived := *m.Current
+	for index := range archived.Tasks {
+		archived.Tasks[index].Briefing = nil
+	}
 	archived.Outcome = v.outcome
 	m.History = append(m.History, archived)
 	m.Current = nil
@@ -486,13 +558,13 @@ func (s *Store) ReviewTask(taskID string) (ReviewTaskOutput, error) {
 		if m.Current != nil {
 			if idx, ok := findCurrentTask(m, taskID); ok {
 				task := m.Current.Tasks[idx]
-				return nil, ReviewTaskOutput{TaskID: task.ID, Round: m.Current.Seq, StepID: m.Current.StepID, Archived: false, Status: task.Status, Request: task.Request, Summary: task.Summary, Report: task.Report, Result: task.Result}, nil
+				return nil, ReviewTaskOutput{TaskID: task.ID, Round: m.Current.Seq, StepID: m.Current.StepID, Archived: false, Status: task.Status, Request: task.Request, Briefing: task.Briefing, Summary: task.Summary, Report: task.Report, Result: task.Result}, nil
 			}
 		}
 		for _, round := range m.History {
 			for _, task := range round.Tasks {
 				if task.ID == taskID {
-					return nil, ReviewTaskOutput{TaskID: task.ID, Round: round.Seq, StepID: round.StepID, Archived: true, Status: task.Status, Request: task.Request, Summary: task.Summary, Report: task.Report, Result: task.Result}, nil
+					return nil, ReviewTaskOutput{TaskID: task.ID, Round: round.Seq, StepID: round.StepID, Archived: true, Status: task.Status, Request: task.Request, Briefing: task.Briefing, Summary: task.Summary, Report: task.Report, Result: task.Result}, nil
 				}
 			}
 		}

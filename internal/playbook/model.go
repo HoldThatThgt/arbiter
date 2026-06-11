@@ -13,6 +13,7 @@ const (
 	CodeEmptyRequest         = "empty_request"
 	CodeBadResult            = "bad_result"
 	CodeEngineUnavailable    = "engine_unavailable"
+	CodeBriefingUnresolved   = "briefing_unresolved"
 	CodeRecipePinMismatch    = "recipe_pin_mismatch"
 	CodeServerNotFound       = "server_not_found"
 	CodeUnsupportedTransport = "unsupported_transport"
