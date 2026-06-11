@@ -1,37 +1,66 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/HoldThatThgt/arbiter/internal/deploy"
+	"github.com/HoldThatThgt/arbiter/internal/match"
+	"github.com/HoldThatThgt/arbiter/internal/seat"
 )
 
-const version = "dev"
-
 func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 }
 
-func run(args []string, stdout, stderr io.Writer) int {
-	if len(args) != 1 {
-		printUsage(stderr)
-		return 2
+func run() error {
+	if len(os.Args) < 2 {
+		return fmt.Errorf("usage: arbiter init | serve <seat>")
 	}
-
-	switch args[0] {
-	case "version":
-		fmt.Fprintln(stdout, versionString())
-		return 0
+	root, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	switch os.Args[1] {
+	case "init":
+		if len(os.Args) != 2 {
+			return fmt.Errorf("usage: arbiter init")
+		}
+		msg, err := deploy.Init(root)
+		if err != nil {
+			return err
+		}
+		fmt.Print(msg)
+		return nil
+	case "serve":
+		if len(os.Args) != 3 {
+			return fmt.Errorf("usage: arbiter serve <seat>")
+		}
+		return seat.Run(context.Background(), root, os.Args[2])
+	case "hook":
+		if len(os.Args) != 3 || os.Args[2] != "stop" {
+			return fmt.Errorf("usage: arbiter hook stop")
+		}
+		_, _ = io.Copy(io.Discard, os.Stdin) // 宿主写入事件 JSON;门控只依赖对局状态
+		decision, err := match.New(root, "hook").StopGate()
+		if err != nil {
+			return err // 非零退出但无 block 决策:门控故障时放行停止(fail-open),错误进 stderr
+		}
+		if !decision.Allow {
+			data, err := json.Marshal(map[string]any{"decision": "block", "reason": decision.Reason})
+			if err != nil {
+				return err
+			}
+			fmt.Println(string(data))
+		}
+		return nil
 	default:
-		printUsage(stderr)
-		return 2
+		return fmt.Errorf("usage: arbiter init | serve <seat> | hook stop")
 	}
-}
-
-func versionString() string {
-	return "arbiter " + version
-}
-
-func printUsage(w io.Writer) {
-	fmt.Fprintln(w, "usage: arbiter version")
 }
