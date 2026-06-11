@@ -16,3 +16,7 @@
 {"type":"response","message":{"jsonrpc":"2.0","id":8,"result":{"content":[{"type":"text","text":"runs.scan stub"}],"isError":false,"namespace":"runs","tool":"scan"}},"allow_volatile":[]}
 {"type":"request","message":{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"search","arguments":{"query":"callers:main"}}}}
 {"type":"response","message":{"jsonrpc":"2.0","id":9,"result":{"content":[{"type":"text","text":"facts.search stub"}],"isError":false,"namespace":"facts","tool":"search"}},"allow_volatile":[]}
+{"type":"request","message":{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"search","arguments":{"query":"callers:main","extra":true}}}}
+{"type":"response","message":{"jsonrpc":"2.0","id":10,"error":{"code":-32602,"message":"invalid arguments","data":{"kind":"invalid_args","bad_args":["extra"]}}},"allow_volatile":[]}
+{"type":"request","message":{"jsonrpc":"2.0","id":11,"method":"arbiter/nope"}}
+{"type":"response","message":{"jsonrpc":"2.0","id":11,"error":{"code":-32601,"message":"method not found","data":{"kind":"method_not_found"}}},"allow_volatile":[]}

@@ -3,6 +3,7 @@ package engineclient
 import (
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -42,6 +43,43 @@ func TestReplayTranscriptsAgainstPythonStub(t *testing.T) {
 	}
 }
 
+func TestValidateResponseReturnsTypedEngineError(t *testing.T) {
+	line := []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"no snapshot","data":{"kind":"no_snapshot","hint":"run the gear-up step"}}}`)
+
+	err := validateResponse(line, 1)
+
+	var engineErr *EngineError
+	if !stderrors.As(err, &engineErr) {
+		t.Fatalf("error = %T %[1]v, want *EngineError", err)
+	}
+	if engineErr.Code != -32000 {
+		t.Fatalf("code = %d", engineErr.Code)
+	}
+	if engineErr.Kind != "no_snapshot" {
+		t.Fatalf("kind = %q", engineErr.Kind)
+	}
+	if !strings.Contains(string(engineErr.Data), `"hint":"run the gear-up step"`) {
+		t.Fatalf("data = %s", engineErr.Data)
+	}
+	if string(engineErr.Response) != string(line) {
+		t.Fatalf("response = %s", engineErr.Response)
+	}
+}
+
+func TestValidateResponseRejectsUnknownEngineErrorKind(t *testing.T) {
+	line := []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"new","data":{"kind":"new_kind"}}}`)
+
+	err := validateResponse(line, 1)
+
+	var engineErr *EngineError
+	if stderrors.As(err, &engineErr) {
+		t.Fatalf("unknown kind produced EngineError: %#v", engineErr)
+	}
+	if err == nil || !strings.Contains(err.Error(), "unknown engine error kind") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func replayTranscript(t *testing.T, repo, path string) {
 	t.Helper()
 
@@ -70,11 +108,31 @@ func replayTranscript(t *testing.T, repo, path string) {
 			t.Fatalf("request id = %d, want sequential id %d", decoded.ID, i/2+1)
 		}
 		actual, err := client.Call(ctx, decoded.Method, decoded.Params)
+		if transcriptHasError(t, response.Message) {
+			var engineErr *EngineError
+			if !stderrors.As(err, &engineErr) {
+				t.Fatalf("error = %T %[1]v, want *EngineError", err)
+			}
+			assertJSONEqual(t, response.Message, engineErr.Response, response.AllowVolatile)
+			continue
+		}
 		if err != nil {
 			t.Fatal(err)
 		}
 		assertJSONEqual(t, response.Message, actual, response.AllowVolatile)
 	}
+}
+
+func transcriptHasError(t *testing.T, message json.RawMessage) bool {
+	t.Helper()
+
+	var envelope struct {
+		Error *json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(message, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	return envelope.Error != nil
 }
 
 func readTranscript(t *testing.T, path string) []transcriptEntry {
