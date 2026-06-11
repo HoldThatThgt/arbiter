@@ -1,5 +1,7 @@
 package playbook
 
+import "encoding/json"
+
 const (
 	EndTarget = "END"
 
@@ -10,6 +12,7 @@ const (
 	CodeNoMatchLoaded        = "no_match_loaded"
 	CodeEmptyRequest         = "empty_request"
 	CodeBadResult            = "bad_result"
+	CodeEngineUnavailable    = "engine_unavailable"
 	CodeServerNotFound       = "server_not_found"
 	CodeUnsupportedTransport = "unsupported_transport"
 	CodeReservedServer       = "reserved_server"
@@ -66,11 +69,20 @@ type Playbook struct {
 // ResultSpec 是验证谓词的共享数据模型(任务 result 与棋谱 goal 共用);
 // 本包是依赖图最底层,verify 通过别名复用此类型。
 type ResultSpec struct {
-	Kind      string         `json:"kind"`                // "shell" | "mcp"
+	Kind      string         `json:"kind"`                // "shell" | "mcp" | "run" | "fact"
 	Command   string         `json:"command,omitempty"`   // shell: /bin/sh -c 执行
 	Server    string         `json:"server,omitempty"`    // mcp: .mcp.json 中的服务器名
 	Tool      string         `json:"tool,omitempty"`      // mcp: 工具名
 	Arguments map[string]any `json:"arguments,omitempty"` // mcp: 工具入参
+
+	Recipe  string         `json:"recipe,omitempty"`  // run: 可选 recipe 名
+	Tests   []string       `json:"tests,omitempty"`   // run: 测试目标(必填)
+	Options map[string]any `json:"options,omitempty"` // run: 可选执行参数
+
+	Query string `json:"query,omitempty"` // fact: 检索 mini-language(必填)
+
+	// run/fact 的 expect 形状随 kind 不同(对象 vs 子句),原样保留、由 verify 按 kind 严格解析。
+	Expect json.RawMessage `json:"expect,omitempty"`
 
 	TimeoutS    int `json:"timeout_s,omitempty"`    // 可选,默认 600,上限 3600
 	OutputLines int `json:"output_lines,omitempty"` // 可选,默认 256,上限 10000
