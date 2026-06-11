@@ -14,3 +14,4 @@
 | #24 | question | interpose: implement arbiter cc shim (#24) | Red: arbiter cc is not implemented; #23 matrix forced green, full gate green. REVIEWER-QUESTION: The current repo has no CI benchmark harness for the 3ms startup p95 claim; should that be a separate gate issue? |
 | #25 | done | shared: emit compile database (#25) | Red: cannot import shared.compile_db; journal dedup, response expansion, partial tolerance, fallback generator, and full gate green. |
 | #26 | done | runs: parse recipe book v2 (#26) | Red: cannot import runs.recipes; strict YAML subset, profiles/compile_db/targets, golden corpus, portability checks, and full gate green. |
+| #27 | done | runs: create sqlite state schema (#27) | Red: cannot import runs.state; WAL/busy_timeout schema, run_test occurrence, BEGIN IMMEDIATE, proven lifecycle, async initializer, and full gate green. |
