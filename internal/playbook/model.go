@@ -36,6 +36,7 @@ const (
 	IssueOversize            = "oversize"
 	IssueNameConflict        = "name_conflict"
 	IssueBadGoal             = "bad_goal"
+	IssueBadVerify           = "bad_verify"
 	IssueBadMaxSteps         = "bad_max_steps"
 
 	DefaultTimeoutS    = 600
@@ -56,12 +57,14 @@ const (
 )
 
 type Playbook struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	Entry       string          `json:"entry"`
-	MaxSteps    int             `json:"max_steps,omitempty"` // 0 = 未配置,生效 DefaultMaxSteps
-	Goal        *ResultSpec     `json:"goal,omitempty"`      // checkmate 谓词,可选
-	Steps       map[string]Step `json:"steps"`
+	Name         string                `json:"name"`
+	Description  string                `json:"description"`
+	Entry        string                `json:"entry"`
+	MaxSteps     int                   `json:"max_steps,omitempty"` // 0 = 未配置,生效 DefaultMaxSteps
+	Capabilities []string              `json:"capabilities,omitempty"`
+	Goal         *ResultSpec           `json:"goal,omitempty"` // checkmate 谓词,可选
+	Verify       map[string]ResultSpec `json:"verify,omitempty"`
+	Steps        map[string]Step       `json:"steps"`
 
 	order []string
 }

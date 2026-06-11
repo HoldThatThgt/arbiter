@@ -3,6 +3,7 @@ package playbook
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -44,6 +45,142 @@ func TestParseValidBook(t *testing.T) {
 	}
 	if len(book.OrderedSteps()) != 2 {
 		t.Fatalf("ordered steps = %d", len(book.OrderedSteps()))
+	}
+}
+
+func TestParseCapabilitiesVerifyAndTypedGoal(t *testing.T) {
+	body := `---
+name: typed-opening
+description: uses named predicates
+capabilities: [recipes]
+---
+
+[Verify] repro-passes
+run: unit
+tests: ["Suite.Case"]
+expect: {"overall":"passed","min_passed":1}
+
+[SetGoal]
+fact: callers:main
+expect: {"min_results":1,"complete":true}
+
+[STEP] fix
+[StepJob]
+Make the smallest code change.
+[CheckList]
+- Submit repro-passes
+[Branch]
+success: END
+failure: fix
+`
+	book, issues := ParseBytes("typed.md", []byte(body))
+	if len(issues) != 0 {
+		t.Fatalf("issues = %#v", issues)
+	}
+	if got := strings.Join(book.Capabilities, ","); got != "recipes" {
+		t.Fatalf("capabilities = %#v", book.Capabilities)
+	}
+	spec, ok := book.Verify["repro-passes"]
+	if !ok {
+		t.Fatalf("verify map = %#v", book.Verify)
+	}
+	if spec.Kind != "run" || spec.Recipe != "unit" || len(spec.Tests) != 1 || spec.Tests[0] != "Suite.Case" {
+		t.Fatalf("verify spec = %#v", spec)
+	}
+	if string(spec.Expect) != `{"overall":"passed","min_passed":1}` {
+		t.Fatalf("verify expect = %s", spec.Expect)
+	}
+	if book.Goal == nil || book.Goal.Kind != "fact" || book.Goal.Query != "callers:main" {
+		t.Fatalf("goal = %#v", book.Goal)
+	}
+}
+
+func TestParseVerifyIssues(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "bad capability",
+			body: `---
+name: n
+description: d
+capabilities: ["bad/slash"]
+---
+[STEP] a
+[StepJob]
+job
+[CheckList]
+- item
+[Branch]
+success: END
+failure: END
+`,
+		},
+		{
+			name: "bad verify name",
+			body: `---
+name: n
+description: d
+---
+[Verify] bad/name
+shell: true
+[STEP] a
+[StepJob]
+job
+[CheckList]
+- item
+[Branch]
+success: END
+failure: END
+`,
+		},
+		{
+			name: "duplicate verify",
+			body: `---
+name: n
+description: d
+---
+[Verify] repro
+shell: true
+[Verify] repro
+shell: true
+[STEP] a
+[StepJob]
+job
+[CheckList]
+- item
+[Branch]
+success: END
+failure: END
+`,
+		},
+		{
+			name: "missing verify kind",
+			body: `---
+name: n
+description: d
+---
+[Verify] repro
+timeout_s: 10
+[STEP] a
+[StepJob]
+job
+[CheckList]
+- item
+[Branch]
+success: END
+failure: END
+`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, issues := ParseBytes("bad.md", []byte(tc.body))
+			if !hasIssue(issues, IssueBadVerify) {
+				t.Fatalf("issues = %#v, want %s", issues, IssueBadVerify)
+			}
+		})
 	}
 }
 
