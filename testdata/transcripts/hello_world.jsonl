@@ -20,3 +20,7 @@
 {"type":"response","message":{"jsonrpc":"2.0","id":10,"error":{"code":-32602,"message":"invalid arguments","data":{"kind":"invalid_args","bad_args":["extra"]}}},"allow_volatile":[]}
 {"type":"request","message":{"jsonrpc":"2.0","id":11,"method":"arbiter/nope"}}
 {"type":"response","message":{"jsonrpc":"2.0","id":11,"error":{"code":-32601,"message":"method not found","data":{"kind":"method_not_found"}}},"allow_volatile":[]}
+{"type":"request","message":{"jsonrpc":"2.0","id":12,"method":"arbiter/handshake","params":{"expected_version":"dev"}}}
+{"type":"response","message":{"jsonrpc":"2.0","id":12,"result":{"engine":"arbiter-engine","version":"dev"}},"allow_volatile":[]}
+{"type":"request","message":{"jsonrpc":"2.0","id":13,"method":"arbiter/handshake","params":{"expected_version":"old"}}}
+{"type":"response","message":{"jsonrpc":"2.0","id":13,"error":{"code":-32000,"message":"engine stale","data":{"kind":"engine_stale","expected":"old","found":"dev"}}},"allow_volatile":[]}
