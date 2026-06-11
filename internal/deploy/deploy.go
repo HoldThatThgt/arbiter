@@ -1,28 +1,37 @@
 package deploy
 
 import (
+	"context"
 	"crypto/rand"
 	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"time"
 
 	"github.com/HoldThatThgt/arbiter/internal/playbook"
 )
 
 const (
-	dirPlaybook     = ".arbiter/match/playbook"
-	dirRun          = ".arbiter/match/run"
+	dirPlaybook     = ".arbiter/playbook"
+	dirRun          = ".arbiter/run"
+	dirMatchRun     = ".arbiter/match/run"
 	dirLog          = ".arbiter/match/log"
-	fileFormat      = ".arbiter/match/FORMAT.md"
-	fileSeatKey     = ".arbiter/match/run/seat.key"
+	fileFormat      = ".arbiter/playbook/FORMAT.md"
+	fileSeatKey     = ".arbiter/match/seat.key"
+	fileEngines     = ".arbiter/run/engines.json"
+	fileConfig      = ".arbiter/config.yml"
+	fileRecipes     = ".arbiter/recipes.yaml"
 	fileMCP         = ".mcp.json"
 	fileSettings    = ".claude/settings.json"
 	fileCurator     = ".claude/agents/arbiter-curator.md"
 	fileSkill       = ".claude/skills/arbiter-play/SKILL.md"
+	fileSkillIntro  = ".claude/skills/arbiter-intro/SKILL.md"
 	fileSkillCreate = ".claude/skills/playbook-create/SKILL.md"
 	fileGitignore   = ".gitignore"
 	fileExecutor    = ".claude/agents/arbiter-executor.md"
@@ -31,7 +40,38 @@ const (
 //go:embed templates/*
 var templates embed.FS
 
+type Options struct {
+	NoExecutor     bool
+	Remove         bool
+	EmbeddedEngine bool
+	Python         string
+	FSKind         string
+	Now            func() time.Time
+	VerifyEngine   func(python, root string) (string, error)
+}
+
+type Error struct {
+	Kind    string
+	Message string
+	Err     error
+}
+
+func (e *Error) Error() string {
+	if e.Message != "" {
+		return e.Message
+	}
+	return e.Kind
+}
+
+func (e *Error) Unwrap() error {
+	return e.Err
+}
+
 func Init(root string) (string, error) {
+	return InitWithOptions(root, Options{})
+}
+
+func InitWithOptions(root string, opts Options) (string, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return "", err
@@ -43,8 +83,34 @@ func Init(root string) (string, error) {
 	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = resolved
 	}
+	if opts.Remove {
+		if err := remove(root, exe); err != nil {
+			return "", err
+		}
+		return "arbiter deployment removed.\n", nil
+	}
 
-	for _, dir := range []string{dirPlaybook, dirRun, dirLog, ".claude/agents", ".claude/skills/arbiter-play", ".claude/skills/playbook-create"} {
+	fsKind := opts.FSKind
+	if fsKind == "" {
+		fsKind, err = detectFilesystemKind(root)
+		if err != nil {
+			return "", err
+		}
+	}
+	if isNetworkFilesystem(fsKind) {
+		return "", &Error{Kind: "network_filesystem", Message: "arbiter init refused network filesystem: " + fsKind}
+	}
+	python := resolvePython(opts.Python)
+	verify := opts.VerifyEngine
+	if verify == nil {
+		verify = verifyEngine
+	}
+	engineVersion, err := verify(python, root)
+	if err != nil {
+		return "", &Error{Kind: "engine_verify_failed", Message: "arbiter-engine verification failed", Err: err}
+	}
+
+	for _, dir := range []string{dirPlaybook, dirRun, dirMatchRun, dirLog, ".arbiter/match", ".claude/agents", ".claude/skills/arbiter-play", ".claude/skills/arbiter-intro", ".claude/skills/playbook-create"} {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
 			return "", err
 		}
@@ -56,6 +122,15 @@ func Init(root string) (string, error) {
 	if err := writeIfMissing(filepath.Join(root, fileFormat), mustTemplate("templates/FORMAT.md"), 0o644); err != nil {
 		return "", err
 	}
+	if err := writeIfMissing(filepath.Join(root, fileConfig), defaultConfig(), 0o644); err != nil {
+		return "", err
+	}
+	if err := writeIfMissing(filepath.Join(root, fileRecipes), defaultRecipes(), 0o644); err != nil {
+		return "", err
+	}
+	if err := writeEngines(filepath.Join(root, fileEngines), python, engineVersion, now(opts)); err != nil {
+		return "", err
+	}
 	replacedMCP, err := mergeMCP(filepath.Join(root, fileMCP), exe)
 	if err != nil {
 		return "", err
@@ -64,20 +139,29 @@ func Init(root string) (string, error) {
 	if err := atomicWrite(filepath.Join(root, fileCurator), []byte(curator), 0o600); err != nil {
 		return "", err
 	}
+	if !opts.NoExecutor {
+		executor := render(mustTemplate("templates/arbiter-executor.md"), exe, key)
+		if err := atomicWrite(filepath.Join(root, fileExecutor), []byte(executor), 0o600); err != nil {
+			return "", err
+		}
+	}
 	skill := mustTemplate("templates/arbiter-play.md")
 	if err := atomicWrite(filepath.Join(root, fileSkill), []byte(skill), 0o644); err != nil {
+		return "", err
+	}
+	if err := atomicWrite(filepath.Join(root, fileSkillIntro), []byte(mustTemplate("templates/arbiter-intro.md")), 0o644); err != nil {
 		return "", err
 	}
 	if err := atomicWrite(filepath.Join(root, fileSkillCreate), []byte(mustTemplate("templates/playbook-create.md")), 0o644); err != nil {
 		return "", err
 	}
-	if err := mergeSettings(filepath.Join(root, fileSettings), exe); err != nil {
+	if err := mergeSettings(filepath.Join(root, fileSettings), exe, opts.EmbeddedEngine); err != nil {
 		return "", err
 	}
-	if err := appendGitignore(filepath.Join(root, fileGitignore)); err != nil {
+	if err := appendGitignore(filepath.Join(root, fileGitignore), opts.EmbeddedEngine); err != nil {
 		return "", err
 	}
-	return guidance(exe, key, replacedMCP), nil
+	return guidance(replacedMCP, opts.NoExecutor), nil
 }
 
 func MCPConfigPath(root string) string {
@@ -126,7 +210,7 @@ func mergeMCP(path, exe string) (bool, error) {
 	return replaced, writeJSON(path, root, 0o644)
 }
 
-func mergeSettings(path, exe string) error {
+func mergeSettings(path, exe string, embedded bool) error {
 	root, err := readJSON(path)
 	if err != nil {
 		return err
@@ -140,14 +224,16 @@ func mergeSettings(path, exe string) error {
 	if existing, ok := perms["deny"].([]any); ok {
 		deny = existing
 	}
-	for _, item := range []string{
-		"Read(.arbiter/match/playbook/**)",
-		"Read(.arbiter/match/run/**)",
-		"Read(.claude/agents/arbiter-curator.md)",
-		"Read(.claude/agents/arbiter-executor.md)",
-	} {
+	for _, item := range generatedDenyRules()[:3] {
 		if !hasLineValue(deny, item) {
 			deny = append(deny, item)
+		}
+	}
+	if embedded {
+		for _, item := range generatedDenyRules()[3:] {
+			if !hasLineValue(deny, item) {
+				deny = append(deny, item)
+			}
 		}
 	}
 	perms["deny"] = deny
@@ -155,8 +241,8 @@ func mergeSettings(path, exe string) error {
 	return writeJSON(path, root, 0o644)
 }
 
-// mergeStopHook 注册停止门控 hook(幂等):命令尾词为 "hook stop" 的条目视为
-// Arbiter 所有,刷新其二进制路径;不存在则追加,既有其他 hook 原样保留。
+// mergeStopHook claims only the exact current command, so foreign hooks with
+// similar trailing words cannot be rewritten.
 func mergeStopHook(root map[string]any, exe string) {
 	hooks, _ := root["hooks"].(map[string]any)
 	if hooks == nil {
@@ -178,9 +264,7 @@ func mergeStopHook(root map[string]any, exe string) {
 				continue
 			}
 			c, _ := hm["command"].(string)
-			fields := strings.Fields(c)
-			if len(fields) >= 3 && fields[len(fields)-2] == "hook" && fields[len(fields)-1] == "stop" {
-				hm["command"] = cmd
+			if c == cmd {
 				found = true
 			}
 		}
@@ -193,7 +277,7 @@ func mergeStopHook(root map[string]any, exe string) {
 	hooks["Stop"] = stops
 }
 
-func appendGitignore(path string) error {
+func appendGitignore(path string, embedded bool) error {
 	var lines []string
 	if data, err := os.ReadFile(path); err == nil {
 		text := strings.TrimSuffix(string(data), "\n")
@@ -201,17 +285,135 @@ func appendGitignore(path string) error {
 			lines = strings.Split(text, "\n")
 		}
 	}
-	for _, item := range []string{
-		".arbiter/match/run/",
-		".arbiter/match/log/",
-		".arbiter/match/status.json",
-		".claude/agents/arbiter-curator.md",
-	} {
+	for _, item := range generatedGitignoreLines(embedded) {
 		if !hasString(lines, item) {
 			lines = append(lines, item)
 		}
 	}
 	return atomicWrite(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
+}
+
+func remove(root, exe string) error {
+	if err := removeMCP(filepath.Join(root, fileMCP), exe); err != nil {
+		return err
+	}
+	if err := removeSettings(filepath.Join(root, fileSettings), exe); err != nil {
+		return err
+	}
+	if err := removeGitignore(filepath.Join(root, fileGitignore)); err != nil {
+		return err
+	}
+	for _, file := range []string{
+		fileEngines, fileSeatKey, fileCurator, fileExecutor, fileSkill, fileSkillIntro,
+		fileSkillCreate, fileFormat, fileConfig, fileRecipes,
+	} {
+		if err := os.Remove(filepath.Join(root, file)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+func removeMCP(path, exe string) error {
+	root, err := readJSON(path)
+	if err != nil {
+		return err
+	}
+	servers, _ := root["mcpServers"].(map[string]any)
+	if servers == nil {
+		return nil
+	}
+	if isArbiterServer(servers["arbiter"], exe) {
+		delete(servers, "arbiter")
+	}
+	return writeJSON(path, root, 0o644)
+}
+
+func isArbiterServer(value any, exe string) bool {
+	server, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	args, _ := server["args"].([]any)
+	return server["command"] == exe && len(args) == 2 && args[0] == "serve" && args[1] == "player"
+}
+
+func removeSettings(path, exe string) error {
+	root, err := readJSON(path)
+	if err != nil {
+		return err
+	}
+	perms, _ := root["permissions"].(map[string]any)
+	if perms != nil {
+		if deny, ok := perms["deny"].([]any); ok {
+			perms["deny"] = removeValues(deny, generatedDenyRules())
+		}
+	}
+	removeStopHook(root, exe)
+	return writeJSON(path, root, 0o644)
+}
+
+func removeStopHook(root map[string]any, exe string) {
+	hooks, _ := root["hooks"].(map[string]any)
+	if hooks == nil {
+		return
+	}
+	stops, _ := hooks["Stop"].([]any)
+	cmd := exe + " hook stop"
+	var keptStops []any
+	for _, entry := range stops {
+		em, ok := entry.(map[string]any)
+		if !ok {
+			keptStops = append(keptStops, entry)
+			continue
+		}
+		inner, _ := em["hooks"].([]any)
+		var keptHooks []any
+		for _, h := range inner {
+			hm, ok := h.(map[string]any)
+			if !ok || hm["command"] != cmd {
+				keptHooks = append(keptHooks, h)
+			}
+		}
+		if len(keptHooks) > 0 {
+			em["hooks"] = keptHooks
+			keptStops = append(keptStops, em)
+		}
+	}
+	if len(keptStops) == 0 {
+		delete(hooks, "Stop")
+	} else {
+		hooks["Stop"] = keptStops
+	}
+}
+
+func removeGitignore(path string) error {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+	var kept []string
+	for _, line := range lines {
+		if line != "" && !hasString(generatedGitignoreLines(true), line) {
+			kept = append(kept, line)
+		}
+	}
+	return atomicWrite(path, []byte(strings.Join(kept, "\n")+"\n"), 0o644)
+}
+
+func removeValues(values []any, remove []string) []any {
+	var out []any
+	for _, value := range values {
+		s, ok := value.(string)
+		if !ok || !hasString(remove, s) {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func readJSON(path string) (map[string]any, error) {
@@ -241,6 +443,14 @@ func writeJSON(path string, value map[string]any, perm os.FileMode) error {
 		return err
 	}
 	return atomicWrite(path, append(data, '\n'), perm)
+}
+
+func writeEngines(path, python, version string, at time.Time) error {
+	return writeJSON(path, map[string]any{
+		"python":         python,
+		"engine_version": version,
+		"verified_at":    at.UTC().Format(time.RFC3339),
+	}, 0o644)
 }
 
 func writeIfMissing(path, text string, perm os.FileMode) error {
@@ -318,39 +528,121 @@ func hasString(values []string, target string) bool {
 	return false
 }
 
-func guidance(exe, key string, replacedMCP bool) string {
-	msg := fmt.Sprintf(`arbiter 已部署。剩余两件事:
-1. 把棋谱放进 .arbiter/match/playbook/(格式见 .arbiter/match/FORMAT.md)
-2. 提供执行席位 agent: .claude/agents/arbiter-executor.md,模板如下
-   ┌─────────────────────────────────────────────
-   │ ---
-   │ name: arbiter-executor
-   │ description: 执行 arbiter 任务并提交可验证结果
-   │ tools: Bash, Read, Write, Edit, Glob, Grep,
-   │   mcp__arbiter-executor__SubmitTask, mcp__arbiter-executor__ReviewTask
-   │ mcpServers:
-   │   arbiter-executor:
-   │     type: stdio
-   │     command: %s
-   │     args: [serve, executor]
-   │     env:
-   │       ARBITER_SEAT_KEY: %s
-   │ ---
-   │ 你是任务执行者。完成提示中的任务后,必须调用 SubmitTask:
-   │ task_id 取提示中的编号,summary 一句话概括结果(进全局任务清单,
-   │ 供棋手通览与复盘),report 写明做了什么与证据,result 填能
-   │ 独立验证完成的谓词——shell 命令(退出码 0 即通过)或 mcp 调用
-   │ (server/tool/arguments,应答非错误即通过)。验证耗时长或输出大时,
-   │ 可在 result 中附 timeout_s(默认 600)/ output_lines(默认 256)。
-   │ 提交后可用 ReviewTask 查看判定;失败可修复后重交。
-   └─────────────────────────────────────────────
-   (模板已嵌入本机席位凭证;建议把该文件加入 .gitignore,换机后重跑 arbiter init)
-完成后打开 claude 即可使用(试试: /arbiter-play 修复构建)。
-没有现成棋谱?用 /playbook-create 让模型按你的描述起草并注册一份。
-已注册 Stop 门控:对局进行中模型无法自行停止(用户中断不受影响)。
-`, exe, key)
+func guidance(replacedMCP, noExecutor bool) string {
+	msg := "arbiter 已部署。已写入引擎校验、席位凭证、Claude agents、skills、MCP 与 Stop hook 配置。\n"
+	if noExecutor {
+		msg += "提示:--no-executor 已跳过 executor agent。\n"
+	}
 	if replacedMCP {
 		msg += "提示:.mcp.json 中既有 arbiter 服务器指向不同命令,已覆盖为当前二进制。\n"
 	}
 	return msg
+}
+
+func defaultConfig() string {
+	return "# Arbiter engine config.\nfacts:\n  key_flags: []\n"
+}
+
+func defaultRecipes() string {
+	return "# Arbiter RecipeBook v2.\ntargets: {}\nprofiles: {}\n"
+}
+
+func now(opts Options) time.Time {
+	if opts.Now != nil {
+		return opts.Now()
+	}
+	return time.Now().UTC()
+}
+
+func resolvePython(python string) string {
+	if python == "" {
+		python = os.Getenv("ARBITER_ENGINE_PYTHON")
+	}
+	if python == "" {
+		python = os.Getenv("PYTHON")
+	}
+	if python == "" {
+		python = "python3"
+	}
+	if path, err := exec.LookPath(python); err == nil {
+		return path
+	}
+	return python
+}
+
+func verifyEngine(python, root string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, python, "-m", "arbiter_engine", "--version")
+	cmd.Env = os.Environ()
+	if _, err := os.Stat(filepath.Join(root, "engine", "arbiter_engine")); err == nil {
+		cmd.Env = append(cmd.Env, "PYTHONPATH="+filepath.Join(root, "engine"))
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	text := strings.TrimSpace(string(out))
+	const prefix = "arbiter-engine "
+	if !strings.HasPrefix(text, prefix) {
+		return "", fmt.Errorf("unexpected version output %q", text)
+	}
+	return strings.TrimSpace(strings.TrimPrefix(text, prefix)), nil
+}
+
+func detectFilesystemKind(root string) (string, error) {
+	if value := os.Getenv("ARBITER_ASSUME_FS"); value != "" {
+		return strings.ToLower(value), nil
+	}
+	if runtime.GOOS == "windows" {
+		return "unknown", nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	args := []string{"-f", "%T", root}
+	if runtime.GOOS == "linux" {
+		args = []string{"-f", "-c", "%T", root}
+	}
+	out, err := exec.CommandContext(ctx, "stat", args...).Output()
+	if err != nil {
+		return "unknown", nil
+	}
+	return strings.ToLower(strings.TrimSpace(string(out))), nil
+}
+
+func isNetworkFilesystem(kind string) bool {
+	kind = strings.ToLower(kind)
+	for _, network := range []string{"nfs", "nfs4", "smbfs", "cifs", "afpfs", "sshfs", "fuse.sshfs"} {
+		if kind == network || strings.Contains(kind, network) {
+			return true
+		}
+	}
+	return false
+}
+
+func generatedDenyRules() []string {
+	return []string{
+		"Read(.arbiter/playbook/**)",
+		"Read(.arbiter/match/**)",
+		"Read(.claude/agents/arbiter-*.md)",
+		"Edit(.arbiter/engine/**)",
+		"Write(.arbiter/engine/**)",
+	}
+}
+
+func generatedGitignoreLines(embedded bool) []string {
+	lines := []string{
+		".arbiter/run/",
+		".arbiter/match/",
+		".arbiter/facts/",
+		".arbiter/runs/",
+		".arbiter/locks/",
+		".arbiter/match/status.json",
+		".claude/agents/arbiter-curator.md",
+		".claude/agents/arbiter-executor.md",
+	}
+	if embedded {
+		lines = append(lines, ".arbiter/engine/")
+	}
+	return lines
 }

@@ -166,7 +166,7 @@ func TestAddPlayBook(t *testing.T) {
 	if added.Name != "goalflow" || added.StepsTotal != 2 || !added.HasGoal || added.MaxSteps != 6 {
 		t.Fatalf("added = %#v", added)
 	}
-	if _, err := os.Stat(filepath.Join(root, ".arbiter", "match", "playbook", "goalflow.md")); err != nil {
+	if _, err := os.Stat(filepath.Join(root, ".arbiter", "playbook", "goalflow.md")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.LoadPlayBook("goalflow"); err != nil {

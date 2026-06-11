@@ -39,11 +39,11 @@ func TestSeatToolSurface(t *testing.T) {
 
 func TestSeatDenied(t *testing.T) {
 	root := t.TempDir()
-	runDir := filepath.Join(root, ".arbiter", "match", "run")
-	if err := os.MkdirAll(runDir, 0o755); err != nil {
+	matchDir := filepath.Join(root, ".arbiter", "match")
+	if err := os.MkdirAll(matchDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(runDir, "seat.key"), []byte("0123456789abcdef0123456789abcdef\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(matchDir, "seat.key"), []byte("0123456789abcdef0123456789abcdef\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv(playbook.SeatEnvKey, "")

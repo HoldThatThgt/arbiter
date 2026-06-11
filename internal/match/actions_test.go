@@ -400,7 +400,7 @@ func TestNotePlaybook(t *testing.T) {
 	if !noted.Added || noted.Playbook != "flow" || len(noted.Gotchas) != 1 {
 		t.Fatalf("noted = %#v", noted)
 	}
-	data, err := os.ReadFile(filepath.Join(root, ".arbiter", "match", "playbook", "flow.md"))
+	data, err := os.ReadFile(filepath.Join(root, ".arbiter", "playbook", "flow.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -490,7 +490,7 @@ failure: END
 	if !noted.Added {
 		t.Fatalf("noted = %#v", noted)
 	}
-	data, err := os.ReadFile(filepath.Join(root, ".arbiter", "match", "playbook", "once.md"))
+	data, err := os.ReadFile(filepath.Join(root, ".arbiter", "playbook", "once.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -502,7 +502,7 @@ failure: END
 func repoWithBook(t *testing.T, name, body string) string {
 	t.Helper()
 	root := t.TempDir()
-	dir := filepath.Join(root, ".arbiter", "match", "playbook")
+	dir := filepath.Join(root, ".arbiter", "playbook")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}

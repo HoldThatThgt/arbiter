@@ -37,7 +37,7 @@ func (s *Store) lockPath() string {
 }
 
 func (s *Store) playbookDir() string {
-	return filepath.Join(s.Root, ".arbiter", "match", "playbook")
+	return filepath.Join(s.Root, ".arbiter", "playbook")
 }
 
 func (s *Store) withLock(fn func(*Match) (*Match, any, error)) (any, error) {

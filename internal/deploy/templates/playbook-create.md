@@ -46,6 +46,6 @@ failure: 某步骤名或END
 
 ## 铁律
 
-- 不要读取或猜测 .arbiter/match/playbook 下的内容;注册新棋谱的唯一途径是 AddPlayBook。
+- 不要读取或猜测 .arbiter/playbook 下的内容;注册新棋谱的唯一途径是 AddPlayBook。
 - 不替用户发明业务规则:流程细节不确定就问,不要编。
 - checklist 写不出对应的验证命令/接口时,说明该步骤划分有问题,回去重新拆。

@@ -108,7 +108,7 @@ func checkKey(root, seatName string) error {
 	if env == "" {
 		reason = "missing_env"
 	} else {
-		data, err := os.ReadFile(filepath.Join(root, ".arbiter", "match", "run", "seat.key"))
+		data, err := os.ReadFile(filepath.Join(root, ".arbiter", "match", "seat.key"))
 		if err != nil {
 			reason = "missing_keyfile"
 		} else if strings.TrimSpace(string(data)) != env {
