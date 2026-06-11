@@ -50,6 +50,8 @@ func TestValidateClosedSets(t *testing.T) {
 		{"run one_of empty", ResultSpec{Kind: "run", Tests: []string{"t"}, Expect: mustRaw(t, `{"overall":{"one_of":[]}}`)}},
 		{"run expect empty", ResultSpec{Kind: "run", Tests: []string{"t"}, Expect: mustRaw(t, `{}`)}},
 		{"run test clause incomplete", ResultSpec{Kind: "run", Tests: []string{"t"}, Expect: mustRaw(t, `{"test":{"name":"x"}}`)}},
+		{"run facts clause empty", ResultSpec{Kind: "run", Tests: []string{"t"}, Expect: mustRaw(t, `{"facts":{}}`)}},
+		{"run facts clause unknown key", ResultSpec{Kind: "run", Tests: []string{"t"}, Expect: mustRaw(t, `{"facts":{"published":true,"junk":1}}`)}},
 		{"fact missing query", ResultSpec{Kind: "fact", Expect: mustRaw(t, `{"min_results":1}`)}},
 		{"fact missing expect", ResultSpec{Kind: "fact", Query: "sym:Foo"}},
 		{"fact with tool", ResultSpec{Kind: "fact", Tool: "x", Query: "sym:Foo", Expect: mustRaw(t, `{"min_results":1}`)}},
@@ -175,7 +177,7 @@ func TestCompareMCPExpectOpsFailClosed(t *testing.T) {
 func TestValidateAcceptsWellFormedTypedSpecs(t *testing.T) {
 	good := []ResultSpec{
 		{Kind: "run", Tests: []string{"suite.case"}, Expect: mustRaw(t, `{"overall":"passed"}`)},
-		{Kind: "run", Recipe: "unit", Tests: []string{"a", "b"}, Options: map[string]any{"profile": "fast"}, Expect: mustRaw(t, `{"overall":{"one_of":["passed","flaky"]},"max_failed":0,"min_passed":2,"test":{"name":"a","result":"passed"}}`)},
+		{Kind: "run", Recipe: "unit", Tests: []string{"a", "b"}, Options: map[string]any{"profile": "fast"}, Expect: mustRaw(t, `{"overall":{"one_of":["passed","flaky"]},"max_failed":0,"min_passed":2,"test":{"name":"a","result":"passed"},"facts":{"published":true}}`)},
 		{Kind: "fact", Query: "sym:Router", Expect: mustRaw(t, `{"min_results":1,"max_results":10,"complete":true,"reachable":true,"total_at_least":1}`)},
 	}
 	for i, spec := range good {
@@ -243,6 +245,33 @@ func TestCompareRunOneOf(t *testing.T) {
 	}
 	if ok, _ := CompareRun(expect, RunEvidence{Overall: "failed"}); ok {
 		t.Fatal("one_of non-member accepted")
+	}
+}
+
+func TestCompareRunFactsPublished(t *testing.T) {
+	expect, err := ParseRunExpect(mustRaw(t, `{"overall":"passed","facts":{"published":true}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok, report := CompareRun(expect, RunEvidence{Overall: "passed", Facts: &RunFactsEvidence{Published: true}})
+	if !ok {
+		t.Fatalf("facts clause did not pass: %#v", report)
+	}
+	missingOK, missingReport := CompareRun(expect, RunEvidence{Overall: "passed"})
+	if missingOK {
+		t.Fatalf("missing facts unexpectedly passed: %#v", missingReport)
+	}
+	var found bool
+	for _, clause := range missingReport {
+		if clause.Path == "facts.published" {
+			found = true
+			if clause.OK || clause.Actual != nil {
+				t.Fatalf("missing facts clause = %#v", clause)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("missing facts.published report: %#v", missingReport)
 	}
 }
 

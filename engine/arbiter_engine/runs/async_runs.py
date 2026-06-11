@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from arbiter_engine.errors import RPCError
+from arbiter_engine.runs import gtest
+from arbiter_engine.runs import recipes
 from arbiter_engine.runs import state as run_state
 
 
@@ -94,6 +96,15 @@ def _validate_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
     result = spec.get("result", {"overall": "passed"})
     if not isinstance(result, dict):
         raise RPCError(-32602, "invalid params", {"kind": "invalid_params", "field": "result"})
+    recipe = spec.get("recipe", "")
+    if recipe is not None and not isinstance(recipe, str):
+        raise RPCError(-32602, "invalid params", {"kind": "invalid_params", "field": "recipe"})
+    tests = spec.get("tests", [])
+    if not isinstance(tests, list) or not all(isinstance(item, str) for item in tests):
+        raise RPCError(-32602, "invalid params", {"kind": "invalid_params", "field": "tests"})
+    options = spec.get("options", {})
+    if not isinstance(options, dict):
+        raise RPCError(-32602, "invalid params", {"kind": "invalid_params", "field": "options"})
 
     checked = dict(spec)
     checked["kind"] = kind
@@ -160,7 +171,7 @@ def _spawn_worker(path: Path, run_id: str, spec: Mapping[str, Any]) -> None:
 def _worker_main(path: Path, run_id: str, spec: Mapping[str, Any]) -> None:
     _record_worker(path, run_id, os.getpid())
     try:
-        result = _run_payload(spec)
+        result = _run_payload(path, run_id, spec)
         _finish(path, run_id, "completed", result)
         os._exit(0)
     except _PayloadTimeout:
@@ -172,7 +183,11 @@ def _worker_main(path: Path, run_id: str, spec: Mapping[str, Any]) -> None:
         os._exit(1)
 
 
-def _run_payload(spec: Mapping[str, Any]) -> Mapping[str, Any]:
+def _run_payload(path: Path, run_id: str, spec: Mapping[str, Any]) -> Mapping[str, Any]:
+    options = spec.get("options", {})
+    stub_requested = isinstance(options, Mapping) and "stub_result" in options
+    if spec.get("kind") == "run" and spec.get("recipe") and not stub_requested:
+        return _run_recipe(path, run_id, spec)
     sleep_s = float(spec["sleep_ms"]) / 1000.0
     command = "import time; time.sleep(%r)" % sleep_s
     proc = subprocess.Popen(
@@ -192,6 +207,28 @@ def _run_payload(spec: Mapping[str, Any]) -> Mapping[str, Any]:
     if proc.returncode != 0:
         return {"overall": "failed", "failure": "exit_code", "exit_code": proc.returncode}
     return dict(spec["result"])
+
+
+def _run_recipe(path: Path, run_id: str, spec: Mapping[str, Any]) -> Mapping[str, Any]:
+    repo = _repo_from_db(path)
+    book = recipes.load(repo / ".arbiter" / "recipes.yaml")
+    options = spec.get("options", {})
+    profiles = options.get("profiles", []) if isinstance(options, Mapping) else []
+    result = gtest.run_target(
+        repo,
+        book,
+        str(spec["recipe"]),
+        run_id=run_id,
+        tests=spec.get("tests", []),
+        profiles=profiles,
+    )
+    payload = result.to_json()
+    payload["isError"] = False
+    return payload
+
+
+def _repo_from_db(path: Path) -> Path:
+    return path.parent.parent.parent
 
 
 def _record_worker(path: Path, run_id: str, pid: int) -> None:

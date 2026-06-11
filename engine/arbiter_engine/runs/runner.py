@@ -78,6 +78,7 @@ def _stage_env(
     _merge_env(env, target.env)
     _merge_env(env, stage.env)
     if stage_name in COMPILE_STAGES:
+        env.setdefault("ARBITER_BUILD_ID", f"{target.id}-{stage_name}")
         for profile_name in profiles:
             try:
                 profile = book.profiles[profile_name]

@@ -35,3 +35,4 @@
 | #57 | done | deploy: embed engine with digest (#57) | Red: cannot find module internal/embeddedengine; go:embed engine bundle, init unpack, engines.json digest, spawn-time verification, journal evidence, tamper refusal, and full gate green. |
 | #49 | done | seat: gate engine tools (#49) | Red: buildServerWithRuntime undefined; live tools/list forwarding, QUERY/EXEC children, recipes capability gating, capability_revoked recheck, and full gate green. |
 | #45 | done | shared: add build-driven pipeline (#45) | Red: ImportError: cannot import name 'pipeline'; bounded extraction drain, snapshot.lock publish barrier, facts accounting, miss fail-closed, and full gate green. |
+| #46 | done | runs: hand off src_compile facts (#46) | Red: run_target() got an unexpected keyword argument 'facts_extractor'; src_compile facts in run verdicts, profile cache proof, async run handoff, facts.published predicate, and full gate green. |

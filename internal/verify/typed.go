@@ -31,6 +31,12 @@ type RunEvidence struct {
 	Failed           int               `json:"failed"`
 	FirstFailureName string            `json:"first_failure_name,omitempty"`
 	TestResults      map[string]string `json:"test_results,omitempty"`
+	Facts            *RunFactsEvidence `json:"facts,omitempty"`
+}
+
+type RunFactsEvidence struct {
+	Published  bool   `json:"published"`
+	SnapshotID string `json:"snapshot_id,omitempty"`
 }
 
 type FactEvidence struct {
@@ -92,10 +98,15 @@ type TestExpect struct {
 }
 
 type RunExpect struct {
-	Overall   *OverallExpect `json:"overall,omitempty"`
-	MaxFailed *int           `json:"max_failed,omitempty"`
-	MinPassed *int           `json:"min_passed,omitempty"`
-	Test      *TestExpect    `json:"test,omitempty"`
+	Overall   *OverallExpect  `json:"overall,omitempty"`
+	MaxFailed *int            `json:"max_failed,omitempty"`
+	MinPassed *int            `json:"min_passed,omitempty"`
+	Test      *TestExpect     `json:"test,omitempty"`
+	Facts     *RunFactsExpect `json:"facts,omitempty"`
+}
+
+type RunFactsExpect struct {
+	Published *bool `json:"published,omitempty"`
 }
 
 type FactExpect struct {
@@ -135,7 +146,7 @@ func ParseRunExpect(raw json.RawMessage) (RunExpect, error) {
 	if err := strictDecode(raw, &expect, "run expect"); err != nil {
 		return expect, err
 	}
-	if expect.Overall == nil && expect.MaxFailed == nil && expect.MinPassed == nil && expect.Test == nil {
+	if expect.Overall == nil && expect.MaxFailed == nil && expect.MinPassed == nil && expect.Test == nil && expect.Facts == nil {
 		return expect, badResult("run expect must contain at least one clause")
 	}
 	if expect.MaxFailed != nil && *expect.MaxFailed < 0 {
@@ -146,6 +157,9 @@ func ParseRunExpect(raw json.RawMessage) (RunExpect, error) {
 	}
 	if expect.Test != nil && (expect.Test.Name == "" || expect.Test.Result == "") {
 		return expect, badResult("run expect test clause needs name and result")
+	}
+	if expect.Facts != nil && expect.Facts.Published == nil {
+		return expect, badResult("run expect facts clause needs published")
 	}
 	return expect, nil
 }
@@ -264,6 +278,19 @@ func CompareRun(expect RunExpect, ev RunEvidence) (bool, []ClauseReport) {
 			Path: "test." + expect.Test.Name, Op: "eq",
 			Value: expect.Test.Result, Actual: actual,
 			OK: exists && actual == expect.Test.Result,
+		})
+	}
+	if expect.Facts != nil && expect.Facts.Published != nil {
+		var actual any
+		var ok bool
+		if ev.Facts != nil {
+			actual = ev.Facts.Published
+			ok = ev.Facts.Published == *expect.Facts.Published
+		}
+		report = append(report, ClauseReport{
+			Path: "facts.published", Op: "eq",
+			Value: *expect.Facts.Published, Actual: actual,
+			OK: ok,
 		})
 	}
 	return allOK(report), report

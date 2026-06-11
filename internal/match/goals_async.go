@@ -134,14 +134,15 @@ func engineRunSpec(spec playbook.ResultSpec) map[string]any {
 
 func runGoalReport(pending GoalPending, status engineclient.RunStatus) (*GoalReport, error) {
 	payload := struct {
-		Overall          string            `json:"overall"`
-		Passed           int               `json:"passed"`
-		Failed           int               `json:"failed"`
-		FirstFailureName string            `json:"first_failure_name"`
-		TestResults      map[string]string `json:"test_results"`
-		IsError          *bool             `json:"isError"`
-		IsErrorSnake     *bool             `json:"is_error"`
-		Failure          string            `json:"failure"`
+		Overall          string                   `json:"overall"`
+		Passed           int                      `json:"passed"`
+		Failed           int                      `json:"failed"`
+		FirstFailureName string                   `json:"first_failure_name"`
+		TestResults      map[string]string        `json:"test_results"`
+		Facts            *verify.RunFactsEvidence `json:"facts"`
+		IsError          *bool                    `json:"isError"`
+		IsErrorSnake     *bool                    `json:"is_error"`
+		Failure          string                   `json:"failure"`
 	}{}
 	if len(status.Result) != 0 {
 		if err := json.Unmarshal(status.Result, &payload); err != nil {
@@ -170,6 +171,7 @@ func runGoalReport(pending GoalPending, status engineclient.RunStatus) (*GoalRep
 		Failed:           payload.Failed,
 		FirstFailureName: payload.FirstFailureName,
 		TestResults:      payload.TestResults,
+		Facts:            payload.Facts,
 	})
 	verdict := TaskFail
 	if ok {
