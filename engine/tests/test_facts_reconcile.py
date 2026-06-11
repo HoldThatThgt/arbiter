@@ -62,8 +62,9 @@ class FactsReconcileTest(unittest.TestCase):
             acquired = [call.args[1] for call in acquire.call_args_list]
             self.assertIn([locks.OVERLAY], acquired)
             self.assertTrue(state_path.exists())
-            self.assertEqual(response["result"]["view_state"], "overlay")
-            self.assertIsNotNone(response["result"]["overlay_id"])
+            content = response["result"]["structuredContent"]
+            self.assertEqual(content["view_state"], "overlay")
+            self.assertIsNotNone(content["overlay_id"])
 
     def test_non_writer_reads_published_overlay_without_reconcile(self):
         with tempfile.TemporaryDirectory() as tmp, working_dir(tmp):
@@ -71,13 +72,13 @@ class FactsReconcileTest(unittest.TestCase):
             source.write_text("int a;\n", encoding="utf-8")
 
             with engine_env():
-                first = response_for(call_tool("search", {"query": "a"}))["result"]
+                first = response_for(call_tool("search", {"query": "a"}))["result"]["structuredContent"]
             source.write_text("int b;\n", encoding="utf-8")
 
             with engine_env(role="QUERY", seat="executor"):
-                executor = response_for(call_tool("search", {"query": "a"}))["result"]
+                executor = response_for(call_tool("search", {"query": "a"}))["result"]["structuredContent"]
             with engine_env():
-                second = response_for(call_tool("search", {"query": "a"}))["result"]
+                second = response_for(call_tool("search", {"query": "a"}))["result"]["structuredContent"]
 
             self.assertEqual(executor["overlay_id"], first["overlay_id"])
             self.assertEqual(executor["view_state"], "overlay")

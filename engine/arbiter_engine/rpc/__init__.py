@@ -453,38 +453,44 @@ def _facts_search_tool(context: Context, arguments: Mapping[str, Any]) -> Mappin
     limit = arguments.get("limit", 20)
     if not isinstance(limit, int) or isinstance(limit, bool):
         raise RPCError(-32602, "invalid arguments", {"kind": "invalid_args", "field": "limit"})
-    return {
-        "content": [{"type": "text", "text": "facts.search stub"}],
-        "isError": False,
-        "namespace": "facts",
-        "tool": "search",
+    query_kind = _query_kind(query)
+    structured = {
         **view.evidence(),
         "status": "ok",
-        "query_kind": _query_kind(query),
+        "query_kind": query_kind,
         "query": query,
         "limit": limit,
         "result_count": 0,
         "truncated": False,
         "results": [],
     }
+    return {
+        "content": [{"type": "text", "text": _search_text(structured)}],
+        "structuredContent": structured,
+        "isError": False,
+    }
 
 
 def _facts_detail_tool(context: Context, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
-    view = facts_view.access(Path.cwd(), _facts_context(context))
+    facts_view.access(Path.cwd(), _facts_context(context))
     fact_id = arguments.get("fact_id")
     if not isinstance(fact_id, str) or not fact_id:
         raise RPCError(-32602, "invalid arguments", {"kind": "invalid_args", "field": "fact_id"})
+    message = (
+        f"FACT id not found: {fact_id}.\n"
+        "This id is not in the current snapshot; it may be stale or mistyped.\n"
+        "Re-run search('<symbol name>') to obtain a valid object_id."
+    )
     return {
-        "content": [{"type": "text", "text": "facts.detail stub"}],
-        "isError": False,
-        "namespace": "facts",
-        "tool": "detail",
-        **view.evidence(),
-        "fact": {"object_id": fact_id},
-        "payload": {},
-        "payload_truncated": False,
-        "source_context": None,
-        "relative_preview": {},
+        "content": [{"type": "text", "text": "not_found: " + message}],
+        "structuredContent": {
+            "error": {
+                "code": "not_found",
+                "message": message,
+                "details": {"fact_id": fact_id},
+            }
+        },
+        "isError": True,
     }
 
 
@@ -498,6 +504,15 @@ def _query_kind(query: str) -> str:
     if ":" in query:
         return "relation"
     return "terms"
+
+
+def _search_text(structured: Mapping[str, Any]) -> str:
+    snapshot = structured.get("base_snapshot_id") or "none"
+    return (
+        f"snapshot {snapshot} view_state={structured.get('view_state')}: "
+        f"search returned {structured.get('result_count')} fact results "
+        f"for query kind {structured.get('query_kind')}"
+    )
 
 
 def _run_tool(context: Context, arguments: Mapping[str, Any]) -> Mapping[str, Any]:

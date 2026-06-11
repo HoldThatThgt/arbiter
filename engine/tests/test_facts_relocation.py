@@ -92,7 +92,8 @@ class FactsRelocationTest(unittest.TestCase):
             request("tools/call", {"name": "search", "arguments": {"query": "callers:main", "limit": 50}})
         )
 
-        self.assertFalse(detail["result"]["isError"])
+        self.assertTrue(detail["result"]["isError"])
+        self.assertEqual(detail["result"]["structuredContent"]["error"]["code"], "not_found")
         self.assertEqual(old_arg["error"]["data"]["kind"], "invalid_args")
         self.assertFalse(search_limit["result"]["isError"])
 

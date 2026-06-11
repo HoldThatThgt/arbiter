@@ -149,7 +149,7 @@ func TestToolsListAndCallToolWithMeta(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("CallTool returned error result: %#v", result)
 	}
-	if result.Namespace != "facts" || result.Tool != "search" {
+	if result.StructuredContent["query"] != "callers:main" || result.StructuredContent["query_kind"] != "relation" {
 		t.Fatalf("result = %#v", result)
 	}
 }

@@ -64,10 +64,11 @@ type ToolDecl struct {
 
 // ToolResult is a tools/call response forwarded by the engine.
 type ToolResult struct {
-	Content   []map[string]any `json:"content"`
-	IsError   bool             `json:"isError"`
-	Namespace string           `json:"namespace,omitempty"`
-	Tool      string           `json:"tool,omitempty"`
+	Content           []map[string]any `json:"content"`
+	StructuredContent map[string]any   `json:"structuredContent,omitempty"`
+	IsError           bool             `json:"isError"`
+	Namespace         string           `json:"namespace,omitempty"`
+	Tool              string           `json:"tool,omitempty"`
 }
 
 // AsyncRunStatus is the persisted status returned by arbiter/runStatus.

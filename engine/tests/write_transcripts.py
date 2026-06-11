@@ -139,9 +139,9 @@ def _volatile_paths(request: Dict[str, Any]) -> List[str]:
         params = request.get("params", {})
         arguments = params.get("arguments", {})
         if params.get("name") == "search" and set(arguments) <= {"query", "limit"}:
-            return ["result.overlay_id"]
+            return ["result.structuredContent.overlay_id"]
         if params.get("name") == "detail" and set(arguments) <= {"fact_id", "budget"}:
-            return ["result.overlay_id"]
+            return ["result.structuredContent.overlay_id"]
     return []
 
 
@@ -158,6 +158,8 @@ def _set_path(value: Dict[str, Any], path: str, replacement: Any) -> bool:
         if isinstance(cursor, list):
             cursor[int(last)] = replacement
         else:
+            if last not in cursor:
+                return False
             cursor[last] = replacement
     except (KeyError, IndexError):
         return False

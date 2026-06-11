@@ -63,8 +63,8 @@ class RPCChassisTest(unittest.TestCase):
 
         self.assertEqual(response["id"], 1)
         self.assertFalse(response["result"]["isError"])
-        self.assertEqual(response["result"]["namespace"], "facts")
-        self.assertEqual(response["result"]["tool"], "search")
+        self.assertEqual(response["result"]["structuredContent"]["query"], "callers:main")
+        self.assertEqual(response["result"]["structuredContent"]["query_kind"], "relation")
 
     def test_meta_is_context_not_tool_argument(self):
         seen = {}
