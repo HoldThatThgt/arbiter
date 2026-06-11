@@ -2,6 +2,8 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
@@ -21,38 +23,41 @@ def transcript_paths(repo: Path) -> Iterable[Path]:
 def replay_with_python(repo: Path, transcript: Path) -> None:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(repo / "engine")
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "arbiter_engine.rpc"],
-        cwd=repo,
-        env=env,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    assert proc.stdin is not None
-    assert proc.stdout is not None
+    with tempfile.TemporaryDirectory() as tmp:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "arbiter_engine.rpc"],
+            cwd=tmp,
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        assert proc.stdin is not None
+        assert proc.stdout is not None
 
-    try:
-        for request, response in _pairs(load_transcript(transcript)):
-            proc.stdin.write(json.dumps(request["message"], separators=(",", ":")) + "\n")
-            proc.stdin.flush()
-            line = proc.stdout.readline()
-            if line == "":
-                raise AssertionError("rpc stub exited before writing a response")
-            actual = json.loads(line)
-            expected = response["message"]
-            _assert_matches(expected, actual, response.get("allow_volatile", []))
-    finally:
-        proc.stdin.close()
-        stderr = proc.stderr.read() if proc.stderr else ""
-        code = proc.wait(timeout=5)
-        proc.stdout.close()
-        if proc.stderr:
-            proc.stderr.close()
+        try:
+            for request, response in _pairs(load_transcript(transcript)):
+                if request["message"].get("method") == "arbiter/runStatus":
+                    time.sleep(0.05)
+                proc.stdin.write(json.dumps(request["message"], separators=(",", ":")) + "\n")
+                proc.stdin.flush()
+                line = proc.stdout.readline()
+                if line == "":
+                    raise AssertionError("rpc stub exited before writing a response")
+                actual = json.loads(line)
+                expected = response["message"]
+                _assert_matches(expected, actual, response.get("allow_volatile", []))
+        finally:
+            proc.stdin.close()
+            stderr = proc.stderr.read() if proc.stderr else ""
+            code = proc.wait(timeout=5)
+            proc.stdout.close()
+            if proc.stderr:
+                proc.stderr.close()
 
-    if code != 0:
-        raise AssertionError(f"rpc stub exited {code}: {stderr}")
+        if code != 0:
+            raise AssertionError(f"rpc stub exited {code}: {stderr}")
 
 
 def _pairs(entries: List[Dict[str, Any]]) -> Iterable[tuple[Dict[str, Any], Dict[str, Any]]]:

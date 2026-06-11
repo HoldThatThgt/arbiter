@@ -32,6 +32,13 @@ type Engine struct {
 	nextID int64
 }
 
+// AsyncRunStatus is the persisted status returned by arbiter/runStatus.
+type AsyncRunStatus struct {
+	RunID  string          `json:"run_id"`
+	Status string          `json:"status"`
+	Result json.RawMessage `json:"result,omitempty"`
+}
+
 // Spawn starts the Python engine stub for one role in repo.
 func Spawn(ctx context.Context, role EngineRole, repo string) (*Engine, error) {
 	if role != RoleQuery && role != RoleExec {
@@ -118,6 +125,47 @@ func (e *Engine) Call(ctx context.Context, method string, params any) (json.RawM
 		}
 		return append(json.RawMessage(nil), line...), nil
 	}
+}
+
+// StartRun starts a bounded async engine run and returns its persisted run id.
+func (e *Engine) StartRun(ctx context.Context, spec any) (string, error) {
+	var result AsyncRunStatus
+	if err := e.callResult(ctx, "arbiter/startRun", spec, &result); err != nil {
+		return "", err
+	}
+	if result.RunID == "" {
+		return "", fmt.Errorf("engine startRun response missing run_id")
+	}
+	return result.RunID, nil
+}
+
+// RunStatus polls a bounded async engine run by persisted run id.
+func (e *Engine) RunStatus(ctx context.Context, runID string) (AsyncRunStatus, error) {
+	var result AsyncRunStatus
+	if err := e.callResult(ctx, "arbiter/runStatus", map[string]string{"run_id": runID}, &result); err != nil {
+		return AsyncRunStatus{}, err
+	}
+	if result.RunID == "" || result.Status == "" {
+		return AsyncRunStatus{}, fmt.Errorf("engine runStatus response missing run_id/status")
+	}
+	return result, nil
+}
+
+func (e *Engine) callResult(ctx context.Context, method string, params, target any) error {
+	raw, err := e.Call(ctx, method, params)
+	if err != nil {
+		return err
+	}
+	var response struct {
+		Result json.RawMessage `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return err
+	}
+	if len(response.Result) == 0 {
+		return fmt.Errorf("engine response missing result")
+	}
+	return json.Unmarshal(response.Result, target)
 }
 
 // Close sends EOF to the child and waits for it to exit.
