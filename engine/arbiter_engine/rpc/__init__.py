@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Optional, TextIO
 
 from arbiter_engine import __version__
+from arbiter_engine.errors import RPCError
 
 
 MAX_LINE_BYTES = 1024 * 1024
@@ -56,14 +57,6 @@ class Router:
             raise RPCError(-32601, "tool not found", {"kind": "tool_not_found"})
         _validate_args(tool.input_schema, arguments)
         return tool.handler(context, arguments)
-
-
-class RPCError(Exception):
-    def __init__(self, code: int, message: str, data: Mapping[str, Any]) -> None:
-        super().__init__(message)
-        self.code = code
-        self.message = message
-        self.data = dict(data)
 
 
 def main() -> int:

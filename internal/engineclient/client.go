@@ -160,6 +160,19 @@ type rpcError struct {
 	Data    json.RawMessage `json:"data,omitempty"`
 }
 
+// EngineError is a JSON-RPC error returned by arbiter-engine with a typed data.kind.
+type EngineError struct {
+	Code     int
+	Message  string
+	Kind     string
+	Data     json.RawMessage
+	Response json.RawMessage
+}
+
+func (e *EngineError) Error() string {
+	return fmt.Sprintf("engine error %s (%d): %s", e.Kind, e.Code, e.Message)
+}
+
 func validateResponse(line []byte, wantID int64) error {
 	var response rpcResponse
 	if err := json.Unmarshal(line, &response); err != nil {
@@ -175,12 +188,67 @@ func validateResponse(line []byte, wantID int64) error {
 		if response.Error.Code == 0 || response.Error.Message == "" {
 			return fmt.Errorf("engine response has invalid error shape")
 		}
-		return fmt.Errorf("engine error %d: %s", response.Error.Code, response.Error.Message)
+		kind, err := validateErrorKind(response.Error.Data)
+		if err != nil {
+			return err
+		}
+		return &EngineError{
+			Code:     response.Error.Code,
+			Message:  response.Error.Message,
+			Kind:     kind,
+			Data:     append(json.RawMessage(nil), response.Error.Data...),
+			Response: append(json.RawMessage(nil), line...),
+		}
 	}
 	if len(response.Result) == 0 {
 		return fmt.Errorf("engine response missing result")
 	}
 	return nil
+}
+
+func validateErrorKind(data json.RawMessage) (string, error) {
+	if len(data) == 0 {
+		return "", fmt.Errorf("engine response error missing data")
+	}
+	var payload struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return "", fmt.Errorf("engine response error data is invalid: %w", err)
+	}
+	if payload.Kind == "" {
+		return "", fmt.Errorf("engine response error data missing kind")
+	}
+	if !knownEngineErrorKind(payload.Kind) {
+		return "", fmt.Errorf("unknown engine error kind %q", payload.Kind)
+	}
+	return payload.Kind, nil
+}
+
+func knownEngineErrorKind(kind string) bool {
+	switch kind {
+	case "briefing_unresolved",
+		"capability_revoked",
+		"engine_stale",
+		"harness_unavailable",
+		"invalid_args",
+		"invalid_json",
+		"invalid_jsonrpc",
+		"invalid_meta",
+		"invalid_method",
+		"invalid_params",
+		"invalid_request",
+		"line_too_large",
+		"lock_timeout",
+		"method_not_found",
+		"no_snapshot",
+		"recipe_pin_mismatch",
+		"schema_invalid",
+		"tool_not_found":
+		return true
+	default:
+		return false
+	}
 }
 
 func setEnv(env []string, pairs ...string) []string {

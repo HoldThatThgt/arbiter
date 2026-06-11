@@ -30,6 +30,8 @@ REQUESTS: List[Dict[str, Any]] = [
     _tool_call(7, "run", {"recipe": "unit"}),
     _tool_call(8, "scan", {"scope": "tests"}),
     _tool_call(9, "search", {"query": "callers:main"}),
+    _tool_call(10, "search", {"query": "callers:main", "extra": True}),
+    {"jsonrpc": "2.0", "id": 11, "method": "arbiter/nope"},
 ]
 
 
