@@ -30,3 +30,4 @@
 | #50 | done | match: resolve fact briefings (#50) | Red: CreateTaskWithFacts undefined; fact_refs resolve through resolveBriefing, bad refs fail closed, archived briefings pruned, transcripts twice, and full gate green. |
 | M4 exit | done | match: resolve fact briefings (#50) | Full gate green; cipher-2 import suite green: Ran 438 tests in 42.502s; facts conformance byte-equality test green; fact-kind real query predicate test green. |
 | #47 | done | deploy: rewrite arbiter init (#47) | Red: InitWithOptions undefined; engines.json verification, seat key, both key-injected agents, skills, exact Stop hook, NFS refusal, --remove round-trip, and full gate green. |
+| #48 | done | deploy: adopt legacy checkouts (#48) | Red: Adopt undefined; chess playbooks, crun recipes, cipher facts config, derived-state deletion, legacy MCP removal, whole-token checklist, and full gate green. |

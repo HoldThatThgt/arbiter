@@ -31,7 +31,7 @@ func main() {
 
 func run() error {
 	if len(os.Args) < 2 {
-		return fmt.Errorf("usage: arbiter init [flags] | serve <seat> | hook stop | cc -- <real-compiler> [args...]")
+		return fmt.Errorf("usage: arbiter init [flags] | adopt | serve <seat> | hook stop | cc -- <real-compiler> [args...]")
 	}
 	root, err := os.Getwd()
 	if err != nil {
@@ -56,6 +56,16 @@ func run() error {
 		}
 		fmt.Print(msg)
 		return nil
+	case "adopt":
+		if len(os.Args) != 2 {
+			return fmt.Errorf("usage: arbiter adopt")
+		}
+		report, err := deploy.Adopt(root)
+		if err != nil {
+			return err
+		}
+		fmt.Print(report.String())
+		return nil
 	case "serve":
 		if len(os.Args) != 3 {
 			return fmt.Errorf("usage: arbiter serve <seat>")
@@ -79,6 +89,6 @@ func run() error {
 		}
 		return nil
 	default:
-		return fmt.Errorf("usage: arbiter init [flags] | serve <seat> | hook stop | cc -- <real-compiler> [args...]")
+		return fmt.Errorf("usage: arbiter init [flags] | adopt | serve <seat> | hook stop | cc -- <real-compiler> [args...]")
 	}
 }
