@@ -13,6 +13,7 @@ from typing import Any, Callable, Mapping, Optional, TextIO
 from arbiter_engine import __version__
 from arbiter_engine.errors import RPCError, engine_stale
 from arbiter_engine.facts import descriptors as facts_descriptors
+from arbiter_engine.facts import view as facts_view
 from arbiter_engine.runs import RunManager
 from arbiter_engine.runs import async_runs
 from arbiter_engine.runs import gtest
@@ -27,6 +28,7 @@ MAX_LINE_BYTES = 1024 * 1024
 class Context:
     meta: Mapping[str, Any]
     role: str
+    seat: str
 
 
 @dataclass(frozen=True)
@@ -190,7 +192,7 @@ def _handle_tools_call(request_id: Any, params: Any, router: Router) -> dict[str
     if not isinstance(meta, dict):
         raise RPCError(-32602, "invalid params", {"kind": "invalid_meta"})
 
-    context = Context(meta=meta, role=os.environ.get("ARBITER_ENGINE_ROLE", "QUERY"))
+    context = _context(meta)
     return _result(request_id, dict(router.call_tool(name, arguments, context)))
 
 
@@ -235,7 +237,8 @@ def _handle_refresh(request_id: Any, params: Any) -> dict[str, Any]:
         raise RPCError(-32602, "invalid params", {"kind": "invalid_params", "field": "scope"})
     if not isinstance(meta, dict):
         raise RPCError(-32602, "invalid params", {"kind": "invalid_meta"})
-    return _result(request_id, {"refreshed": True, "scope": dict(scope)})
+    view = facts_view.refresh(Path.cwd(), _facts_context(_context(meta)))
+    return _result(request_id, {"refreshed": True, "scope": dict(scope), **view.evidence()})
 
 
 def _handle_census(request_id: Any, params: Any) -> dict[str, Any]:
@@ -298,6 +301,18 @@ def _handle_run_status(request_id: Any, params: Any) -> dict[str, Any]:
             {"kind": "invalid_params", "field": "run_id"},
         ) from exc
     return _result(request_id, result)
+
+
+def _context(meta: Mapping[str, Any]) -> Context:
+    return Context(
+        meta=meta,
+        role=os.environ.get("ARBITER_ENGINE_ROLE", "QUERY"),
+        seat=os.environ.get("ARBITER_ENGINE_SEAT", "player"),
+    )
+
+
+def _facts_context(context: Context) -> facts_view.AccessContext:
+    return facts_view.AccessContext(role=context.role, seat=context.seat)
 
 
 def _expect_params_object(params: Any, allowed: tuple[str, ...]) -> dict[str, Any]:
@@ -413,6 +428,11 @@ def _stub_handler(namespace: str, name: str) -> Callable[[Context, Mapping[str, 
 
 
 def _handler(namespace: str, name: str) -> Callable[[Context, Mapping[str, Any]], Mapping[str, Any]]:
+    if namespace == "facts":
+        if name == "search":
+            return _facts_search_tool
+        if name == "detail":
+            return _facts_detail_tool
     if namespace == "runs":
         if name == "run":
             return _run_tool
@@ -423,6 +443,61 @@ def _handler(namespace: str, name: str) -> Callable[[Context, Mapping[str, Any]]
         if name == "import_recipes":
             return _import_recipes_tool
     return _stub_handler(namespace, name)
+
+
+def _facts_search_tool(context: Context, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+    view = facts_view.access(Path.cwd(), _facts_context(context))
+    query = arguments.get("query")
+    if not isinstance(query, str):
+        raise RPCError(-32602, "invalid arguments", {"kind": "invalid_args", "field": "query"})
+    limit = arguments.get("limit", 20)
+    if not isinstance(limit, int) or isinstance(limit, bool):
+        raise RPCError(-32602, "invalid arguments", {"kind": "invalid_args", "field": "limit"})
+    return {
+        "content": [{"type": "text", "text": "facts.search stub"}],
+        "isError": False,
+        "namespace": "facts",
+        "tool": "search",
+        **view.evidence(),
+        "status": "ok",
+        "query_kind": _query_kind(query),
+        "query": query,
+        "limit": limit,
+        "result_count": 0,
+        "truncated": False,
+        "results": [],
+    }
+
+
+def _facts_detail_tool(context: Context, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+    view = facts_view.access(Path.cwd(), _facts_context(context))
+    fact_id = arguments.get("fact_id")
+    if not isinstance(fact_id, str) or not fact_id:
+        raise RPCError(-32602, "invalid arguments", {"kind": "invalid_args", "field": "fact_id"})
+    return {
+        "content": [{"type": "text", "text": "facts.detail stub"}],
+        "isError": False,
+        "namespace": "facts",
+        "tool": "detail",
+        **view.evidence(),
+        "fact": {"object_id": fact_id},
+        "payload": {},
+        "payload_truncated": False,
+        "source_context": None,
+        "relative_preview": {},
+    }
+
+
+def _query_kind(query: str) -> str:
+    if not query.strip():
+        return "empty"
+    if query.startswith("reachable:"):
+        return "relation_reachable"
+    if "depth:" in query:
+        return "relation_transitive"
+    if ":" in query:
+        return "relation"
+    return "terms"
 
 
 def _run_tool(context: Context, arguments: Mapping[str, Any]) -> Mapping[str, Any]:

@@ -101,12 +101,18 @@ def record(repo: Path, requests: Iterable[Dict[str, Any]]) -> List[Dict[str, Any
                 line = proc.stdout.readline()
                 if line == "":
                     raise AssertionError("rpc stub exited before writing a response")
+                allow_volatile = _volatile_paths(request)
+                message = json.loads(line)
+                present_volatile: List[str] = []
+                for path in allow_volatile:
+                    if _set_path(message, path, "<volatile>"):
+                        present_volatile.append(path)
                 entries.append({"type": "request", "message": request})
                 entries.append(
                     {
                         "type": "response",
-                        "message": json.loads(line),
-                        "allow_volatile": _volatile_paths(request),
+                        "message": message,
+                        "allow_volatile": present_volatile,
                     }
                 )
         finally:
@@ -125,7 +131,37 @@ def record(repo: Path, requests: Iterable[Dict[str, Any]]) -> List[Dict[str, Any
 def _volatile_paths(request: Dict[str, Any]) -> List[str]:
     if request.get("method") == "arbiter/startRun":
         return ["result.run_id"]
+    if request.get("method") == "arbiter/refresh":
+        params = request.get("params", {})
+        if isinstance(params.get("scope"), dict):
+            return ["result.overlay_id"]
+    if request.get("method") == "tools/call":
+        params = request.get("params", {})
+        arguments = params.get("arguments", {})
+        if params.get("name") == "search" and set(arguments) <= {"query", "limit"}:
+            return ["result.overlay_id"]
+        if params.get("name") == "detail" and set(arguments) <= {"fact_id", "budget"}:
+            return ["result.overlay_id"]
     return []
+
+
+def _set_path(value: Dict[str, Any], path: str, replacement: Any) -> bool:
+    parts = path.split(".")
+    cursor: Any = value
+    for part in parts[:-1]:
+        try:
+            cursor = cursor[int(part)] if isinstance(cursor, list) else cursor[part]
+        except (KeyError, IndexError):
+            return False
+    last = parts[-1]
+    try:
+        if isinstance(cursor, list):
+            cursor[int(last)] = replacement
+        else:
+            cursor[last] = replacement
+    except (KeyError, IndexError):
+        return False
+    return True
 
 
 if __name__ == "__main__":
