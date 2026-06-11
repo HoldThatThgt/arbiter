@@ -50,7 +50,10 @@ class RPCChassisTest(unittest.TestCase):
             ["detail", "import_recipes", "recipe_search", "register", "run", "scan", "search"],
         )
         for tool in tools:
-            self.assertEqual(sorted(tool), ["description", "inputSchema", "name"])
+            if tool["name"] in {"search", "detail"}:
+                self.assertEqual(sorted(tool), ["description", "inputSchema", "name", "outputSchema", "title"])
+            else:
+                self.assertEqual(sorted(tool), ["description", "inputSchema", "name"])
             self.assertFalse(tool["inputSchema"].get("additionalProperties", True))
 
     def test_tools_call_routes_to_registered_tool(self):

@@ -20,6 +20,7 @@ class TranscriptCorpusCoverageTest(unittest.TestCase):
         methods = set()
         tools = set()
         budgets = set()
+        limits = set()
         error_kinds = set()
         for entry in entries:
             message = entry.get("message", {})
@@ -33,6 +34,9 @@ class TranscriptCorpusCoverageTest(unittest.TestCase):
                     budget = params.get("arguments", {}).get("budget")
                     if budget:
                         budgets.add((name, budget))
+                    limit = params.get("arguments", {}).get("limit")
+                    if limit:
+                        limits.add((name, limit))
             elif entry.get("type") == "response" and "error" in message:
                 error_kinds.add(message["error"]["data"]["kind"])
 
@@ -58,12 +62,17 @@ class TranscriptCorpusCoverageTest(unittest.TestCase):
         self.assertGreaterEqual(
             budgets,
             {
-                ("search", "small"),
-                ("search", "normal"),
-                ("search", "large"),
                 ("detail", "small"),
                 ("detail", "normal"),
                 ("detail", "large"),
+            },
+        )
+        self.assertGreaterEqual(
+            limits,
+            {
+                ("search", 1),
+                ("search", 20),
+                ("search", 50),
             },
         )
         self.assertGreaterEqual(

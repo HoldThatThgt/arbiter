@@ -12,6 +12,7 @@ from typing import Any, Callable, Mapping, Optional, TextIO
 
 from arbiter_engine import __version__
 from arbiter_engine.errors import RPCError, engine_stale
+from arbiter_engine.facts import descriptors as facts_descriptors
 from arbiter_engine.runs import RunManager
 from arbiter_engine.runs import async_runs
 from arbiter_engine.runs import gtest
@@ -35,13 +36,25 @@ class Tool:
     description: str
     input_schema: Mapping[str, Any]
     handler: Callable[[Context, Mapping[str, Any]], Mapping[str, Any]]
+    title: Optional[str] = None
+    output_schema: Optional[Mapping[str, Any]] = None
 
     def descriptor(self) -> dict[str, Any]:
-        return {
+        row = {
             "name": self.name,
             "description": self.description,
             "inputSchema": dict(self.input_schema),
         }
+        if self.title is not None:
+            row = {
+                "name": self.name,
+                "title": self.title,
+                "description": self.description,
+                "inputSchema": dict(self.input_schema),
+            }
+        if self.output_schema is not None:
+            row["outputSchema"] = dict(self.output_schema)
+        return row
 
 
 class Router:
@@ -91,6 +104,19 @@ def serve(stdin: TextIO, stdout: TextIO, router: Optional[Router] = None) -> Non
 
 def default_router() -> Router:
     router = Router()
+    for descriptor in facts_descriptors.tool_descriptors():
+        name = descriptor["name"]
+        router.register(
+            Tool(
+                namespace="facts",
+                name=name,
+                description=descriptor["description"],
+                input_schema=descriptor["inputSchema"],
+                handler=_handler("facts", name),
+                title=descriptor.get("title"),
+                output_schema=descriptor.get("outputSchema"),
+            )
+        )
     for namespace, name, description, schema in _DEFAULT_TOOLS:
         router.register(Tool(namespace, name, description, schema, _handler(namespace, name)))
     return router
@@ -333,6 +359,29 @@ def _validate_value(name: str, value: Any, schema: Mapping[str, Any]) -> None:
     if expected == "array" and "items" in schema:
         for item in value:
             _validate_value(name, item, schema["items"])
+    if expected == "integer":
+        minimum = schema.get("minimum")
+        maximum = schema.get("maximum")
+        if isinstance(minimum, int) and value < minimum:
+            raise RPCError(
+                -32602,
+                "invalid arguments",
+                {"kind": "invalid_args", "field": name, "minimum": minimum},
+            )
+        if isinstance(maximum, int) and value > maximum:
+            raise RPCError(
+                -32602,
+                "invalid arguments",
+                {"kind": "invalid_args", "field": name, "maximum": maximum},
+            )
+    if expected == "string":
+        min_length = schema.get("minLength")
+        if isinstance(min_length, int) and len(value) < min_length:
+            raise RPCError(
+                -32602,
+                "invalid arguments",
+                {"kind": "invalid_args", "field": name, "minLength": min_length},
+            )
 
 
 def _matches_type(value: Any, expected: str) -> bool:
@@ -525,21 +574,7 @@ def _object_schema(properties: Mapping[str, Mapping[str, Any]], required: tuple[
     }
 
 
-_BUDGET = {"type": "string", "enum": ["small", "normal", "large"]}
-
 _DEFAULT_TOOLS = (
-    (
-        "facts",
-        "search",
-        "Search the fact index.",
-        _object_schema({"query": {"type": "string"}, "budget": _BUDGET}, ("query",)),
-    ),
-    (
-        "facts",
-        "detail",
-        "Fetch fact detail by object id.",
-        _object_schema({"id": {"type": "string"}, "budget": _BUDGET}, ("id",)),
-    ),
     (
         "runs",
         "run",

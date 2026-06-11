@@ -1,2 +1,2 @@
-{"type":"request","message":{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"detail","arguments":{"id":"fact:1"}}}}
+{"type":"request","message":{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"detail","arguments":{"fact_id":"fact:1"}}}}
 {"type":"response","message":{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"facts.detail stub"}],"isError":false,"namespace":"facts","tool":"detail"}},"allow_volatile":[]}
