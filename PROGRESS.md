@@ -15,3 +15,4 @@
 | #25 | done | shared: emit compile database (#25) | Red: cannot import shared.compile_db; journal dedup, response expansion, partial tolerance, fallback generator, and full gate green. |
 | #26 | done | runs: parse recipe book v2 (#26) | Red: cannot import runs.recipes; strict YAML subset, profiles/compile_db/targets, golden corpus, portability checks, and full gate green. |
 | #27 | done | runs: create sqlite state schema (#27) | Red: cannot import runs.state; WAL/busy_timeout schema, run_test occurrence, BEGIN IMMEDIATE, proven lifecycle, async initializer, and full gate green. |
+| #30 | done | runs: validate build cache by census (#30) | Red: cannot import runs.build_cache; no-sources miss, clean census hits, edit/new/delete misses, restart persistence, and full gate green. |
