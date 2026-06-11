@@ -63,6 +63,59 @@ class ImportPolicySelfTest(unittest.TestCase):
 
         self.assertEqual(violations, [])
 
+    def test_detects_importlib_import_module_non_stdlib(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            module = root / "bad.py"
+            module.write_text(
+                textwrap.dedent(
+                    """\
+                    import importlib
+
+                    importlib.import_module("requests")
+                    """
+                ),
+                encoding="utf-8",
+            )
+
+            violations = find_import_violations(root)
+
+        self.assertEqual(len(violations), 1)
+        self.assertIn("bad.py:3", str(violations[0]))
+        self.assertIn("requests", str(violations[0]))
+
+    def test_detects_dunder_import_non_stdlib(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            module = root / "bad.py"
+            module.write_text('__import__("requests")\n', encoding="utf-8")
+
+            violations = find_import_violations(root)
+
+        self.assertEqual(len(violations), 1)
+        self.assertIn("bad.py:1", str(violations[0]))
+        self.assertIn("requests", str(violations[0]))
+
+    def test_allows_stdlib_dynamic_imports(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            module = root / "ok.py"
+            module.write_text(
+                textwrap.dedent(
+                    """\
+                    import importlib
+
+                    importlib.import_module("json")
+                    __import__("pathlib")
+                    """
+                ),
+                encoding="utf-8",
+            )
+
+            violations = find_import_violations(root)
+
+        self.assertEqual(violations, [])
+
 
 class EngineStdlibImportsTest(unittest.TestCase):
     def test_engine_imports_are_stdlib_only(self):
