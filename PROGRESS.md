@@ -13,3 +13,4 @@
 | #23 | question | interpose: add adversarial cc matrix (#23) | Red: arbiter cc is not implemented; matrix skip-gated only until #24 to preserve green per-commit gates. REVIEWER-QUESTION: Is ARBITER_REQUIRE_CC=1 acceptable as the forced-red mode for the tests-before-implementation split? |
 | #24 | question | interpose: implement arbiter cc shim (#24) | Red: arbiter cc is not implemented; #23 matrix forced green, full gate green. REVIEWER-QUESTION: The current repo has no CI benchmark harness for the 3ms startup p95 claim; should that be a separate gate issue? |
 | #25 | done | shared: emit compile database (#25) | Red: cannot import shared.compile_db; journal dedup, response expansion, partial tolerance, fallback generator, and full gate green. |
+| #26 | done | runs: parse recipe book v2 (#26) | Red: cannot import runs.recipes; strict YAML subset, profiles/compile_db/targets, golden corpus, portability checks, and full gate green. |

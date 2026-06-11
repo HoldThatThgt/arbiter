@@ -1,0 +1,35 @@
+vars:
+  build: build
+profiles:
+  debug:
+    cflags_append: [-O0, -g]
+    env:
+      MODE: debug
+  asan:
+    cflags_append: [-fsanitize=address]
+    env:
+      ASAN_OPTIONS: detect_leaks=1
+compile_db:
+  path: build/compile_commands.json
+  target: gen_compile_db
+targets:
+  - id: unit
+    binary: build/unit_tests
+    tests: [Suite.Pass, Suite.Fail]
+    workdir: .
+    env:
+      GTEST_COLOR: "0"
+    harness:
+      kind: gtest
+      output: xml
+    sources: [src/**/*.cc, include/**/*.h]
+    requires: [debug]
+    notes: basic unit recipe
+    src_compile:
+      cmd: [make, unit]
+      env:
+        CC: clang
+    test_compile:
+      cmd: [make, unit_tests]
+    test_run:
+      cmd: [build/unit_tests]
