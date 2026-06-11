@@ -74,10 +74,16 @@ type ToolResult struct {
 	Tool              string           `json:"tool,omitempty"`
 }
 
-// AsyncRunStatus is the persisted status returned by arbiter/runStatus.
-type AsyncRunStatus struct {
+// RunStart is the arbiter/startRun response.
+type RunStart struct {
+	RunID string `json:"run_id"`
+	State string `json:"state"`
+}
+
+// RunStatus is the arbiter/runStatus response.
+type RunStatus struct {
 	RunID  string          `json:"run_id"`
-	Status string          `json:"status"`
+	State  string          `json:"state"`
 	Result json.RawMessage `json:"result,omitempty"`
 }
 
@@ -381,45 +387,40 @@ func (e *Engine) Call(ctx context.Context, method string, params any) (json.RawM
 	}
 }
 
-// StartRun starts a bounded async engine run and returns its persisted run id.
-func (e *Engine) StartRun(ctx context.Context, spec any) (string, error) {
-	var result AsyncRunStatus
-	if err := e.callResult(ctx, "arbiter/startRun", spec, &result); err != nil {
-		return "", err
+// StartRun starts a bounded async engine run through the referee-only custom method.
+func (e *Engine) StartRun(ctx context.Context, spec, meta any) (RunStart, error) {
+	params := map[string]any{"spec": spec}
+	if meta != nil {
+		params["_meta"] = meta
 	}
-	if result.RunID == "" {
-		return "", fmt.Errorf("engine startRun response missing run_id")
-	}
-	return result.RunID, nil
-}
-
-// RunStatus polls a bounded async engine run by persisted run id.
-func (e *Engine) RunStatus(ctx context.Context, runID string) (AsyncRunStatus, error) {
-	var result AsyncRunStatus
-	if err := e.callResult(ctx, "arbiter/runStatus", map[string]string{"run_id": runID}, &result); err != nil {
-		return AsyncRunStatus{}, err
-	}
-	if result.RunID == "" || result.Status == "" {
-		return AsyncRunStatus{}, fmt.Errorf("engine runStatus response missing run_id/status")
-	}
-	return result, nil
-}
-
-func (e *Engine) callResult(ctx context.Context, method string, params, target any) error {
-	raw, err := e.Call(ctx, method, params)
+	data, err := e.Call(ctx, "arbiter/startRun", params)
 	if err != nil {
-		return err
+		return RunStart{}, err
 	}
-	var response struct {
-		Result json.RawMessage `json:"result"`
+	var started RunStart
+	if err := decodeResult(data, &started); err != nil {
+		return RunStart{}, err
 	}
-	if err := json.Unmarshal(raw, &response); err != nil {
-		return err
+	if started.RunID == "" || started.State == "" {
+		return RunStart{}, fmt.Errorf("startRun response missing run_id or state")
 	}
-	if len(response.Result) == 0 {
-		return fmt.Errorf("engine response missing result")
+	return started, nil
+}
+
+// RunStatus polls a bounded async engine run through the referee-only custom method.
+func (e *Engine) RunStatus(ctx context.Context, runID string) (RunStatus, error) {
+	data, err := e.Call(ctx, "arbiter/runStatus", map[string]any{"run_id": runID})
+	if err != nil {
+		return RunStatus{}, err
 	}
-	return json.Unmarshal(response.Result, target)
+	var status RunStatus
+	if err := decodeResult(data, &status); err != nil {
+		return RunStatus{}, err
+	}
+	if status.RunID == "" || status.State == "" {
+		return RunStatus{}, fmt.Errorf("runStatus response missing run_id or state")
+	}
+	return status, nil
 }
 
 // Close sends EOF to the child and waits for it to exit.
@@ -549,6 +550,17 @@ func validateResponse(line []byte, wantID int64) error {
 		return fmt.Errorf("engine response missing result")
 	}
 	return nil
+}
+
+func decodeResult(line json.RawMessage, target any) error {
+	var response rpcResponse
+	if err := json.Unmarshal(line, &response); err != nil {
+		return err
+	}
+	if len(response.Result) == 0 {
+		return fmt.Errorf("engine response missing result")
+	}
+	return json.Unmarshal(response.Result, target)
 }
 
 func validateErrorKind(data json.RawMessage) (string, error) {

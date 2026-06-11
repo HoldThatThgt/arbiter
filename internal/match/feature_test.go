@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/HoldThatThgt/arbiter/internal/playbook"
 	"github.com/HoldThatThgt/arbiter/internal/verify"
@@ -191,9 +192,16 @@ failure: only
 	}
 
 	restarted := New(root, "test")
-	settled, err := restarted.CheckStepJob(context.Background())
-	if err != nil {
-		t.Fatal(err)
+	var settled CheckStepJobOutput
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		settled, err = restarted.CheckStepJob(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if settled.Reason != "goal_running" {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
 	if settled.Checkmate || settled.Match != StatusFinishedFailure {
 		t.Fatalf("settled = %#v", settled)

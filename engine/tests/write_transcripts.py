@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -57,7 +58,14 @@ SCENARIOS: List[Tuple[str, List[Dict[str, Any]]]] = [
         _request(1, "arbiter/census", {"scope": {"globs": ["transcript-no-such-dir/**/*.c"]}}),
     ),
     _scenario("custom_resolve_briefing", _request(1, "arbiter/resolveBriefing", {"refs": ["fact:1"]})),
-    _scenario("custom_start_run", _request(1, "arbiter/startRun", {"duration_ms": 0, "timeout_ms": 1000})),
+    _scenario(
+        "custom_start_run",
+        _request(
+            1,
+            "arbiter/startRun",
+            {"spec": {"kind": "stub", "sleep_ms": 0, "timeout_s": 1, "result": {"overall": "passed"}}},
+        ),
+    ),
     _scenario("custom_run_status_unknown", _request(1, "arbiter/runStatus", {"run_id": "transcript-missing-run"})),
 ]
 
@@ -81,9 +89,11 @@ def record(repo: Path, requests: Iterable[Dict[str, Any]]) -> List[Dict[str, Any
     env = os.environ.copy()
     env["PYTHONPATH"] = str(repo / "engine")
     with tempfile.TemporaryDirectory() as tmp:
+        workdir = Path(tmp)
+        (workdir / "engine").symlink_to(repo / "engine", target_is_directory=True)
         proc = subprocess.Popen(
             [sys.executable, "-m", "arbiter_engine.rpc"],
-            cwd=tmp,
+            cwd=workdir,
             env=env,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -115,6 +125,8 @@ def record(repo: Path, requests: Iterable[Dict[str, Any]]) -> List[Dict[str, Any
                         "allow_volatile": present_volatile,
                     }
                 )
+                if request.get("method") == "arbiter/startRun":
+                    time.sleep(0.1)
         finally:
             proc.stdin.close()
             stderr = proc.stderr.read() if proc.stderr else ""
@@ -142,6 +154,8 @@ def _volatile_paths(request: Dict[str, Any]) -> List[str]:
             return ["result.structuredContent.overlay_id"]
         if params.get("name") == "detail" and set(arguments) <= {"fact_id", "budget"}:
             return ["result.structuredContent.overlay_id"]
+        if params.get("name") == "run":
+            return ["error.data.detail"]
     return []
 
 

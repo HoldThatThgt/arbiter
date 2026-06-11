@@ -14,7 +14,6 @@ from arbiter_engine import __version__
 from arbiter_engine.errors import RPCError, briefing_unresolved, engine_stale
 from arbiter_engine.facts import descriptors as facts_descriptors
 from arbiter_engine.facts import view as facts_view
-from arbiter_engine.runs import RunManager
 from arbiter_engine.runs import async_runs
 from arbiter_engine.runs import gtest
 from arbiter_engine.runs import recipes
@@ -211,22 +210,12 @@ def _handle_handshake(request_id: Any, params: Any) -> dict[str, Any]:
 
 
 def _handle_start_run(request_id: Any, params: Any) -> dict[str, Any]:
-    values = _expect_params_object(
-        params,
-        allowed=("duration_ms", "timeout_ms", "overall", "_meta"),
-    )
-    meta = values.pop("_meta", {})
+    values = _expect_params_object(params, allowed=("spec", "_meta"))
+    spec = values.get("spec")
+    meta = values.get("_meta", {})
     if not isinstance(meta, dict):
         raise RPCError(-32602, "invalid params", {"kind": "invalid_meta"})
-    try:
-        result = RunManager(Path(os.getcwd())).start_run(values, meta=meta)
-    except ValueError as exc:
-        raise RPCError(
-            -32602,
-            "invalid params",
-            {"kind": "invalid_params", "detail": str(exc)},
-        ) from exc
-    return _result(request_id, result)
+    return _result(request_id, async_runs.start_run(Path.cwd(), spec))
 
 
 def _handle_refresh(request_id: Any, params: Any) -> dict[str, Any]:
@@ -291,19 +280,14 @@ def _handle_resolve_briefing(request_id: Any, params: Any) -> dict[str, Any]:
 
 
 def _handle_run_status(request_id: Any, params: Any) -> dict[str, Any]:
-    values = _expect_params_object(params, allowed=("run_id",))
+    values = _expect_params_object(params, allowed=("run_id", "_meta"))
     run_id = values.get("run_id")
+    meta = values.get("_meta", {})
     if not isinstance(run_id, str) or not run_id:
         raise RPCError(-32602, "invalid params", {"kind": "invalid_params", "field": "run_id"})
-    try:
-        result = RunManager(Path(os.getcwd())).run_status(run_id)
-    except KeyError as exc:
-        raise RPCError(
-            -32602,
-            "invalid params",
-            {"kind": "invalid_params", "field": "run_id"},
-        ) from exc
-    return _result(request_id, result)
+    if not isinstance(meta, dict):
+        raise RPCError(-32602, "invalid params", {"kind": "invalid_meta"})
+    return _result(request_id, async_runs.run_status(Path.cwd(), run_id))
 
 
 def _context(meta: Mapping[str, Any]) -> Context:

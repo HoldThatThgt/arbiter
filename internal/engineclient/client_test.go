@@ -117,43 +117,51 @@ func TestValidateResponseRejectsUnknownEngineErrorKind(t *testing.T) {
 	}
 }
 
-func TestStartRunAndRunStatusMethods(t *testing.T) {
+func TestStartRunAndRunStatusCallCustomMethods(t *testing.T) {
 	repo := repoRoot(t)
-	workdir := transcriptWorkdir(t, repo)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	client, err := Spawn(ctx, RoleExec, workdir)
+	client, err := Spawn(ctx, RoleExec, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client.Close()
 
-	runID, err := client.StartRun(ctx, map[string]any{
-		"duration_ms": 0,
-		"timeout_ms":  1000,
-	})
+	started, err := client.StartRun(ctx, map[string]any{
+		"kind":      "stub",
+		"sleep_ms":  10,
+		"timeout_s": 1,
+		"result": map[string]any{
+			"overall": "passed",
+		},
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if runID == "" {
-		t.Fatal("runID is empty")
+	if started.RunID == "" {
+		t.Fatal("startRun returned empty run_id")
+	}
+	if started.State != "running" {
+		t.Fatalf("startRun state = %q, want running", started.State)
 	}
 
-	status := waitRunStatus(t, ctx, client, runID)
-	if status.Status != "finished" {
-		t.Fatalf("status = %q, want finished", status.Status)
+	var status RunStatus
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		status, err = client.RunStatus(ctx, started.RunID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status.State != "running" {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
-
-	var result struct {
-		RunID   string `json:"run_id"`
-		Overall string `json:"overall"`
+	if status.State != "completed" {
+		t.Fatalf("runStatus state = %q, want completed", status.State)
 	}
-	if err := json.Unmarshal(status.Result, &result); err != nil {
-		t.Fatal(err)
-	}
-	if result.RunID != runID || result.Overall != "passed" {
-		t.Fatalf("result = %#v, want run_id %q overall passed", result, runID)
+	if !strings.Contains(string(status.Result), `"overall":"passed"`) {
+		t.Fatalf("runStatus result = %s", status.Result)
 	}
 }
 
@@ -334,25 +342,10 @@ func replayTranscript(t *testing.T, repo, path string) {
 			t.Fatal(err)
 		}
 		assertJSONEqual(t, response.Message, actual, response.AllowVolatile)
-	}
-}
-
-func waitRunStatus(t *testing.T, ctx context.Context, client *Engine, runID string) AsyncRunStatus {
-	t.Helper()
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		status, err := client.RunStatus(ctx, runID)
-		if err != nil {
-			t.Fatal(err)
+		if decoded.Method == "arbiter/startRun" {
+			time.Sleep(100 * time.Millisecond)
 		}
-		if status.Status != "running" {
-			return status
-		}
-		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("run %s did not finish", runID)
-	return AsyncRunStatus{}
 }
 
 func transcriptHasError(t *testing.T, message json.RawMessage) bool {
