@@ -89,6 +89,63 @@ func TestGoalFailContinuesThenUnmetAtEnd(t *testing.T) {
 	}
 }
 
+func TestGoalMemoDefaultOff(t *testing.T) {
+	root := repoWithBook(t, "g.md", goalBook("exit 0"))
+	store := New(root, "test")
+	if store.goalMemoEnabled() {
+		t.Fatal("goal memo should default off")
+	}
+	writeConfig(t, root, "match:\n  goal_memo: false\n")
+	if store.goalMemoEnabled() {
+		t.Fatal("goal memo false should stay off")
+	}
+	writeConfig(t, root, "match:\n  goal_memo: true\n")
+	if !store.goalMemoEnabled() {
+		t.Fatal("goal memo true should enable memoization")
+	}
+}
+
+func TestGoalMemoizedPassSkipsShellGoalWhenEnabled(t *testing.T) {
+	root := repoWithBook(t, "g.md", goalBook("sh -c 'echo ran >> goal.log; exit 0'"))
+	writeConfig(t, root, "match:\n  goal_memo: true\n")
+	writeText(t, filepath.Join(root, "src", "a.c"), "int a;\n")
+	store := New(root, "test")
+	if _, err := store.LoadPlayBook("goalflow"); err != nil {
+		t.Fatal(err)
+	}
+	seedGoalMemo(t, store)
+
+	out := passRound(t, store)
+
+	if !out.Checkmate || out.Goal == nil || !out.Goal.Memoized {
+		t.Fatalf("memoized goal did not checkmate: %#v", out)
+	}
+	if _, err := os.Stat(filepath.Join(root, "goal.log")); !os.IsNotExist(err) {
+		t.Fatalf("goal command ran despite memo: %v", err)
+	}
+}
+
+func TestGoalMemoInvalidatesOnNewFile(t *testing.T) {
+	root := repoWithBook(t, "g.md", goalBook("sh -c 'echo ran >> goal.log; exit 0'"))
+	writeConfig(t, root, "match:\n  goal_memo: true\n")
+	writeText(t, filepath.Join(root, "src", "a.c"), "int a;\n")
+	store := New(root, "test")
+	if _, err := store.LoadPlayBook("goalflow"); err != nil {
+		t.Fatal(err)
+	}
+	seedGoalMemo(t, store)
+	writeText(t, filepath.Join(root, "src", "new.c"), "int fresh;\n")
+
+	out := passRound(t, store)
+
+	if !out.Checkmate || out.Goal == nil || out.Goal.Memoized {
+		t.Fatalf("new file should force goal execution: %#v", out)
+	}
+	if data := readText(t, filepath.Join(root, "goal.log")); data != "ran\n" {
+		t.Fatalf("goal log = %q", data)
+	}
+}
+
 func TestAsyncRunGoalFalseCheckmateAcrossRestart(t *testing.T) {
 	const runGoalBook = `---
 name: run-goal
@@ -257,4 +314,53 @@ func readStopBlocks(t *testing.T, root string) int {
 		t.Fatal(err)
 	}
 	return m.StopBlocks
+}
+
+func writeConfig(t *testing.T, root, text string) {
+	t.Helper()
+	writeText(t, filepath.Join(root, ".arbiter", "config.yml"), text)
+}
+
+func writeText(t *testing.T, path, text string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func seedGoalMemo(t *testing.T, store *Store) {
+	t.Helper()
+	if _, err := store.withLock(func(m *Match) (*Match, any, error) {
+		if m == nil || m.Playbook.Goal == nil {
+			t.Fatal("missing match goal")
+		}
+		digest, err := store.goalMemoDigest(m, *m.Playbook.Goal)
+		if err != nil {
+			return nil, nil, err
+		}
+		m.GoalMemo = map[string]GoalMemoEntry{
+			digest: {
+				Digest: digest,
+				Report: GoalReport{
+					Verdict: TaskPass,
+					Output:  "memoized pass",
+				},
+			},
+		}
+		return m, nil, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readText(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }

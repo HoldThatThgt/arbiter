@@ -23,25 +23,33 @@ const (
 )
 
 type Match struct {
-	ID          string            `json:"id"`
-	Playbook    playbook.Playbook `json:"playbook"`
-	RecipesPin  RecipePin         `json:"recipes_pin,omitempty"`
-	Status      string            `json:"status"`
-	Abort       string            `json:"abort,omitempty"`
-	Current     *Round            `json:"current,omitempty"`
-	History     []Round           `json:"history"`
-	TaskSeq     int               `json:"task_seq"`
-	RoundSeq    int               `json:"round_seq"`
-	StopBlocks  int               `json:"stop_blocks"` // 本回合内被拦截的停止次数,进入新回合清零
-	GoalPending *GoalPending      `json:"goal_pending,omitempty"`
-	StartedAt   string            `json:"started_at"`
+	ID          string                   `json:"id"`
+	Playbook    playbook.Playbook        `json:"playbook"`
+	RecipesPin  RecipePin                `json:"recipes_pin,omitempty"`
+	Status      string                   `json:"status"`
+	Abort       string                   `json:"abort,omitempty"`
+	Current     *Round                   `json:"current,omitempty"`
+	History     []Round                  `json:"history"`
+	TaskSeq     int                      `json:"task_seq"`
+	RoundSeq    int                      `json:"round_seq"`
+	StopBlocks  int                      `json:"stop_blocks"` // 本回合内被拦截的停止次数,进入新回合清零
+	GoalPending *GoalPending             `json:"goal_pending,omitempty"`
+	GoalMemo    map[string]GoalMemoEntry `json:"goal_memo,omitempty"`
+	StartedAt   string                   `json:"started_at"`
 }
 
 type GoalPending struct {
-	RoundSeq  int                 `json:"round_seq"`
-	RunID     string              `json:"run_id"`
-	Spec      playbook.ResultSpec `json:"spec"`
-	StartedAt string              `json:"started_at"`
+	RoundSeq   int                 `json:"round_seq"`
+	RunID      string              `json:"run_id"`
+	Spec       playbook.ResultSpec `json:"spec"`
+	MemoDigest string              `json:"memo_digest,omitempty"`
+	StartedAt  string              `json:"started_at"`
+}
+
+type GoalMemoEntry struct {
+	Digest   string     `json:"digest"`
+	Report   GoalReport `json:"report"`
+	StoredAt string     `json:"stored_at"`
 }
 
 type RecipePin struct {
@@ -145,6 +153,7 @@ type GoalReport struct {
 	Output     string `json:"output"`
 	DurationMS int    `json:"duration_ms"`
 	Failure    string `json:"failure,omitempty"`
+	Memoized   bool   `json:"memoized,omitempty"`
 }
 
 type AddPlayBookOutput struct {

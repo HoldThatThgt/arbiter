@@ -39,3 +39,4 @@
 | #52 | done | skills: define adjudicated intro (#52) | Red: undefined: ScanInstrumentationMacros; arbiter-intro bootstrap contract, whole-token instrumentation macro checklist, key_flags recommendation, and full gate green. |
 | #56 | done | openings: ship base library (#56) | Red: missing or invalid gold-digger.md; gold-digger, recipe-derivation, regression-triage parse, install with --openings, and full gate green. |
 | M6/M7 exit | question | openings: ship base library (#56) | Full gate green; M6 facts handoff/cache/miss tests green; deploy/openings/intro/seat checks green. REVIEWER-QUESTION: The full fresh-clone intro-to-play demo appears to be the later #58 acceptance item; is this overlap intentional? |
+| #53 | done | match: add goal memoization (#53) | Red: store.goalMemoEnabled undefined; default-off goal memoization, digest folded over census/spec/recipe/toolchain, memo skip, new-file invalidation, and full gate green. |

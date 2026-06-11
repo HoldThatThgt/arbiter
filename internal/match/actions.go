@@ -443,8 +443,10 @@ func (s *Store) settle(m *Match, v roundVerdict, checkmate bool, goal *GoalRepor
 func (s *Store) CheckStepJob(ctx context.Context) (CheckStepJobOutput, error) {
 	var pendingGoal *playbook.ResultSpec
 	var pendingSeq int
+	var pendingDigest string
 	var startRunGoal *playbook.ResultSpec
 	var startRunSeq int
+	var startRunDigest string
 	var pollRunGoal *GoalPending
 	out, err := s.withLock(func(m *Match) (*Match, any, error) {
 		if m == nil || m.Status != StatusActive || m.Current == nil {
@@ -466,16 +468,32 @@ func (s *Store) CheckStepJob(ctx context.Context) (CheckStepJobOutput, error) {
 		}
 		if m.Playbook.Goal != nil && v.outcome == OutcomeSuccess {
 			spec := *m.Playbook.Goal
+			memoDigest := ""
+			if s.goalMemoEnabled() {
+				digest, err := s.goalMemoDigest(m, spec)
+				if err != nil {
+					return nil, nil, err
+				}
+				memoDigest = digest
+				if entry, ok := m.GoalMemo[digest]; ok && entry.Report.Verdict == TaskPass {
+					report := memoizedGoalReport(entry)
+					s.append("goal_checked", map[string]any{"match_id": m.ID, "round": m.Current.Seq, "verdict": report.Verdict, "memoized": true, "digest": digest})
+					next, o := s.settle(m, v, true, report)
+					return next, o, nil
+				}
+			}
 			if spec.Kind == "run" {
 				if err := s.checkRecipePin(m, spec); err != nil {
 					return nil, nil, err
 				}
 				startRunGoal = &spec
 				startRunSeq = m.RoundSeq
+				startRunDigest = memoDigest
 				return nil, nil, nil
 			}
 			pendingGoal = &spec
 			pendingSeq = m.RoundSeq
+			pendingDigest = memoDigest
 			return nil, nil, nil // 锁外执行 checkmate 谓词后再落子
 		}
 		next, o := s.settle(m, v, false, nil)
@@ -488,7 +506,7 @@ func (s *Store) CheckStepJob(ctx context.Context) (CheckStepJobOutput, error) {
 		return s.pollAsyncRunGoal(ctx, *pollRunGoal)
 	}
 	if startRunGoal != nil {
-		return s.startAsyncRunGoal(ctx, *startRunGoal, startRunSeq)
+		return s.startAsyncRunGoal(ctx, *startRunGoal, startRunSeq, startRunDigest)
 	}
 	if pendingGoal == nil {
 		return out.(CheckStepJobOutput), nil
@@ -506,6 +524,9 @@ func (s *Store) CheckStepJob(ctx context.Context) (CheckStepJobOutput, error) {
 	out, err = s.withLock(func(m *Match) (*Match, any, error) {
 		if m == nil || m.Status != StatusActive || m.Current == nil || m.RoundSeq != pendingSeq {
 			return nil, CheckStepJobOutput{Complete: false, Reason: "state_changed", Goal: report}, nil
+		}
+		if pendingDigest != "" {
+			rememberGoalMemo(m, pendingDigest, report)
 		}
 		s.append("goal_checked", map[string]any{"match_id": m.ID, "round": m.Current.Seq, "verdict": report.Verdict, "duration_ms": report.DurationMS, "failure": report.Failure})
 		v := evaluateRound(m) // goal 执行期间可能有重交,重算后裁决

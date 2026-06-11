@@ -10,7 +10,7 @@ import (
 	"github.com/HoldThatThgt/arbiter/internal/verify"
 )
 
-func (s *Store) startAsyncRunGoal(ctx context.Context, spec playbook.ResultSpec, roundSeq int) (CheckStepJobOutput, error) {
+func (s *Store) startAsyncRunGoal(ctx context.Context, spec playbook.ResultSpec, roundSeq int, memoDigest string) (CheckStepJobOutput, error) {
 	runID, err := s.startRunGoal(ctx, spec)
 	if err != nil {
 		return CheckStepJobOutput{}, engineUnavailable(err)
@@ -24,10 +24,11 @@ func (s *Store) startAsyncRunGoal(ctx context.Context, spec playbook.ResultSpec,
 			return nil, CheckStepJobOutput{Complete: false, Reason: "state_changed", RunID: runID}, nil
 		}
 		m.GoalPending = &GoalPending{
-			RoundSeq:  roundSeq,
-			RunID:     runID,
-			Spec:      spec,
-			StartedAt: utcNow(),
+			RoundSeq:   roundSeq,
+			RunID:      runID,
+			Spec:       spec,
+			MemoDigest: memoDigest,
+			StartedAt:  utcNow(),
 		}
 		s.append("goal_started", map[string]any{"match_id": m.ID, "round": m.Current.Seq, "run_id": runID, "kind": "run"})
 		return m, CheckStepJobOutput{Complete: false, Reason: "goal_running", RunID: runID}, nil
@@ -51,6 +52,9 @@ func (s *Store) pollAsyncRunGoal(ctx context.Context, pending GoalPending) (Chec
 			return nil, CheckStepJobOutput{Complete: false, Reason: "state_changed", RunID: pending.RunID, Goal: report}, nil
 		}
 		m.GoalPending = nil
+		if pending.MemoDigest != "" {
+			rememberGoalMemo(m, pending.MemoDigest, report)
+		}
 		s.append("goal_checked", map[string]any{"match_id": m.ID, "round": m.Current.Seq, "verdict": report.Verdict, "run_id": pending.RunID, "failure": report.Failure})
 		v := evaluateRound(m)
 		if !v.complete {
