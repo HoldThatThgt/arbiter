@@ -6,6 +6,15 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 
+def _tool_call(request_id: int, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": "tools/call",
+        "params": {"name": name, "arguments": arguments},
+    }
+
+
 REQUESTS: List[Dict[str, Any]] = [
     {
         "jsonrpc": "2.0",
@@ -13,12 +22,14 @@ REQUESTS: List[Dict[str, Any]] = [
         "method": "initialize",
         "params": {"client": "transcript-replay"},
     },
-    {
-        "jsonrpc": "2.0",
-        "id": 2,
-        "method": "tools/call",
-        "params": {"name": "ping", "arguments": {"message": "hello"}},
-    },
+    {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+    _tool_call(3, "detail", {"id": "fact:1"}),
+    _tool_call(4, "import_recipes", {"path": "recipes.yml"}),
+    _tool_call(5, "recipe_search", {"query": "gtest"}),
+    _tool_call(6, "register", {"path": "recipes.yml"}),
+    _tool_call(7, "run", {"recipe": "unit"}),
+    _tool_call(8, "scan", {"scope": "tests"}),
+    _tool_call(9, "search", {"query": "callers:main"}),
 ]
 
 

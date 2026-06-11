@@ -1,4 +1,4 @@
-"""Run the line-delimited JSON-RPC engine stub."""
+"""Run the line-delimited JSON-RPC engine chassis."""
 
 from . import main
 
