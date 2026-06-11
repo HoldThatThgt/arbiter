@@ -1,0 +1,2 @@
+{"type":"request","message":{"jsonrpc":"2.0","id":1,"method":"arbiter/census","params":{"scope":{"globs":["**/*.c"]}}}}
+{"type":"response","message":{"jsonrpc":"2.0","id":1,"result":{"digest":"stub","scope":{"globs":["**/*.c"]},"new":[],"deleted":[],"changed":[]}},"allow_volatile":[]}

@@ -1,0 +1,2 @@
+{"type":"request","message":{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"register","arguments":{"path":"recipes.yml"}}}}
+{"type":"response","message":{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"runs.register stub"}],"isError":false,"namespace":"runs","tool":"register"}},"allow_volatile":[]}

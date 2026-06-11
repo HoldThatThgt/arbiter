@@ -1,0 +1,2 @@
+{"type":"request","message":{"jsonrpc":"2.0","id":1,"method":"arbiter/resolveBriefing","params":{"refs":["fact:1"]}}}
+{"type":"response","message":{"jsonrpc":"2.0","id":1,"result":{"briefing":[{"ref":"fact:1","content":"stub"}]}},"allow_volatile":[]}

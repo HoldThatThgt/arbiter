@@ -1,0 +1,2 @@
+{"type":"request","message":{"jsonrpc":"2.0","id":1,"method":"arbiter/startRun","params":{"spec":{"kind":"stub","sleep_ms":0,"timeout_s":1,"result":{"overall":"passed"}}}}}
+{"type":"response","message":{"jsonrpc":"2.0","id":1,"result":{"run_id":"3352e0ed1c214c26999c3705ad0b8d56","state":"running"}},"allow_volatile":["result.run_id"]}

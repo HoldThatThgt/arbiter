@@ -131,6 +131,12 @@ def _dispatch(request: Any, router: Router) -> dict[str, Any]:
         return _handle_tools_call(request_id, request.get("params", {}), router)
     if method == "arbiter/handshake":
         return _handle_handshake(request_id, request.get("params", {}))
+    if method == "arbiter/refresh":
+        return _handle_refresh(request_id, request.get("params", {}))
+    if method == "arbiter/census":
+        return _handle_census(request_id, request.get("params", {}))
+    if method == "arbiter/resolveBriefing":
+        return _handle_resolve_briefing(request_id, request.get("params", {}))
     if method == "arbiter/startRun":
         return _handle_start_run(request_id, request.get("params", {}))
     if method == "arbiter/runStatus":
@@ -188,6 +194,47 @@ def _handle_start_run(request_id: Any, params: Any) -> dict[str, Any]:
             {"kind": "invalid_params", "detail": str(exc)},
         ) from exc
     return _result(request_id, result)
+
+
+def _handle_refresh(request_id: Any, params: Any) -> dict[str, Any]:
+    values = _expect_params_object(params, allowed=("scope", "_meta"))
+    scope = values.get("scope", {})
+    meta = values.get("_meta", {})
+    if not isinstance(scope, dict):
+        raise RPCError(-32602, "invalid params", {"kind": "invalid_params", "field": "scope"})
+    if not isinstance(meta, dict):
+        raise RPCError(-32602, "invalid params", {"kind": "invalid_meta"})
+    return _result(request_id, {"refreshed": True, "scope": dict(scope)})
+
+
+def _handle_census(request_id: Any, params: Any) -> dict[str, Any]:
+    values = _expect_params_object(params, allowed=("scope", "_meta"))
+    scope = values.get("scope", {})
+    meta = values.get("_meta", {})
+    if not isinstance(scope, dict):
+        raise RPCError(-32602, "invalid params", {"kind": "invalid_params", "field": "scope"})
+    if not isinstance(meta, dict):
+        raise RPCError(-32602, "invalid params", {"kind": "invalid_meta"})
+    return _result(
+        request_id,
+        {"digest": "stub", "scope": dict(scope), "new": [], "deleted": [], "changed": []},
+    )
+
+
+def _handle_resolve_briefing(request_id: Any, params: Any) -> dict[str, Any]:
+    values = _expect_params_object(params, allowed=("refs", "_meta"))
+    refs = values.get("refs")
+    meta = values.get("_meta", {})
+    if not isinstance(refs, list) or not all(isinstance(ref, str) for ref in refs):
+        raise RPCError(-32602, "invalid params", {"kind": "invalid_params", "field": "refs"})
+    if len(refs) > 8:
+        raise RPCError(-32602, "invalid params", {"kind": "invalid_params", "field": "refs"})
+    if not isinstance(meta, dict):
+        raise RPCError(-32602, "invalid params", {"kind": "invalid_meta"})
+    return _result(
+        request_id,
+        {"briefing": [{"ref": ref, "content": "stub"} for ref in refs]},
+    )
 
 
 def _handle_run_status(request_id: Any, params: Any) -> dict[str, Any]:

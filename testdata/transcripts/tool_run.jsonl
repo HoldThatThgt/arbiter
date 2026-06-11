@@ -1,0 +1,2 @@
+{"type":"request","message":{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run","arguments":{"recipe":"unit"}}}}
+{"type":"response","message":{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"runs.run stub"}],"isError":false,"namespace":"runs","tool":"run"}},"allow_volatile":[]}
