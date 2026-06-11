@@ -2,6 +2,7 @@ package match
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -166,6 +167,50 @@ func TestReplaceLoad(t *testing.T) {
 	}
 }
 
+func TestLoadPlayBookPinsRecipes(t *testing.T) {
+	root := repoWithBook(t, "flow.md", twoStepBook)
+	writeRecipes(t, root, "unit", "cmd: make test\n")
+	store := New(root, "test")
+	if _, err := store.LoadPlayBook("flow"); err != nil {
+		t.Fatal(err)
+	}
+	state := readStateFile(t, root)
+	pin := state.RecipesPin
+	if pin.BookSHA256 == "" || pin.Targets["unit"] == "" {
+		t.Fatalf("recipes pin = %#v", pin)
+	}
+}
+
+func TestRunKindRecipePinMismatch(t *testing.T) {
+	root := repoWithBook(t, "flow.md", twoStepBook)
+	writeRecipes(t, root, "unit", "cmd: make test\n")
+	store := New(root, "test")
+	if _, err := store.LoadPlayBook("flow"); err != nil {
+		t.Fatal(err)
+	}
+	task, err := store.CreateTask("run unit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeRecipes(t, root, "unit", "cmd: make test CHANGED=1\n")
+	_, err = store.SubmitTask(context.Background(), task.TaskID, "unit", "r", verify.ResultSpec{
+		Kind:   "run",
+		Recipe: "unit",
+		Tests:  []string{"Suite.Case"},
+		Expect: json.RawMessage(`{"overall":"passed"}`),
+	})
+	if code := toolCode(err); code != playbook.CodeRecipePinMismatch {
+		t.Fatalf("code = %q, want %q (err=%v)", code, playbook.CodeRecipePinMismatch, err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, ".arbiter", "match", "log", "journal.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "recipe_pin_mismatch") {
+		t.Fatalf("journal = %s", data)
+	}
+}
+
 func TestSubmitTaskSummaryValidation(t *testing.T) {
 	root := repoWithBook(t, "flow.md", twoStepBook)
 	store := New(root, "test")
@@ -200,6 +245,34 @@ func TestSubmitTaskSummaryValidation(t *testing.T) {
 	if !strings.Contains(string(status), "proven ok") {
 		t.Fatalf("status = %s", status)
 	}
+}
+
+func writeRecipes(t *testing.T, root, id, body string) {
+	t.Helper()
+	path := filepath.Join(root, ".arbiter", "recipes.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	text := "targets:\n  " + id + ":\n"
+	for _, line := range strings.Split(strings.TrimSuffix(body, "\n"), "\n") {
+		text += "    " + line + "\n"
+	}
+	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readStateFile(t *testing.T, root string) Match {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(root, ".arbiter", "match", "run", "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state Match
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	return state
 }
 
 func TestListTask(t *testing.T) {

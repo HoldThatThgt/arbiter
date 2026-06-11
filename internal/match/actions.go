@@ -58,6 +58,10 @@ func (s *Store) LoadPlayBook(name string) (LoadPlayBookOutput, error) {
 	if len(entry.Problems) > 0 {
 		return LoadPlayBookOutput{}, &ToolError{Code: playbook.CodePlaybookInvalid, Message: "playbook invalid", Data: map[string]any{"issues": entry.Problems}}
 	}
+	recipesPin, err := s.currentRecipesPin()
+	if err != nil {
+		return LoadPlayBookOutput{}, &ToolError{Code: playbook.CodeRecipePinMismatch, Message: "recipe pin mismatch", Data: map[string]any{"error": err.Error()}}
+	}
 
 	out, err := s.withLock(func(current *Match) (*Match, any, error) {
 		var replaced *string
@@ -68,13 +72,14 @@ func (s *Store) LoadPlayBook(name string) (LoadPlayBookOutput, error) {
 		}
 		now := time.Now().UTC()
 		m := &Match{
-			ID:        newMatchID(now),
-			Playbook:  entry.Book,
-			Status:    StatusActive,
-			Current:   &Round{Seq: 1, StepID: entry.Book.Entry, EnteredAt: now.Format(time.RFC3339)},
-			History:   []Round{},
-			RoundSeq:  1,
-			StartedAt: now.Format(time.RFC3339),
+			ID:         newMatchID(now),
+			Playbook:   entry.Book,
+			RecipesPin: recipesPin,
+			Status:     StatusActive,
+			Current:    &Round{Seq: 1, StepID: entry.Book.Entry, EnteredAt: now.Format(time.RFC3339)},
+			History:    []Round{},
+			RoundSeq:   1,
+			StartedAt:  now.Format(time.RFC3339),
 		}
 		s.append("match_started", map[string]any{"match_id": m.ID, "playbook": m.Playbook.Name, "entry": m.Playbook.Entry})
 		s.append("round_entered", map[string]any{"match_id": m.ID, "round": 1, "step": m.Playbook.Entry})
@@ -155,6 +160,11 @@ func (s *Store) SubmitTask(ctx context.Context, taskID, summary, report string, 
 		}
 		if err := verify.Validate(spec); err != nil {
 			return nil, nil, specError(err)
+		}
+		if spec.Kind == "run" {
+			if err := s.checkRecipePin(m, spec); err != nil {
+				return nil, nil, err
+			}
 		}
 		if _, ok := findCurrentTask(m, taskID); ok {
 			roundSeq = m.RoundSeq

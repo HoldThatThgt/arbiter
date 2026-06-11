@@ -6,3 +6,4 @@
 | #34 | done | verify: add mcp expect clauses (#34) | Red: mcp spec must not set expect; closed ops, scalar validation, reports, and full gate green. |
 | #35 | done | verify: harden reserved-server guard (#35) | Red: hardlink returned no reserved_server; symlink/path/hardlink/argv matrix and full gate green. |
 | #38 | done | playbook: add verify grammar (#38) | Red: Playbook missing Capabilities/Verify fields; [Verify], typed predicates, capabilities, and full gate green. |
+| #36 | done | match: pin recipes at load (#36) | Red: Match missing RecipesPin and recipe_pin_mismatch code; load pin, run mismatch journal, and full gate green. |

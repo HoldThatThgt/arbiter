@@ -25,6 +25,7 @@ const (
 type Match struct {
 	ID         string            `json:"id"`
 	Playbook   playbook.Playbook `json:"playbook"`
+	RecipesPin RecipePin         `json:"recipes_pin,omitempty"`
 	Status     string            `json:"status"`
 	Abort      string            `json:"abort,omitempty"`
 	Current    *Round            `json:"current,omitempty"`
@@ -33,6 +34,11 @@ type Match struct {
 	RoundSeq   int               `json:"round_seq"`
 	StopBlocks int               `json:"stop_blocks"` // 本回合内被拦截的停止次数,进入新回合清零
 	StartedAt  string            `json:"started_at"`
+}
+
+type RecipePin struct {
+	BookSHA256 string            `json:"book_sha256"`
+	Targets    map[string]string `json:"targets"`
 }
 
 type Round struct {
