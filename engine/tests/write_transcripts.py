@@ -32,6 +32,18 @@ REQUESTS: List[Dict[str, Any]] = [
     _tool_call(9, "search", {"query": "callers:main"}),
     _tool_call(10, "search", {"query": "callers:main", "extra": True}),
     {"jsonrpc": "2.0", "id": 11, "method": "arbiter/nope"},
+    {
+        "jsonrpc": "2.0",
+        "id": 12,
+        "method": "arbiter/handshake",
+        "params": {"expected_version": "dev"},
+    },
+    {
+        "jsonrpc": "2.0",
+        "id": 13,
+        "method": "arbiter/handshake",
+        "params": {"expected_version": "old"},
+    },
 ]
 
 

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Optional, TextIO
 
 from arbiter_engine import __version__
-from arbiter_engine.errors import RPCError
+from arbiter_engine.errors import RPCError, engine_stale
 
 
 MAX_LINE_BYTES = 1024 * 1024
@@ -127,6 +127,8 @@ def _dispatch(request: Any, router: Router) -> dict[str, Any]:
         return _result(request_id, {"tools": router.tool_descriptors()})
     if method == "tools/call":
         return _handle_tools_call(request_id, request.get("params", {}), router)
+    if method == "arbiter/handshake":
+        return _handle_handshake(request_id, request.get("params", {}))
 
     raise RPCError(-32601, "method not found", {"kind": "method_not_found"})
 
@@ -147,6 +149,20 @@ def _handle_tools_call(request_id: Any, params: Any, router: Router) -> dict[str
 
     context = Context(meta=meta, role=os.environ.get("ARBITER_ENGINE_ROLE", "QUERY"))
     return _result(request_id, dict(router.call_tool(name, arguments, context)))
+
+
+def _handle_handshake(request_id: Any, params: Any) -> dict[str, Any]:
+    values = _expect_params_object(params, allowed=("expected_version",))
+    expected = values.get("expected_version")
+    if expected is not None and not isinstance(expected, str):
+        raise RPCError(
+            -32602,
+            "invalid params",
+            {"kind": "invalid_params", "field": "expected_version"},
+        )
+    if expected is not None and expected != __version__:
+        raise engine_stale(expected, __version__)
+    return _result(request_id, {"engine": "arbiter-engine", "version": __version__})
 
 
 def _expect_params_object(params: Any, allowed: tuple[str, ...]) -> dict[str, Any]:
