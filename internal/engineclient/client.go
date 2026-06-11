@@ -5,12 +5,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -20,6 +22,16 @@ type EngineRole string
 const (
 	RoleQuery EngineRole = "QUERY"
 	RoleExec  EngineRole = "EXEC"
+
+	defaultCallTimeout = 600 * time.Second
+	maxCallTimeout     = 3600 * time.Second
+	closeGrace         = 5 * time.Second
+)
+
+var (
+	// ErrPoisoned reports a protocol or timeout failure after which the child must not be reused.
+	ErrPoisoned = errors.New("engine child poisoned")
+	ErrClosed   = errors.New("engine child closed")
 )
 
 // Engine is one line-delimited JSON-RPC stdio child.
@@ -27,9 +39,35 @@ type Engine struct {
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
 	stdout *bufio.Reader
+	cfg    spawnConfig
 
 	mu     sync.Mutex
 	nextID int64
+	poison bool
+	closed bool
+	waited bool
+}
+
+type spawnConfig struct {
+	role EngineRole
+	repo string
+	argv []string
+	env  []string
+}
+
+// ToolDecl is one tools/list descriptor forwarded by the engine.
+type ToolDecl struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	InputSchema map[string]any `json:"inputSchema"`
+}
+
+// ToolResult is a tools/call response forwarded by the engine.
+type ToolResult struct {
+	Content   []map[string]any `json:"content"`
+	IsError   bool             `json:"isError"`
+	Namespace string           `json:"namespace,omitempty"`
+	Tool      string           `json:"tool,omitempty"`
 }
 
 // AsyncRunStatus is the persisted status returned by arbiter/runStatus.
@@ -50,37 +88,140 @@ func Spawn(ctx context.Context, role EngineRole, repo string) (*Engine, error) {
 		python = "python3"
 	}
 
-	cmd := exec.CommandContext(ctx, python, "-m", "arbiter_engine.rpc")
-	cmd.Dir = repo
-	cmd.Env = setEnv(os.Environ(),
-		"PYTHONPATH", filepath.Join(repo, "engine"),
-		"ARBITER_ENGINE_ROLE", string(role),
-	)
-	cmd.Stderr = os.Stderr
+	return spawnConfigured(ctx, spawnConfig{
+		role: role,
+		repo: repo,
+		argv: []string{python, "-m", "arbiter_engine.rpc"},
+		env: setEnv(os.Environ(),
+			"PYTHONPATH", filepath.Join(repo, "engine"),
+			"ARBITER_ENGINE_ROLE", string(role),
+		),
+	})
+}
 
+func spawnCommand(ctx context.Context, role EngineRole, repo string, argv []string) (*Engine, error) {
+	if role != RoleQuery && role != RoleExec {
+		return nil, fmt.Errorf("engine role %q is invalid", role)
+	}
+	if len(argv) == 0 {
+		return nil, fmt.Errorf("engine argv is empty")
+	}
+	return spawnConfigured(ctx, spawnConfig{
+		role: role,
+		repo: repo,
+		argv: append([]string(nil), argv...),
+		env:  setEnv(os.Environ(), "ARBITER_ENGINE_ROLE", string(role)),
+	})
+}
+
+func spawnConfigured(ctx context.Context, cfg spawnConfig) (*Engine, error) {
+	engine := &Engine{cfg: cfg}
+	if err := engine.startLocked(ctx); err != nil {
+		return nil, err
+	}
+	return engine, nil
+}
+
+func (e *Engine) startLocked(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	cmd := exec.Command(e.cfg.argv[0], e.cfg.argv[1:]...)
+	cmd.Dir = e.cfg.repo
+	cmd.Env = append([]string(nil), e.cfg.env...)
+	cmd.Stderr = os.Stderr
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if err := cmd.Start(); err != nil {
-		return nil, err
+		return err
 	}
 
-	return &Engine{
-		cmd:    cmd,
-		stdin:  stdin,
-		stdout: bufio.NewReader(stdout),
-	}, nil
+	e.cmd = cmd
+	e.stdin = stdin
+	e.stdout = bufio.NewReader(stdout)
+	e.poison = false
+	e.closed = false
+	e.waited = false
+	return nil
+}
+
+// Poisoned reports whether the current child is unsafe to reuse.
+func (e *Engine) Poisoned() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.poison
+}
+
+// Respawn replaces a poisoned child with a fresh process using the original spawn config.
+func (e *Engine) Respawn(ctx context.Context) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.closed {
+		return ErrClosed
+	}
+	if !e.poison {
+		return nil
+	}
+	return e.startLocked(ctx)
+}
+
+// ToolsList forwards tools/list to the live engine.
+func (e *Engine) ToolsList(ctx context.Context) ([]ToolDecl, error) {
+	data, err := e.Call(ctx, "tools/list", nil)
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		Tools []ToolDecl `json:"tools"`
+	}
+	if err := decodeResult(data, &out); err != nil {
+		return nil, err
+	}
+	return out.Tools, nil
+}
+
+// CallTool forwards tools/call with arguments and optional JSON-RPC _meta.
+func (e *Engine) CallTool(ctx context.Context, name string, args, meta any) (ToolResult, error) {
+	if args == nil {
+		args = map[string]any{}
+	}
+	params := map[string]any{"name": name, "arguments": args}
+	if meta != nil {
+		params["_meta"] = meta
+	}
+	data, err := e.Call(ctx, "tools/call", params)
+	if err != nil {
+		return ToolResult{}, err
+	}
+	var result ToolResult
+	if err := decodeResult(data, &result); err != nil {
+		return ToolResult{}, err
+	}
+	return result, nil
 }
 
 // Call sends one JSON-RPC request and returns the raw response envelope.
 func (e *Engine) Call(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.closed {
+		return nil, ErrClosed
+	}
+	if e.poison {
+		return nil, ErrPoisoned
+	}
+
+	callCtx, cancel := boundedCallContext(ctx)
+	defer cancel()
 
 	e.nextID++
 	request := rpcRequest{
@@ -110,17 +251,20 @@ func (e *Engine) Call(ctx context.Context, method string, params any) (json.RawM
 	}()
 
 	select {
-	case <-ctx.Done():
-		if e.cmd.Process != nil {
-			_ = e.cmd.Process.Kill()
-		}
-		return nil, ctx.Err()
+	case <-callCtx.Done():
+		e.poisonLocked()
+		return nil, callCtx.Err()
 	case result := <-done:
 		if result.err != nil {
+			e.poisonLocked()
 			return nil, result.err
 		}
 		line := bytes.TrimSpace(result.line)
 		if err := validateResponse(line, e.nextID); err != nil {
+			var engineErr *EngineError
+			if !errors.As(err, &engineErr) {
+				e.poisonLocked()
+			}
 			return nil, err
 		}
 		return append(json.RawMessage(nil), line...), nil
@@ -170,22 +314,65 @@ func (e *Engine) callResult(ctx context.Context, method string, params, target a
 
 // Close sends EOF to the child and waits for it to exit.
 func (e *Engine) Close() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.closed {
+		return nil
+	}
+	e.closed = true
 	_ = e.stdin.Close()
+	return e.waitLocked(closeGrace)
+}
 
+func (e *Engine) poisonLocked() {
+	if e.poison {
+		return
+	}
+	e.poison = true
+	_ = e.stdin.Close()
+	_ = killProcessGroup(e.cmd)
+	_ = e.waitLocked(2 * time.Second)
+}
+
+func (e *Engine) waitLocked(grace time.Duration) error {
+	if e.cmd == nil || e.waited {
+		return nil
+	}
 	done := make(chan error, 1)
+	cmd := e.cmd
 	go func() {
-		done <- e.cmd.Wait()
+		done <- cmd.Wait()
 	}()
 
 	select {
 	case err := <-done:
+		e.waited = true
 		return err
-	case <-time.After(5 * time.Second):
-		if e.cmd.Process != nil {
-			_ = e.cmd.Process.Kill()
-		}
-		return <-done
+	case <-time.After(grace):
+		_ = killProcessGroup(cmd)
+		err := <-done
+		e.waited = true
+		return err
 	}
+}
+
+func killProcessGroup(cmd *exec.Cmd) error {
+	if cmd == nil || cmd.Process == nil {
+		return nil
+	}
+	return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+}
+
+func boundedCallContext(parent context.Context) (context.Context, context.CancelFunc) {
+	now := time.Now()
+	limit := now.Add(defaultCallTimeout)
+	if deadline, ok := parent.Deadline(); ok {
+		limit = deadline
+		if deadline.Sub(now) > maxCallTimeout {
+			limit = now.Add(maxCallTimeout)
+		}
+	}
+	return context.WithDeadline(parent, limit)
 }
 
 type rpcRequest struct {

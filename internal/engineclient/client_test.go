@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	stderrors "errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -118,6 +120,140 @@ func TestStartRunAndRunStatusMethods(t *testing.T) {
 	}
 	if result.RunID != runID || result.Overall != "passed" {
 		t.Fatalf("result = %#v, want run_id %q overall passed", result, runID)
+	}
+}
+
+func TestToolsListAndCallToolWithMeta(t *testing.T) {
+	repo := repoRoot(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	client, err := Spawn(ctx, RoleQuery, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	tools, err := client.ToolsList(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tools) == 0 || tools[0].Name == "" {
+		t.Fatalf("tools = %#v", tools)
+	}
+
+	result, err := client.CallTool(ctx, "search", map[string]any{"query": "callers:main"}, map[string]any{"match_id": "m1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("CallTool returned error result: %#v", result)
+	}
+	if result.Namespace != "facts" || result.Tool != "search" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestTimeoutPoisonsKillsProcessGroupAndRespawnWorks(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "respond")
+	childFile := filepath.Join(dir, "child.pid")
+	script := writeFakeEngine(t, `
+import json, os, subprocess, sys, time
+marker = sys.argv[1]
+child_file = sys.argv[2]
+if not os.path.exists(marker):
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    open(child_file, "w", encoding="utf-8").write(str(child.pid))
+    sys.stdout.flush()
+    for _line in sys.stdin:
+        time.sleep(30)
+else:
+    for line in sys.stdin:
+        req = json.loads(line)
+        sys.stdout.write(json.dumps({"jsonrpc":"2.0","id":req["id"],"result":{"ok":True}}, separators=(",", ":")) + "\n")
+        sys.stdout.flush()
+`)
+
+	ctx := context.Background()
+	client, err := spawnCommand(ctx, RoleExec, dir, []string{pythonBin(), script, marker, childFile})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	callCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	_, err = client.Call(callCtx, "probe", nil)
+	cancel()
+	if err == nil {
+		t.Fatal("expected timeout")
+	}
+	if !client.Poisoned() {
+		t.Fatal("client not poisoned after timeout")
+	}
+
+	childPID := readPID(t, childFile)
+	waitNoProcess(t, childPID)
+
+	if err := os.WriteFile(marker, []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Respawn(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if client.Poisoned() {
+		t.Fatal("client still poisoned after respawn")
+	}
+	raw, err := client.Call(ctx, "probe", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"ok":true`) {
+		t.Fatalf("response = %s", raw)
+	}
+}
+
+func TestProtocolFaultsPoisonChild(t *testing.T) {
+	cases := []struct {
+		name   string
+		source string
+	}{
+		{
+			name: "garbage",
+			source: `
+import sys
+sys.stdin.readline()
+sys.stdout.write("not-json\n")
+sys.stdout.flush()
+`,
+		},
+		{
+			name: "death",
+			source: `
+import sys
+sys.stdin.readline()
+sys.exit(0)
+`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			script := writeFakeEngine(t, tc.source)
+			client, err := spawnCommand(context.Background(), RoleExec, dir, []string{pythonBin(), script})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+
+			_, err = client.Call(context.Background(), "probe", nil)
+			if err == nil {
+				t.Fatal("expected protocol fault")
+			}
+			if !client.Poisoned() {
+				t.Fatal("client not poisoned after protocol fault")
+			}
+		})
 	}
 }
 
@@ -317,4 +453,54 @@ func jsonValuesEqual(left, right any) bool {
 	leftJSON, _ := json.Marshal(left)
 	rightJSON, _ := json.Marshal(right)
 	return string(leftJSON) == string(rightJSON)
+}
+
+func writeFakeEngine(t *testing.T, source string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "fake_engine.py")
+	if err := os.WriteFile(path, []byte(strings.TrimLeft(source, "\n")), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func pythonBin() string {
+	if python := os.Getenv("PYTHON"); python != "" {
+		return python
+	}
+	return "python3"
+}
+
+func readPID(t *testing.T, path string) int {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			pid, convErr := strconv.Atoi(strings.TrimSpace(string(data)))
+			if convErr != nil {
+				t.Fatal(convErr)
+			}
+			return pid
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("pid file was not written: %s", path)
+	return 0
+}
+
+func waitNoProcess(t *testing.T, pid int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		err := syscall.Kill(pid, 0)
+		if err == syscall.ESRCH {
+			return
+		}
+		if err != nil && !stderrors.Is(err, syscall.EPERM) {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatal(fmt.Sprintf("process %d still exists", pid))
 }
