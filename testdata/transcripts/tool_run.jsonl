@@ -1,0 +1,2 @@
+{"type":"request","message":{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run","arguments":{"recipe":"unit","options":{"harness_options":{"gtest":{"fail_fast":false}}}}}}}
+{"type":"response","message":{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"invalid arguments","data":{"kind":"invalid_args","field":"recipe","detail":"<volatile>"}}},"allow_volatile":["error.data.detail"]}

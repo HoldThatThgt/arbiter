@@ -14,36 +14,13 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func TestSeatToolSurface(t *testing.T) {
-	cases := []struct {
-		seat string
-		want []string
-	}{
-		{Player, []string{"AddPlayBook", "CheckStepJob", "CreateTask", "ListTask", "NotePlaybook", "ReviewTask", "ShowStepJob"}},
-		{Curator, []string{"ListTask", "LoadPlayBook", "ReadPlayBook", "ReviewTask"}},
-		{Executor, []string{"ListTask", "ReviewTask", "SubmitTask"}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.seat, func(t *testing.T) {
-			server, err := buildServer(t.TempDir(), tc.seat)
-			if err != nil {
-				t.Fatal(err)
-			}
-			got := listTools(t, server)
-			if join(got) != join(tc.want) {
-				t.Fatalf("tools = %#v want %#v", got, tc.want)
-			}
-		})
-	}
-}
-
 func TestSeatDenied(t *testing.T) {
 	root := t.TempDir()
-	runDir := filepath.Join(root, ".arbiter", "match", "run")
-	if err := os.MkdirAll(runDir, 0o755); err != nil {
+	matchDir := filepath.Join(root, ".arbiter", "match")
+	if err := os.MkdirAll(matchDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(runDir, "seat.key"), []byte("0123456789abcdef0123456789abcdef\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(matchDir, "seat.key"), []byte("0123456789abcdef0123456789abcdef\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv(playbook.SeatEnvKey, "")

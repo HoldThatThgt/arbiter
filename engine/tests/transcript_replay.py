@@ -24,9 +24,11 @@ def replay_with_python(repo: Path, transcript: Path) -> None:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(repo / "engine")
     with tempfile.TemporaryDirectory() as tmp:
+        workdir = Path(tmp)
+        (workdir / "engine").symlink_to(repo / "engine", target_is_directory=True)
         proc = subprocess.Popen(
             [sys.executable, "-m", "arbiter_engine.rpc"],
-            cwd=tmp,
+            cwd=workdir,
             env=env,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -48,6 +50,8 @@ def replay_with_python(repo: Path, transcript: Path) -> None:
                 actual = json.loads(line)
                 expected = response["message"]
                 _assert_matches(expected, actual, response.get("allow_volatile", []))
+                if request["message"].get("method") == "arbiter/startRun":
+                    time.sleep(0.1)
         finally:
             proc.stdin.close()
             stderr = proc.stderr.read() if proc.stderr else ""

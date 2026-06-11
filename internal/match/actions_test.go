@@ -2,8 +2,10 @@ package match
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -117,6 +119,62 @@ func TestFailureBranchAndFinish(t *testing.T) {
 	}
 }
 
+func TestCreateTaskResolvesFactBriefingAndPrunesArchived(t *testing.T) {
+	root := repoWithBook(t, "flow.md", twoStepBook)
+	linkEngine(t, root)
+	store := New(root, "test")
+	if _, err := store.LoadPlayBook("flow"); err != nil {
+		t.Fatal(err)
+	}
+	task, err := store.CreateTaskWithFacts("use the fact", []string{"fact:alpha"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	review, err := store.ReviewTask(task.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(review.Briefing) != 1 || review.Briefing[0].Ref != "fact:alpha" {
+		t.Fatalf("briefing = %#v", review.Briefing)
+	}
+	if _, err := store.SubmitTask(context.Background(), task.TaskID, "done", "r", verify.ResultSpec{Kind: "shell", Command: "exit 0"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CheckStepJob(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	archived, err := store.ReviewTask(task.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !archived.Archived || len(archived.Briefing) != 0 {
+		t.Fatalf("archived briefing was not pruned: %#v", archived)
+	}
+	data, err := os.ReadFile(filepath.Join(root, ".arbiter", "match", "log", "journal.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "fact:alpha") {
+		t.Fatalf("journal did not retain briefing ref: %s", data)
+	}
+}
+
+func TestCreateTaskFactRefsFailClosed(t *testing.T) {
+	root := repoWithBook(t, "flow.md", twoStepBook)
+	linkEngine(t, root)
+	store := New(root, "test")
+	if _, err := store.LoadPlayBook("flow"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateTaskWithFacts("bad ref", []string{"bad:missing"}); toolCode(err) != playbook.CodeBriefingUnresolved {
+		t.Fatalf("bad ref err = %#v", err)
+	}
+	refs := []string{"a", "b", "c", "d", "e", "f", "g", "h", "i"}
+	if _, err := store.CreateTaskWithFacts("too many", refs); toolCode(err) != playbook.CodeBriefingUnresolved {
+		t.Fatalf("too many refs err = %#v", err)
+	}
+}
+
 func TestStepsExhausted(t *testing.T) {
 	root := repoWithBook(t, "loop.md", loopBook)
 	store := New(root, "test")
@@ -166,6 +224,51 @@ func TestReplaceLoad(t *testing.T) {
 	}
 }
 
+func TestLoadPlayBookPinsRecipes(t *testing.T) {
+	root := repoWithBook(t, "flow.md", twoStepBook)
+	writeRecipes(t, root, "unit", "cmd: make test\n")
+	store := New(root, "test")
+	if _, err := store.LoadPlayBook("flow"); err != nil {
+		t.Fatal(err)
+	}
+	state := readStateFile(t, root)
+	pin := state.RecipesPin
+	_, pinned := pin.Targets["unit"]
+	if pin.BookSHA256 == "" || !pinned {
+		t.Fatalf("recipes pin = %#v", pin)
+	}
+}
+
+func TestRunKindRecipePinMismatch(t *testing.T) {
+	root := repoWithBook(t, "flow.md", twoStepBook)
+	writeRecipes(t, root, "unit", "cmd: make test\n")
+	store := New(root, "test")
+	if _, err := store.LoadPlayBook("flow"); err != nil {
+		t.Fatal(err)
+	}
+	task, err := store.CreateTask("run unit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeRecipes(t, root, "unit", "cmd: make test CHANGED=1\n")
+	_, err = store.SubmitTask(context.Background(), task.TaskID, "unit", "r", verify.ResultSpec{
+		Kind:   "run",
+		Recipe: "unit",
+		Tests:  []string{"Suite.Case"},
+		Expect: json.RawMessage(`{"overall":"passed"}`),
+	})
+	if code := toolCode(err); code != playbook.CodeRecipePinMismatch {
+		t.Fatalf("code = %q, want %q (err=%v)", code, playbook.CodeRecipePinMismatch, err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, ".arbiter", "match", "log", "journal.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "recipe_pin_mismatch") {
+		t.Fatalf("journal = %s", data)
+	}
+}
+
 func TestSubmitTaskSummaryValidation(t *testing.T) {
 	root := repoWithBook(t, "flow.md", twoStepBook)
 	store := New(root, "test")
@@ -200,6 +303,36 @@ func TestSubmitTaskSummaryValidation(t *testing.T) {
 	if !strings.Contains(string(status), "proven ok") {
 		t.Fatalf("status = %s", status)
 	}
+}
+
+// writeRecipes 写引擎 RecipeBook v2 形态的 recipes.yaml:targets 是 sequence,
+// 每项以 `- id: <name>` 开头(engine/arbiter_engine/runs/recipes.py _parse_targets)。
+func writeRecipes(t *testing.T, root, id, body string) {
+	t.Helper()
+	path := filepath.Join(root, ".arbiter", "recipes.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	text := "targets:\n  - id: " + id + "\n"
+	for _, line := range strings.Split(strings.TrimSuffix(body, "\n"), "\n") {
+		text += "    " + line + "\n"
+	}
+	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readStateFile(t *testing.T, root string) Match {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(root, ".arbiter", "match", "run", "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state Match
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	return state
 }
 
 func TestListTask(t *testing.T) {
@@ -270,7 +403,7 @@ func TestNotePlaybook(t *testing.T) {
 	if !noted.Added || noted.Playbook != "flow" || len(noted.Gotchas) != 1 {
 		t.Fatalf("noted = %#v", noted)
 	}
-	data, err := os.ReadFile(filepath.Join(root, ".arbiter", "match", "playbook", "flow.md"))
+	data, err := os.ReadFile(filepath.Join(root, ".arbiter", "playbook", "flow.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -360,7 +493,7 @@ failure: END
 	if !noted.Added {
 		t.Fatalf("noted = %#v", noted)
 	}
-	data, err := os.ReadFile(filepath.Join(root, ".arbiter", "match", "playbook", "once.md"))
+	data, err := os.ReadFile(filepath.Join(root, ".arbiter", "playbook", "once.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -372,7 +505,7 @@ failure: END
 func repoWithBook(t *testing.T, name, body string) string {
 	t.Helper()
 	root := t.TempDir()
-	dir := filepath.Join(root, ".arbiter", "match", "playbook")
+	dir := filepath.Join(root, ".arbiter", "playbook")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -380,4 +513,16 @@ func repoWithBook(t *testing.T, name, body string) string {
 		t.Fatal(err)
 	}
 	return root
+}
+
+func linkEngine(t *testing.T, root string) {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	repo := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+	if err := os.Symlink(filepath.Join(repo, "engine"), filepath.Join(root, "engine")); err != nil {
+		t.Fatal(err)
+	}
 }

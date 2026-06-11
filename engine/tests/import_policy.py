@@ -11,6 +11,7 @@ PY39_STDLIB_FALLBACK = {
     "argparse",
     "ast",
     "dataclasses",
+    "fcntl",
     "os",
     "pathlib",
     "subprocess",

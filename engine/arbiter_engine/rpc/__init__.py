@@ -5,13 +5,19 @@ from __future__ import annotations
 import json
 import os
 import sys
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, TextIO
 
 from arbiter_engine import __version__
-from arbiter_engine.errors import RPCError, engine_stale
-from arbiter_engine.runs import RunManager
+from arbiter_engine.errors import RPCError, briefing_unresolved, engine_stale
+from arbiter_engine.facts import descriptors as facts_descriptors
+from arbiter_engine.facts import view as facts_view
+from arbiter_engine.runs import async_runs
+from arbiter_engine.runs import gtest
+from arbiter_engine.runs import recipes
+from arbiter_engine.shared import census
 
 
 MAX_LINE_BYTES = 1024 * 1024
@@ -21,6 +27,7 @@ MAX_LINE_BYTES = 1024 * 1024
 class Context:
     meta: Mapping[str, Any]
     role: str
+    seat: str
 
 
 @dataclass(frozen=True)
@@ -30,13 +37,20 @@ class Tool:
     description: str
     input_schema: Mapping[str, Any]
     handler: Callable[[Context, Mapping[str, Any]], Mapping[str, Any]]
+    title: Optional[str] = None
+    output_schema: Optional[Mapping[str, Any]] = None
 
     def descriptor(self) -> dict[str, Any]:
-        return {
+        row = {
             "name": self.name,
             "description": self.description,
             "inputSchema": dict(self.input_schema),
         }
+        if self.title is not None:
+            row["title"] = self.title
+        if self.output_schema is not None:
+            row["outputSchema"] = dict(self.output_schema)
+        return row
 
 
 class Router:
@@ -80,28 +94,59 @@ def serve(stdin: TextIO, stdout: TextIO, router: Optional[Router] = None) -> Non
             continue
         else:
             response = _dispatch_line(line, active_router)
+        if response is None:
+            continue
         stdout.write(json.dumps(response, separators=(",", ":")) + "\n")
         stdout.flush()
 
 
 def default_router() -> Router:
     router = Router()
+    for descriptor in facts_descriptors.tool_descriptors():
+        name = descriptor["name"]
+        router.register(
+            Tool(
+                namespace="facts",
+                name=name,
+                description=descriptor["description"],
+                input_schema=descriptor["inputSchema"],
+                handler=_handler("facts", name),
+                title=descriptor.get("title"),
+                output_schema=descriptor.get("outputSchema"),
+            )
+        )
     for namespace, name, description, schema in _DEFAULT_TOOLS:
-        router.register(Tool(namespace, name, description, schema, _stub_handler(namespace, name)))
+        router.register(Tool(namespace, name, description, schema, _handler(namespace, name)))
     return router
 
 
-def _dispatch_line(line: str, router: Router) -> dict[str, Any]:
+def _dispatch_line(line: str, router: Router) -> Optional[dict[str, Any]]:
     try:
         request = json.loads(line)
     except json.JSONDecodeError as exc:
         return _error(None, -32700, "parse error", {"kind": "invalid_json", "detail": str(exc)})
 
+    # JSON-RPC notifications (no "id" key) never receive a response; errors
+    # raised while handling them are dropped silently per spec.
+    is_notification = isinstance(request, dict) and "id" not in request
     try:
-        return _dispatch(request, router)
+        response: Optional[dict[str, Any]] = _dispatch(request, router)
     except RPCError as exc:
         request_id = request.get("id") if isinstance(request, dict) else None
-        return _error(request_id, exc.code, exc.message, exc.data)
+        response = _error(request_id, exc.code, exc.message, exc.data)
+    except Exception as exc:  # noqa: BLE001 - the serve loop must never die on a request
+        request_id = request.get("id") if isinstance(request, dict) else None
+        response = _error(
+            request_id,
+            -32603,
+            "internal error",
+            {
+                "kind": "internal_error",
+                "exception": type(exc).__name__,
+                "detail": str(exc),
+            },
+        )
+    return None if is_notification else response
 
 
 def _dispatch(request: Any, router: Router) -> dict[str, Any]:
@@ -131,6 +176,12 @@ def _dispatch(request: Any, router: Router) -> dict[str, Any]:
         return _handle_tools_call(request_id, request.get("params", {}), router)
     if method == "arbiter/handshake":
         return _handle_handshake(request_id, request.get("params", {}))
+    if method == "arbiter/refresh":
+        return _handle_refresh(request_id, request.get("params", {}))
+    if method == "arbiter/census":
+        return _handle_census(request_id, request.get("params", {}))
+    if method == "arbiter/resolveBriefing":
+        return _handle_resolve_briefing(request_id, request.get("params", {}))
     if method == "arbiter/startRun":
         return _handle_start_run(request_id, request.get("params", {}))
     if method == "arbiter/runStatus":
@@ -153,7 +204,7 @@ def _handle_tools_call(request_id: Any, params: Any, router: Router) -> dict[str
     if not isinstance(meta, dict):
         raise RPCError(-32602, "invalid params", {"kind": "invalid_meta"})
 
-    context = Context(meta=meta, role=os.environ.get("ARBITER_ENGINE_ROLE", "QUERY"))
+    context = _context(meta)
     return _result(request_id, dict(router.call_tool(name, arguments, context)))
 
 
@@ -172,38 +223,96 @@ def _handle_handshake(request_id: Any, params: Any) -> dict[str, Any]:
 
 
 def _handle_start_run(request_id: Any, params: Any) -> dict[str, Any]:
-    values = _expect_params_object(
-        params,
-        allowed=("duration_ms", "timeout_ms", "overall", "_meta"),
-    )
-    meta = values.pop("_meta", {})
+    values = _expect_params_object(params, allowed=("spec", "_meta"))
+    spec = values.get("spec")
+    meta = values.get("_meta", {})
     if not isinstance(meta, dict):
         raise RPCError(-32602, "invalid params", {"kind": "invalid_meta"})
-    try:
-        result = RunManager(Path(os.getcwd())).start_run(values, meta=meta)
-    except ValueError as exc:
-        raise RPCError(
-            -32602,
-            "invalid params",
-            {"kind": "invalid_params", "detail": str(exc)},
-        ) from exc
-    return _result(request_id, result)
+    return _result(request_id, async_runs.start_run(Path.cwd(), spec))
+
+
+def _handle_refresh(request_id: Any, params: Any) -> dict[str, Any]:
+    values = _expect_params_object(params, allowed=("scope", "_meta"))
+    scope = values.get("scope", {})
+    meta = values.get("_meta", {})
+    if not isinstance(scope, dict):
+        raise RPCError(-32602, "invalid params", {"kind": "invalid_params", "field": "scope"})
+    if not isinstance(meta, dict):
+        raise RPCError(-32602, "invalid params", {"kind": "invalid_meta"})
+    view = facts_view.refresh(Path.cwd(), _facts_context(_context(meta)))
+    return _result(request_id, {"refreshed": True, "scope": dict(scope), **view.evidence()})
+
+
+def _handle_census(request_id: Any, params: Any) -> dict[str, Any]:
+    values = _expect_params_object(params, allowed=("scope", "_meta"))
+    scope = values.get("scope", {})
+    meta = values.get("_meta", {})
+    if not isinstance(scope, dict):
+        raise RPCError(-32602, "invalid params", {"kind": "invalid_params", "field": "scope"})
+    if not isinstance(meta, dict):
+        raise RPCError(-32602, "invalid params", {"kind": "invalid_meta"})
+    bad_scope = sorted(set(scope) - {"globs", "previous"})
+    if bad_scope:
+        raise RPCError(-32602, "invalid params", {"kind": "invalid_params", "bad_scope": bad_scope})
+    globs = scope.get("globs", ["**/*"])
+    if not isinstance(globs, list) or not all(isinstance(item, str) for item in globs):
+        raise RPCError(-32602, "invalid params", {"kind": "invalid_params", "field": "globs"})
+    previous = None
+    if "previous" in scope:
+        raw_previous = scope["previous"]
+        if not isinstance(raw_previous, dict):
+            raise RPCError(-32602, "invalid params", {"kind": "invalid_params", "field": "previous"})
+        try:
+            previous = census.from_json(raw_previous)
+        except ValueError as exc:
+            raise RPCError(
+                -32602,
+                "invalid params",
+                {"kind": "invalid_params", "field": "previous", "detail": str(exc)},
+            )
+    return _result(request_id, census.to_json(census.scan(Path.cwd(), globs, previous=previous)))
+
+
+def _handle_resolve_briefing(request_id: Any, params: Any) -> dict[str, Any]:
+    values = _expect_params_object(params, allowed=("refs", "_meta"))
+    refs = values.get("refs")
+    meta = values.get("_meta", {})
+    if not isinstance(refs, list) or not all(isinstance(ref, str) for ref in refs):
+        raise RPCError(-32602, "invalid params", {"kind": "invalid_params", "field": "refs"})
+    if len(refs) > 8:
+        raise RPCError(-32602, "invalid params", {"kind": "invalid_params", "field": "refs"})
+    if not isinstance(meta, dict):
+        raise RPCError(-32602, "invalid params", {"kind": "invalid_meta"})
+    bad_refs = [ref for ref in refs if ref.startswith("bad:")]
+    if bad_refs:
+        raise briefing_unresolved(bad_refs)
+    return _result(
+        request_id,
+        {"briefing": [{"ref": ref, "content": f"detail {ref}"} for ref in refs]},
+    )
 
 
 def _handle_run_status(request_id: Any, params: Any) -> dict[str, Any]:
-    values = _expect_params_object(params, allowed=("run_id",))
+    values = _expect_params_object(params, allowed=("run_id", "_meta"))
     run_id = values.get("run_id")
+    meta = values.get("_meta", {})
     if not isinstance(run_id, str) or not run_id:
         raise RPCError(-32602, "invalid params", {"kind": "invalid_params", "field": "run_id"})
-    try:
-        result = RunManager(Path(os.getcwd())).run_status(run_id)
-    except KeyError as exc:
-        raise RPCError(
-            -32602,
-            "invalid params",
-            {"kind": "invalid_params", "field": "run_id"},
-        ) from exc
-    return _result(request_id, result)
+    if not isinstance(meta, dict):
+        raise RPCError(-32602, "invalid params", {"kind": "invalid_meta"})
+    return _result(request_id, async_runs.run_status(Path.cwd(), run_id))
+
+
+def _context(meta: Mapping[str, Any]) -> Context:
+    return Context(
+        meta=meta,
+        role=os.environ.get("ARBITER_ENGINE_ROLE", "QUERY"),
+        seat=os.environ.get("ARBITER_ENGINE_SEAT", "player"),
+    )
+
+
+def _facts_context(context: Context) -> facts_view.AccessContext:
+    return facts_view.AccessContext(role=context.role, seat=context.seat)
 
 
 def _expect_params_object(params: Any, allowed: tuple[str, ...]) -> dict[str, Any]:
@@ -265,6 +374,29 @@ def _validate_value(name: str, value: Any, schema: Mapping[str, Any]) -> None:
     if expected == "array" and "items" in schema:
         for item in value:
             _validate_value(name, item, schema["items"])
+    if expected == "integer":
+        minimum = schema.get("minimum")
+        maximum = schema.get("maximum")
+        if isinstance(minimum, int) and value < minimum:
+            raise RPCError(
+                -32602,
+                "invalid arguments",
+                {"kind": "invalid_args", "field": name, "minimum": minimum},
+            )
+        if isinstance(maximum, int) and value > maximum:
+            raise RPCError(
+                -32602,
+                "invalid arguments",
+                {"kind": "invalid_args", "field": name, "maximum": maximum},
+            )
+    if expected == "string":
+        min_length = schema.get("minLength")
+        if isinstance(min_length, int) and len(value) < min_length:
+            raise RPCError(
+                -32602,
+                "invalid arguments",
+                {"kind": "invalid_args", "field": name, "minLength": min_length},
+            )
 
 
 def _matches_type(value: Any, expected: str) -> bool:
@@ -295,6 +427,261 @@ def _stub_handler(namespace: str, name: str) -> Callable[[Context, Mapping[str, 
     return handler
 
 
+def _handler(namespace: str, name: str) -> Callable[[Context, Mapping[str, Any]], Mapping[str, Any]]:
+    if namespace == "facts":
+        if name == "search":
+            return _facts_search_tool
+        if name == "detail":
+            return _facts_detail_tool
+    if namespace == "runs":
+        if name == "run":
+            return _run_tool
+        if name == "recipe_search":
+            return _recipe_search_tool
+        if name == "register":
+            return _register_tool
+        if name == "import_recipes":
+            return _import_recipes_tool
+    return _stub_handler(namespace, name)
+
+
+def _facts_search_tool(context: Context, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+    view = facts_view.access(Path.cwd(), _facts_context(context))
+    query = arguments.get("query")
+    if not isinstance(query, str):
+        raise RPCError(-32602, "invalid arguments", {"kind": "invalid_args", "field": "query"})
+    limit = arguments.get("limit", 20)
+    if not isinstance(limit, int) or isinstance(limit, bool):
+        raise RPCError(-32602, "invalid arguments", {"kind": "invalid_args", "field": "limit"})
+    query_kind = _query_kind(query)
+    structured = {
+        **view.evidence(),
+        "status": "ok",
+        "query_kind": query_kind,
+        "query": query,
+        "limit": limit,
+        "result_count": 0,
+        "truncated": False,
+        "results": [],
+    }
+    return {
+        "content": [{"type": "text", "text": _search_text(structured)}],
+        "structuredContent": structured,
+        "isError": False,
+    }
+
+
+def _facts_detail_tool(context: Context, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+    facts_view.access(Path.cwd(), _facts_context(context))
+    fact_id = arguments.get("fact_id")
+    if not isinstance(fact_id, str) or not fact_id:
+        raise RPCError(-32602, "invalid arguments", {"kind": "invalid_args", "field": "fact_id"})
+    message = (
+        f"FACT id not found: {fact_id}.\n"
+        "This id is not in the current snapshot; it may be stale or mistyped.\n"
+        "Re-run search('<symbol name>') to obtain a valid object_id."
+    )
+    return {
+        "content": [{"type": "text", "text": "not_found: " + message}],
+        "structuredContent": {
+            "error": {
+                "code": "not_found",
+                "message": message,
+                "details": {"fact_id": fact_id},
+            }
+        },
+        "isError": True,
+    }
+
+
+def _query_kind(query: str) -> str:
+    if not query.strip():
+        return "empty"
+    if query.startswith("reachable:"):
+        return "relation_reachable"
+    if "depth:" in query:
+        return "relation_transitive"
+    if ":" in query:
+        return "relation"
+    return "terms"
+
+
+def _search_text(structured: Mapping[str, Any]) -> str:
+    snapshot = structured.get("base_snapshot_id") or "none"
+    return (
+        f"snapshot {snapshot} view_state={structured.get('view_state')}: "
+        f"search returned {structured.get('result_count')} fact results "
+        f"for query kind {structured.get('query_kind')}"
+    )
+
+
+def _run_tool(context: Context, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+    del context
+    recipe_id = arguments.get("recipe")
+    if not isinstance(recipe_id, str):
+        raise RPCError(-32602, "invalid arguments", {"kind": "invalid_args", "field": "recipe"})
+    tests = arguments.get("tests", [])
+    if not isinstance(tests, list) or not all(isinstance(item, str) for item in tests):
+        raise RPCError(-32602, "invalid arguments", {"kind": "invalid_args", "field": "tests"})
+    options = arguments.get("options", {})
+    if not isinstance(options, dict):
+        raise RPCError(-32602, "invalid arguments", {"kind": "invalid_args", "field": "options"})
+    run_options = _validate_run_options(options)
+    book = _load_committed_recipe_book()
+    try:
+        result = gtest.run_target(
+            Path.cwd(),
+            book,
+            recipe_id,
+            run_id=uuid.uuid4().hex,
+            tests=tests,
+            profiles=run_options.profiles,
+            fail_fast=run_options.fail_fast,
+            timeout_s=run_options.timeout_s,
+        )
+    except KeyError as exc:
+        raise RPCError(
+            -32602,
+            "invalid arguments",
+            {"kind": "invalid_args", "field": "recipe", "detail": f"unknown recipe {recipe_id!r}"},
+        ) from exc
+    payload = result.to_json()
+    payload["isError"] = False
+    payload["content"] = [{"type": "text", "text": f"{recipe_id}: {result.overall}"}]
+    return payload
+
+
+def _recipe_search_tool(context: Context, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+    del context
+    query = arguments.get("query")
+    if not isinstance(query, str):
+        raise RPCError(-32602, "invalid arguments", {"kind": "invalid_args", "field": "query"})
+    try:
+        book = _load_committed_recipe_book()
+    except RPCError:
+        matches = []
+    else:
+        folded = query.lower()
+        matches = [
+            {
+                "id": target.id,
+                "harness": target.harness.kind,
+                "notes": target.notes or "",
+                "tests": list(target.tests),
+            }
+            for target in book.targets
+            if folded in target.id.lower()
+            or folded in (target.notes or "").lower()
+            or any(folded in test.lower() for test in target.tests)
+        ]
+    return {
+        "content": [{"type": "text", "text": f"{len(matches)} recipe matches"}],
+        "isError": False,
+        "matches": matches,
+    }
+
+
+def _register_tool(context: Context, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+    del context
+    book = _load_recipe_book_arg(arguments)
+    return _recipe_book_summary(book, "registered")
+
+
+def _import_recipes_tool(context: Context, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+    del context
+    book = _load_recipe_book_arg(arguments)
+    return _recipe_book_summary(book, "imported")
+
+
+def _recipe_book_summary(book: recipes.RecipeBook, verb: str) -> Mapping[str, Any]:
+    targets = [target.id for target in book.targets]
+    return {
+        "content": [{"type": "text", "text": f"{verb} {len(targets)} recipes"}],
+        "isError": False,
+        "targets": targets,
+        "profiles": sorted(book.profiles),
+    }
+
+
+def _load_recipe_book_arg(arguments: Mapping[str, Any]) -> recipes.RecipeBook:
+    raw_path = arguments.get("path")
+    if not isinstance(raw_path, str):
+        raise RPCError(-32602, "invalid arguments", {"kind": "invalid_args", "field": "path"})
+    path = Path(raw_path)
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    try:
+        return recipes.load(path)
+    except (OSError, recipes.RecipeError) as exc:
+        raise RPCError(
+            -32602,
+            "invalid arguments",
+            {"kind": "invalid_args", "field": "path", "detail": str(exc)},
+        ) from exc
+
+
+def _load_committed_recipe_book() -> recipes.RecipeBook:
+    path = Path.cwd() / ".arbiter" / "recipes.yaml"
+    try:
+        return recipes.load(path)
+    except (OSError, recipes.RecipeError) as exc:
+        raise RPCError(
+            -32602,
+            "invalid arguments",
+            {"kind": "invalid_args", "field": "recipe", "detail": str(exc)},
+        ) from exc
+
+
+@dataclass(frozen=True)
+class _RunOptions:
+    profiles: tuple[str, ...] = ()
+    fail_fast: bool = False
+    timeout_s: Optional[int] = None
+
+
+def _validate_run_options(options: Mapping[str, Any]) -> _RunOptions:
+    allowed = {"profiles", "harness_options"}
+    unknown = sorted(set(options) - allowed)
+    if unknown:
+        raise RPCError(-32602, "invalid arguments", {"kind": "invalid_args", "bad_options": unknown})
+    profiles = options.get("profiles", [])
+    if not isinstance(profiles, list) or not all(isinstance(item, str) for item in profiles):
+        raise RPCError(-32602, "invalid arguments", {"kind": "invalid_args", "field": "options.profiles"})
+    harness_options = options.get("harness_options", {})
+    if not isinstance(harness_options, dict):
+        raise RPCError(-32602, "invalid arguments", {"kind": "invalid_args", "field": "options.harness_options"})
+    unknown_harnesses = sorted(set(harness_options) - {"gtest"})
+    if unknown_harnesses:
+        raise RPCError(
+            -32602,
+            "invalid arguments",
+            {"kind": "invalid_args", "bad_harness_options": unknown_harnesses},
+        )
+    gtest_options = harness_options.get("gtest", {})
+    if not isinstance(gtest_options, dict):
+        raise RPCError(-32602, "invalid arguments", {"kind": "invalid_args", "field": "options.harness_options.gtest"})
+    unknown_gtest = sorted(set(gtest_options) - {"fail_fast", "timeout_s"})
+    if unknown_gtest:
+        raise RPCError(-32602, "invalid arguments", {"kind": "invalid_args", "bad_gtest_options": unknown_gtest})
+    fail_fast = gtest_options.get("fail_fast", False)
+    if not isinstance(fail_fast, bool):
+        raise RPCError(
+            -32602,
+            "invalid arguments",
+            {"kind": "invalid_args", "field": "options.harness_options.gtest.fail_fast"},
+        )
+    timeout_s = gtest_options.get("timeout_s")
+    if timeout_s is not None and (
+        not isinstance(timeout_s, int) or isinstance(timeout_s, bool) or timeout_s < 1
+    ):
+        raise RPCError(
+            -32602,
+            "invalid arguments",
+            {"kind": "invalid_args", "field": "options.harness_options.gtest.timeout_s"},
+        )
+    return _RunOptions(profiles=tuple(profiles), fail_fast=fail_fast, timeout_s=timeout_s)
+
+
 def _result(request_id: Any, result: Mapping[str, Any]) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": request_id, "result": dict(result)}
 
@@ -316,21 +703,7 @@ def _object_schema(properties: Mapping[str, Mapping[str, Any]], required: tuple[
     }
 
 
-_BUDGET = {"type": "string", "enum": ["small", "normal", "large"]}
-
 _DEFAULT_TOOLS = (
-    (
-        "facts",
-        "search",
-        "Search the fact index.",
-        _object_schema({"query": {"type": "string"}, "budget": _BUDGET}, ("query",)),
-    ),
-    (
-        "facts",
-        "detail",
-        "Fetch fact detail by object id.",
-        _object_schema({"id": {"type": "string"}, "budget": _BUDGET}, ("id",)),
-    ),
     (
         "runs",
         "run",
@@ -339,7 +712,27 @@ _DEFAULT_TOOLS = (
             {
                 "recipe": {"type": "string"},
                 "tests": {"type": "array", "items": {"type": "string"}},
-                "options": {"type": "object"},
+                "options": {
+                    "type": "object",
+                    "properties": {
+                        "profiles": {"type": "array", "items": {"type": "string"}},
+                        "harness_options": {
+                            "type": "object",
+                            "properties": {
+                                "gtest": {
+                                    "type": "object",
+                                    "properties": {
+                                        "fail_fast": {"type": "boolean"},
+                                        "timeout_s": {"type": "integer"},
+                                    },
+                                    "additionalProperties": False,
+                                }
+                            },
+                            "additionalProperties": False,
+                        },
+                    },
+                    "additionalProperties": False,
+                },
             },
             ("recipe",),
         ),

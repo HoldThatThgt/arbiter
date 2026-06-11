@@ -10,10 +10,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/HoldThatThgt/arbiter/internal/deploy"
+	"github.com/HoldThatThgt/arbiter/internal/engineclient"
 	"github.com/HoldThatThgt/arbiter/internal/playbook"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -21,6 +23,14 @@ import (
 
 // ResultSpec 定义于 playbook 包(共享数据模型);别名保持调用面稳定。
 type ResultSpec = playbook.ResultSpec
+
+// refreshDedupe 记录每个 root+match 最近一次"成功" refresh 的回合键:
+// 只在 Refresh 成功后写入(失败留给同回合下一个 fact 谓词重试),
+// 且每个 root+match 只保留最新回合,天然有界。
+var refreshDedupe = struct {
+	sync.Mutex
+	seen map[string]string
+}{seen: map[string]string{}}
 
 type Result struct {
 	Spec       ResultSpec `json:"spec"`
@@ -50,6 +60,10 @@ func (e *SpecError) Error() string {
 }
 
 func Execute(ctx context.Context, root string, spec ResultSpec) (Result, error) {
+	return ExecuteWithMeta(ctx, root, spec, nil)
+}
+
+func ExecuteWithMeta(ctx context.Context, root string, spec ResultSpec, meta map[string]any) (Result, error) {
 	spec = normalize(spec)
 	if err := Validate(spec); err != nil {
 		return Result{}, err
@@ -59,13 +73,10 @@ func Execute(ctx context.Context, root string, spec ResultSpec) (Result, error) 
 		return runShell(ctx, root, spec), nil
 	case "mcp":
 		return runTool(ctx, root, spec)
-	case "run", "fact":
-		// 评估路径经 seat 的引擎子进程(go-engineclient),由 #37/#43 接线;
-		// 在那之前 fail-closed:模式已校验,但绝不在无引擎时給出判定。
-		return Result{}, &SpecError{
-			Code:    playbook.CodeEngineUnavailable,
-			Message: spec.Kind + " predicates evaluate via the seat's engine children; engine wiring lands with #37/#43",
-		}
+	case "run":
+		return runRun(ctx, root, spec, meta)
+	case "fact":
+		return runFact(ctx, root, spec, meta)
 	default:
 		return Result{}, &SpecError{Code: playbook.CodeBadResult, Message: "unknown result kind"}
 	}
@@ -88,9 +99,15 @@ func Validate(spec ResultSpec) error {
 	if spec.Kind == "shell" && strings.TrimSpace(spec.Command) == "" {
 		return &SpecError{Code: playbook.CodeBadResult, Message: "empty shell command"}
 	}
+	if spec.Kind == "shell" && len(spec.Expect) != 0 {
+		return &SpecError{Code: playbook.CodeBadResult, Message: "shell spec must not set expect"}
+	}
 	if spec.Kind == "mcp" {
 		if strings.TrimSpace(spec.Server) == "" || strings.TrimSpace(spec.Tool) == "" {
 			return &SpecError{Code: playbook.CodeBadResult, Message: "incomplete mcp result"}
+		}
+		if _, err := ParseMCPExpect(spec.Expect); err != nil {
+			return err
 		}
 	}
 	if spec.TimeoutS < 0 || spec.TimeoutS > playbook.MaxTimeoutS {
@@ -214,7 +231,172 @@ func runTool(parent context.Context, root string, spec ResultSpec) (Result, erro
 	}
 	isErr := call.IsError
 	result.IsError = &isErr
+	if len(spec.Expect) != 0 {
+		expect, err := ParseMCPExpect(spec.Expect)
+		if err != nil {
+			return Result{}, err
+		}
+		payload, err := mcpPayload(call)
+		if err != nil {
+			result.Failure = "expect_decode_error"
+			result.Output = err.Error()
+			result.DurationMS = int(time.Since(start).Milliseconds())
+			return result, nil
+		}
+		verdict, report := CompareMCP(expect, payload)
+		result.Verdict = &verdict
+		result.ExpectReport = report
+	}
 	result.Output = tailLines(contentText(call), spec.OutputLines)
+	result.DurationMS = int(time.Since(start).Milliseconds())
+	return result, nil
+}
+
+func runFact(parent context.Context, root string, spec ResultSpec, meta map[string]any) (Result, error) {
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(parent, time.Duration(spec.TimeoutS)*time.Second)
+	defer cancel()
+
+	expect, err := ParseFactExpect(spec.Expect)
+	if err != nil {
+		return Result{}, err
+	}
+	engine, err := engineclient.Spawn(ctx, engineclient.RoleQuery, root)
+	if err != nil {
+		return Result{}, &SpecError{Code: playbook.CodeEngineUnavailable, Message: "fact engine unavailable: " + err.Error()}
+	}
+	defer engine.Close()
+
+	callMeta := map[string]any{"predicate": "fact"}
+	for key, value := range meta {
+		callMeta[key] = value
+	}
+	result := Result{Spec: spec}
+	if shouldRefreshFacts(root, meta) {
+		if _, err := engine.Refresh(ctx, map[string]any{}, callMeta); err != nil {
+			result.Failure = failureForContext(ctx, "engine_error")
+			result.Output = err.Error()
+			result.DurationMS = int(time.Since(start).Milliseconds())
+			return result, nil
+		}
+		recordFactsRefreshed(root, meta)
+	}
+	call, err := engine.CallTool(ctx, "search", map[string]any{"query": spec.Query}, callMeta)
+	if err != nil {
+		result.Failure = failureForContext(ctx, "engine_error")
+		result.Output = err.Error()
+		result.DurationMS = int(time.Since(start).Milliseconds())
+		return result, nil
+	}
+	isErr := call.IsError
+	result.IsError = &isErr
+	result.Output = tailLines(engineToolText(call), spec.OutputLines)
+	if call.IsError {
+		result.DurationMS = int(time.Since(start).Milliseconds())
+		return result, nil
+	}
+	evidence := factEvidenceFromStructured(call.StructuredContent)
+	rawEvidence, err := json.Marshal(evidence)
+	if err != nil {
+		return Result{}, err
+	}
+	verdict, report := CompareFact(expect, evidence)
+	result.Verdict = &verdict
+	result.Evidence = rawEvidence
+	result.ExpectReport = report
+	result.DurationMS = int(time.Since(start).Milliseconds())
+	return result, nil
+}
+
+// runRun 同步执行 run 谓词:经 EXEC 角色的引擎子进程调用其注册的 `run` 工具
+// (engine/arbiter_engine/rpc/__init__.py _DEFAULT_TOOLS),用 ParseRunExpect/CompareRun
+// 产出判定与证据。镜像 runFact 的接线方式;spec.TimeoutS 经调用上下文生效。
+func runRun(parent context.Context, root string, spec ResultSpec, meta map[string]any) (Result, error) {
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(parent, time.Duration(spec.TimeoutS)*time.Second)
+	defer cancel()
+
+	expect, err := ParseRunExpect(spec.Expect)
+	if err != nil {
+		return Result{}, err
+	}
+	engine, err := engineclient.Spawn(ctx, engineclient.RoleExec, root)
+	if err != nil {
+		return Result{}, &SpecError{Code: playbook.CodeEngineUnavailable, Message: "run engine unavailable: " + err.Error()}
+	}
+	defer engine.Close()
+
+	callMeta := map[string]any{"predicate": "run"}
+	for key, value := range meta {
+		callMeta[key] = value
+	}
+	args := map[string]any{"recipe": spec.Recipe}
+	if len(spec.Tests) != 0 {
+		args["tests"] = append([]string(nil), spec.Tests...)
+	}
+	if len(spec.Options) != 0 {
+		args["options"] = spec.Options
+	}
+
+	result := Result{Spec: spec}
+	// 不走 engine.CallTool:run 工具把 overall/passed/failed/per_test/facts
+	// 平铺在 tools/call 的 result 顶层,需要拿原始 envelope 自行解码。
+	raw, err := engine.Call(ctx, "tools/call", map[string]any{"name": "run", "arguments": args, "_meta": callMeta})
+	if err != nil {
+		result.Failure = failureForContext(ctx, "engine_error")
+		result.Output = err.Error()
+		result.DurationMS = int(time.Since(start).Milliseconds())
+		return result, nil
+	}
+	var envelope struct {
+		Result json.RawMessage `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		result.Failure = "engine_error"
+		result.Output = err.Error()
+		result.DurationMS = int(time.Since(start).Milliseconds())
+		return result, nil
+	}
+	var payload struct {
+		RunID   string            `json:"run_id"`
+		Overall string            `json:"overall"`
+		Passed  int               `json:"passed"`
+		Failed  int               `json:"failed"`
+		PerTest []RunPerTest      `json:"per_test"`
+		Facts   *RunFactsEvidence `json:"facts"`
+		IsError bool              `json:"isError"`
+		Content json.RawMessage   `json:"content"`
+	}
+	if err := json.Unmarshal(envelope.Result, &payload); err != nil {
+		result.Failure = "engine_error"
+		result.Output = err.Error()
+		result.DurationMS = int(time.Since(start).Milliseconds())
+		return result, nil
+	}
+	isErr := payload.IsError
+	result.IsError = &isErr
+	result.Output = tailLines(string(payload.Content), spec.OutputLines)
+	if payload.IsError {
+		result.DurationMS = int(time.Since(start).Milliseconds())
+		return result, nil
+	}
+	evidence := RunEvidence{
+		RunID:            payload.RunID,
+		Overall:          payload.Overall,
+		Passed:           payload.Passed,
+		Failed:           payload.Failed,
+		FirstFailureName: FirstRunFailure(payload.PerTest),
+		TestResults:      RunTestResults(payload.PerTest),
+		Facts:            payload.Facts,
+	}
+	rawEvidence, err := json.Marshal(evidence)
+	if err != nil {
+		return Result{}, err
+	}
+	verdict, report := CompareRun(expect, evidence)
+	result.Verdict = &verdict
+	result.Evidence = rawEvidence
+	result.ExpectReport = report
 	result.DurationMS = int(time.Since(start).Milliseconds())
 	return result, nil
 }
@@ -264,8 +446,10 @@ func readServerConfig(root, name string) (serverConfig, error) {
 		return serverConfig{}, &SpecError{Code: playbook.CodeReservedServer, Message: "could not resolve current executable"}
 	}
 	target, err := resolvedExecutable(cfg.Command)
-	if err == nil && target == self {
-		return serverConfig{}, &SpecError{Code: playbook.CodeReservedServer, Message: "reserved server"}
+	if err == nil {
+		if target == self || sameFile(target, self) {
+			return serverConfig{}, &SpecError{Code: playbook.CodeReservedServer, Message: "reserved server"}
+		}
 	}
 	return cfg, nil
 }
@@ -288,6 +472,12 @@ func resolvedExecutable(path string) (string, error) {
 	return path, nil
 }
 
+func sameFile(left, right string) bool {
+	leftInfo, leftErr := os.Stat(left)
+	rightInfo, rightErr := os.Stat(right)
+	return leftErr == nil && rightErr == nil && os.SameFile(leftInfo, rightInfo)
+}
+
 func failureForContext(ctx context.Context, fallback string) string {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return "timeout"
@@ -304,6 +494,95 @@ func contentText(result *mcp.CallToolResult) string {
 		return fmt.Sprint(result.Content)
 	}
 	return string(data)
+}
+
+func mcpPayload(result *mcp.CallToolResult) (any, error) {
+	data, err := json.Marshal(result)
+	if err != nil {
+		return nil, err
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, err
+	}
+	payload["isError"] = result.IsError
+	return payload, nil
+}
+
+func engineToolText(result engineclient.ToolResult) string {
+	data, err := json.Marshal(result.Content)
+	if err != nil {
+		return fmt.Sprint(result.Content)
+	}
+	return string(data)
+}
+
+func factEvidenceFromStructured(payload map[string]any) FactEvidence {
+	resultCount := intField(payload, "result_count", 0)
+	return FactEvidence{
+		SnapshotID:   stringField(payload, "base_snapshot_id"),
+		OverlayID:    stringField(payload, "overlay_id"),
+		ViewState:    stringField(payload, "view_state"),
+		ResultCount:  resultCount,
+		Complete:     boolField(payload, "complete", !boolField(payload, "truncated", false)),
+		Reachable:    boolField(payload, "reachable", false),
+		TotalResults: intField(payload, "total", resultCount),
+	}
+}
+
+func refreshDedupeKeys(root string, meta map[string]any) (matchKey, roundKey string, ok bool) {
+	roundSeq, exists := meta["round_seq"]
+	if !exists {
+		return "", "", false
+	}
+	matchID := fmt.Sprint(meta["match_id"])
+	return root + "\x00" + matchID, fmt.Sprint(roundSeq), true
+}
+
+func shouldRefreshFacts(root string, meta map[string]any) bool {
+	matchKey, roundKey, ok := refreshDedupeKeys(root, meta)
+	if !ok {
+		return true
+	}
+	refreshDedupe.Lock()
+	defer refreshDedupe.Unlock()
+	return refreshDedupe.seen[matchKey] != roundKey
+}
+
+// recordFactsRefreshed 只在 engine.Refresh 成功后调用:失败不去重,
+// 同回合的下一个 fact 谓词会再次尝试 refresh。
+func recordFactsRefreshed(root string, meta map[string]any) {
+	matchKey, roundKey, ok := refreshDedupeKeys(root, meta)
+	if !ok {
+		return
+	}
+	refreshDedupe.Lock()
+	defer refreshDedupe.Unlock()
+	refreshDedupe.seen[matchKey] = roundKey
+}
+
+func stringField(payload map[string]any, name string) string {
+	value, _ := payload[name].(string)
+	return value
+}
+
+func boolField(payload map[string]any, name string, fallback bool) bool {
+	value, ok := payload[name].(bool)
+	if !ok {
+		return fallback
+	}
+	return value
+}
+
+func intField(payload map[string]any, name string, fallback int) int {
+	switch value := payload[name].(type) {
+	case int:
+		return value
+	case float64:
+		return int(value)
+	default:
+		return fallback
+	}
 }
 
 type capBuffer struct {

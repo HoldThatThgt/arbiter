@@ -1,0 +1,2 @@
+{"type":"request","message":{"jsonrpc":"2.0","id":1,"method":"arbiter/runStatus","params":{"run_id":"transcript-missing-run"}}}
+{"type":"response","message":{"jsonrpc":"2.0","id":1,"result":{"run_id":"transcript-missing-run","state":"unknown"}},"allow_volatile":[]}

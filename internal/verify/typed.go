@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/HoldThatThgt/arbiter/internal/playbook"
 )
@@ -29,6 +31,50 @@ type RunEvidence struct {
 	Failed           int               `json:"failed"`
 	FirstFailureName string            `json:"first_failure_name,omitempty"`
 	TestResults      map[string]string `json:"test_results,omitempty"`
+	Facts            *RunFactsEvidence `json:"facts,omitempty"`
+}
+
+type RunFactsEvidence struct {
+	Published  bool   `json:"published"`
+	SnapshotID string `json:"snapshot_id,omitempty"`
+}
+
+// RunPerTest 是引擎 run 结果 per_test 数组的一项
+// (engine/arbiter_engine/runs/gtest.py RunResult.to_json,只取裁决需要的字段)。
+type RunPerTest struct {
+	Suite  string `json:"suite"`
+	Name   string `json:"name"`
+	Status string `json:"status"`
+}
+
+// RunTestResults 把引擎 per_test 数组摊平成 expect.test.name 使用的
+// "Suite.Name" → status 映射(与 gtest 的 'Suite.Case' 命名一致)。
+func RunTestResults(perTest []RunPerTest) map[string]string {
+	if len(perTest) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(perTest))
+	for _, test := range perTest {
+		out[runTestKey(test)] = test.Status
+	}
+	return out
+}
+
+// FirstRunFailure 返回 per_test 中第一个 status=="failed" 的 "Suite.Name";无失败时为空。
+func FirstRunFailure(perTest []RunPerTest) string {
+	for _, test := range perTest {
+		if test.Status == "failed" {
+			return runTestKey(test)
+		}
+	}
+	return ""
+}
+
+func runTestKey(test RunPerTest) string {
+	if test.Suite == "" {
+		return test.Name
+	}
+	return test.Suite + "." + test.Name
 }
 
 type FactEvidence struct {
@@ -90,10 +136,15 @@ type TestExpect struct {
 }
 
 type RunExpect struct {
-	Overall   *OverallExpect `json:"overall,omitempty"`
-	MaxFailed *int           `json:"max_failed,omitempty"`
-	MinPassed *int           `json:"min_passed,omitempty"`
-	Test      *TestExpect    `json:"test,omitempty"`
+	Overall   *OverallExpect  `json:"overall,omitempty"`
+	MaxFailed *int            `json:"max_failed,omitempty"`
+	MinPassed *int            `json:"min_passed,omitempty"`
+	Test      *TestExpect     `json:"test,omitempty"`
+	Facts     *RunFactsExpect `json:"facts,omitempty"`
+}
+
+type RunFactsExpect struct {
+	Published *bool `json:"published,omitempty"`
 }
 
 type FactExpect struct {
@@ -102,6 +153,13 @@ type FactExpect struct {
 	Complete     *bool `json:"complete,omitempty"`
 	Reachable    *bool `json:"reachable,omitempty"`
 	TotalAtLeast *int  `json:"total_at_least,omitempty"`
+}
+
+type MCPClause struct {
+	Path     string
+	Op       string
+	Value    any
+	hasValue bool
 }
 
 func badResult(format string, args ...any) error {
@@ -126,7 +184,7 @@ func ParseRunExpect(raw json.RawMessage) (RunExpect, error) {
 	if err := strictDecode(raw, &expect, "run expect"); err != nil {
 		return expect, err
 	}
-	if expect.Overall == nil && expect.MaxFailed == nil && expect.MinPassed == nil && expect.Test == nil {
+	if expect.Overall == nil && expect.MaxFailed == nil && expect.MinPassed == nil && expect.Test == nil && expect.Facts == nil {
 		return expect, badResult("run expect must contain at least one clause")
 	}
 	if expect.MaxFailed != nil && *expect.MaxFailed < 0 {
@@ -137,6 +195,9 @@ func ParseRunExpect(raw json.RawMessage) (RunExpect, error) {
 	}
 	if expect.Test != nil && (expect.Test.Name == "" || expect.Test.Result == "") {
 		return expect, badResult("run expect test clause needs name and result")
+	}
+	if expect.Facts != nil && expect.Facts.Published == nil {
+		return expect, badResult("run expect facts clause needs published")
 	}
 	return expect, nil
 }
@@ -164,6 +225,55 @@ func ParseFactExpect(raw json.RawMessage) (FactExpect, error) {
 		}
 	}
 	return expect, nil
+}
+
+// ParseMCPExpect 严格解析 mcp expect[]:≤8 子句、封闭操作、标量 value、无通配路径。
+func ParseMCPExpect(raw json.RawMessage) ([]MCPClause, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var rawClauses []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &rawClauses); err != nil {
+		return nil, badResult("mcp expect must be an array")
+	}
+	if len(rawClauses) == 0 {
+		return nil, badResult("mcp expect must contain at least one clause")
+	}
+	if len(rawClauses) > 8 {
+		return nil, badResult("mcp expect supports at most 8 clauses")
+	}
+	clauses := make([]MCPClause, 0, len(rawClauses))
+	for i, rawClause := range rawClauses {
+		for key := range rawClause {
+			if key != "path" && key != "op" && key != "value" {
+				return nil, badResult("mcp expect[%d] unknown key %s", i, key)
+			}
+		}
+		var path, op string
+		if err := json.Unmarshal(rawClause["path"], &path); err != nil || !validMCPPath(path) {
+			return nil, badResult("mcp expect[%d] invalid path", i)
+		}
+		if err := json.Unmarshal(rawClause["op"], &op); err != nil || !validMCPOp(op) {
+			return nil, badResult("mcp expect[%d] invalid op", i)
+		}
+		rawValue, hasValue := rawClause["value"]
+		if op == "exists" {
+			if hasValue {
+				return nil, badResult("mcp expect[%d] exists must not set value", i)
+			}
+			clauses = append(clauses, MCPClause{Path: path, Op: op})
+			continue
+		}
+		if !hasValue {
+			return nil, badResult("mcp expect[%d] %s requires value", i, op)
+		}
+		value, err := parseScalar(rawValue)
+		if err != nil {
+			return nil, badResult("mcp expect[%d] value must be scalar", i)
+		}
+		clauses = append(clauses, MCPClause{Path: path, Op: op, Value: value, hasValue: true})
+	}
+	return clauses, nil
 }
 
 // DecodeSpec 在提交边界严格解码 ResultSpec:未知顶层键即校验错误。
@@ -206,6 +316,23 @@ func CompareRun(expect RunExpect, ev RunEvidence) (bool, []ClauseReport) {
 			Path: "test." + expect.Test.Name, Op: "eq",
 			Value: expect.Test.Result, Actual: actual,
 			OK: exists && actual == expect.Test.Result,
+		})
+	}
+	if expect.Facts != nil && expect.Facts.Published != nil {
+		var actual any
+		var ok bool
+		if ev.Facts != nil {
+			actual = ev.Facts.Published
+			ok = ev.Facts.Published == *expect.Facts.Published
+		} else {
+			// 证据没有 facts 节 ⇒ 未发布:published:false 应当通过,
+			// published:true 仍然失败;Actual 记为 nil(缺席)。
+			ok = !*expect.Facts.Published
+		}
+		report = append(report, ClauseReport{
+			Path: "facts.published", Op: "eq",
+			Value: *expect.Facts.Published, Actual: actual,
+			OK: ok,
 		})
 	}
 	return allOK(report), report
@@ -252,6 +379,40 @@ func CompareFact(expect FactExpect, ev FactEvidence) (bool, []ClauseReport) {
 	return allOK(report), report
 }
 
+// CompareMCP 对照 mcp 工具响应对象。缺失路径和类型不匹配均 fail-closed。
+func CompareMCP(expect []MCPClause, payload any) (bool, []ClauseReport) {
+	var report []ClauseReport
+	for _, clause := range expect {
+		actual, exists := lookupPath(payload, clause.Path)
+		entry := ClauseReport{
+			Path:   clause.Path,
+			Op:     clause.Op,
+			Actual: actual,
+		}
+		if clause.hasValue {
+			entry.Value = clause.Value
+		}
+		switch clause.Op {
+		case "exists":
+			entry.OK = exists
+		case "eq":
+			entry.OK = exists && scalarEqual(actual, clause.Value)
+		case "ne":
+			entry.OK = exists && scalarSameKind(actual, clause.Value) && !scalarEqual(actual, clause.Value)
+		case "ge":
+			actualNumber, actualOK := scalarNumber(actual)
+			valueNumber, valueOK := scalarNumber(clause.Value)
+			entry.OK = exists && actualOK && valueOK && actualNumber >= valueNumber
+		case "le":
+			actualNumber, actualOK := scalarNumber(actual)
+			valueNumber, valueOK := scalarNumber(clause.Value)
+			entry.OK = exists && actualOK && valueOK && actualNumber <= valueNumber
+		}
+		report = append(report, entry)
+	}
+	return allOK(report), report
+}
+
 func allOK(report []ClauseReport) bool {
 	if len(report) == 0 {
 		return false // 无子句不可视为通过:fail-closed
@@ -269,6 +430,11 @@ func validateTyped(spec ResultSpec) error {
 	case "run":
 		if err := rejectForeign(spec, "run", foreignShellMCP, foreignFact); err != nil {
 			return err
+		}
+		// 空 recipe 的 run 谓词会落入引擎的 stub 分支并产出空洞的 checkmate;
+		// 引擎在 startRun 同样拒绝(async_runs._validate_spec),这里提交期先封死。
+		if strings.TrimSpace(spec.Recipe) == "" {
+			return badResult("run spec requires recipe")
 		}
 		if len(spec.Tests) == 0 {
 			return badResult("run spec requires tests[]")
@@ -346,8 +512,108 @@ func typedFieldsForLegacy(spec ResultSpec) string {
 	if field := foreignFact(spec); field != "" {
 		return field
 	}
-	if len(spec.Expect) != 0 {
-		return "expect"
-	}
 	return ""
+}
+
+func validMCPOp(op string) bool {
+	switch op {
+	case "eq", "ne", "ge", "le", "exists":
+		return true
+	default:
+		return false
+	}
+}
+
+func validMCPPath(path string) bool {
+	if strings.TrimSpace(path) == "" || strings.ContainsAny(path, "*[]") {
+		return false
+	}
+	for _, part := range strings.Split(path, ".") {
+		if part == "" {
+			return false
+		}
+	}
+	return true
+}
+
+func parseScalar(raw json.RawMessage) (any, error) {
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, err
+	}
+	if _, ok := scalarKind(value); !ok {
+		return nil, fmt.Errorf("not scalar")
+	}
+	return value, nil
+}
+
+func lookupPath(payload any, path string) (any, bool) {
+	cursor := payload
+	for _, part := range strings.Split(path, ".") {
+		switch node := cursor.(type) {
+		case map[string]any:
+			value, ok := node[part]
+			if !ok {
+				return nil, false
+			}
+			cursor = value
+		case []any:
+			index, err := strconv.Atoi(part)
+			if err != nil || index < 0 || index >= len(node) {
+				return nil, false
+			}
+			cursor = node[index]
+		default:
+			return nil, false
+		}
+	}
+	return cursor, true
+}
+
+func scalarEqual(left, right any) bool {
+	leftKind, leftOK := scalarKind(left)
+	rightKind, rightOK := scalarKind(right)
+	if !leftOK || !rightOK || leftKind != rightKind {
+		return false
+	}
+	switch leftKind {
+	case "null":
+		return true
+	case "string":
+		return left.(string) == right.(string)
+	case "bool":
+		return left.(bool) == right.(bool)
+	case "number":
+		leftNumber, _ := scalarNumber(left)
+		rightNumber, _ := scalarNumber(right)
+		return leftNumber == rightNumber
+	default:
+		return false
+	}
+}
+
+func scalarSameKind(left, right any) bool {
+	leftKind, leftOK := scalarKind(left)
+	rightKind, rightOK := scalarKind(right)
+	return leftOK && rightOK && leftKind == rightKind
+}
+
+func scalarNumber(value any) (float64, bool) {
+	number, ok := value.(float64)
+	return number, ok
+}
+
+func scalarKind(value any) (string, bool) {
+	switch value.(type) {
+	case nil:
+		return "null", true
+	case string:
+		return "string", true
+	case bool:
+		return "bool", true
+	case float64:
+		return "number", true
+	default:
+		return "", false
+	}
 }

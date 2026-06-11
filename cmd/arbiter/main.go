@@ -3,16 +3,27 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"os"
 
+	"github.com/HoldThatThgt/arbiter/internal/cli"
 	"github.com/HoldThatThgt/arbiter/internal/deploy"
+	"github.com/HoldThatThgt/arbiter/internal/interpose"
 	"github.com/HoldThatThgt/arbiter/internal/match"
 	"github.com/HoldThatThgt/arbiter/internal/seat"
 )
 
 func main() {
+	if len(os.Args) >= 2 && os.Args[1] == "cc" {
+		root, err := os.Getwd()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(interpose.Run(root, os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
+	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -21,7 +32,7 @@ func main() {
 
 func run() error {
 	if len(os.Args) < 2 {
-		return fmt.Errorf("usage: arbiter init | serve <seat>")
+		return fmt.Errorf("usage: arbiter init [flags] | adopt | status [--json] | report [--json] [match_id] | serve <seat> | hook stop | cc -- <real-compiler> [args...]")
 	}
 	root, err := os.Getwd()
 	if err != nil {
@@ -29,14 +40,68 @@ func run() error {
 	}
 	switch os.Args[1] {
 	case "init":
-		if len(os.Args) != 2 {
-			return fmt.Errorf("usage: arbiter init")
+		fs := flag.NewFlagSet("init", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		opts := deploy.Options{}
+		fs.BoolVar(&opts.NoExecutor, "no-executor", false, "skip executor agent")
+		fs.BoolVar(&opts.Remove, "remove", false, "remove generated init wiring")
+		fs.BoolVar(&opts.EmbeddedEngine, "embedded-engine", false, "deny edits to embedded engine files")
+		fs.BoolVar(&opts.Openings, "openings", false, "install opening playbooks")
+		if err := fs.Parse(os.Args[2:]); err != nil || fs.NArg() != 0 {
+			return fmt.Errorf("usage: arbiter init [--openings] [--no-executor] [--remove] [--embedded-engine]")
 		}
-		msg, err := deploy.Init(root)
+		msg, err := deploy.InitWithOptions(root, opts)
 		if err != nil {
 			return err
 		}
 		fmt.Print(msg)
+		return nil
+	case "adopt":
+		if len(os.Args) != 2 {
+			return fmt.Errorf("usage: arbiter adopt")
+		}
+		report, err := deploy.Adopt(root)
+		if err != nil {
+			return err
+		}
+		fmt.Print(report.String())
+		return nil
+	case "status":
+		if len(os.Args) > 3 || (len(os.Args) == 3 && os.Args[2] != "--json") {
+			return fmt.Errorf("usage: arbiter status [--json]")
+		}
+		status, err := cli.Status(root)
+		if err != nil {
+			return err
+		}
+		if len(os.Args) == 3 {
+			data, err := cli.JSON(status)
+			if err != nil {
+				return err
+			}
+			fmt.Print(string(data))
+			return nil
+		}
+		fmt.Print(cli.FormatStatus(status))
+		return nil
+	case "report":
+		jsonOut, matchID, err := cli.ParseReportArgs(os.Args[2:])
+		if err != nil {
+			return fmt.Errorf("usage: arbiter report [--json] [match_id]")
+		}
+		report, err := cli.Report(root, matchID)
+		if err != nil {
+			return err
+		}
+		if jsonOut {
+			data, err := cli.JSON(report)
+			if err != nil {
+				return err
+			}
+			fmt.Print(string(data))
+			return nil
+		}
+		fmt.Print(cli.FormatReport(report))
 		return nil
 	case "serve":
 		if len(os.Args) != 3 {
@@ -61,6 +126,6 @@ func run() error {
 		}
 		return nil
 	default:
-		return fmt.Errorf("usage: arbiter init | serve <seat> | hook stop")
+		return fmt.Errorf("usage: arbiter init [flags] | adopt | status [--json] | report [--json] [match_id] | serve <seat> | hook stop | cc -- <real-compiler> [args...]")
 	}
 }

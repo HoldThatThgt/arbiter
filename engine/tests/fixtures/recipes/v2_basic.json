@@ -1,0 +1,78 @@
+{
+  "compile_db": {
+    "path": "build/compile_commands.json",
+    "target": "gen_compile_db"
+  },
+  "profiles": {
+    "asan": {
+      "cflags_append": [
+        "-fsanitize=address"
+      ],
+      "env": {
+        "ASAN_OPTIONS": "detect_leaks=1"
+      }
+    },
+    "debug": {
+      "cflags_append": [
+        "-O0",
+        "-g"
+      ],
+      "env": {
+        "MODE": "debug"
+      }
+    }
+  },
+  "targets": [
+    {
+      "binary": "build/unit_tests",
+      "env": {
+        "GTEST_COLOR": "0"
+      },
+      "harness": {
+        "kind": "gtest",
+        "options": {
+          "output": "xml"
+        }
+      },
+      "id": "unit",
+      "notes": "basic unit recipe",
+      "requires": [
+        "debug"
+      ],
+      "sources": [
+        "src/**/*.cc",
+        "include/**/*.h"
+      ],
+      "stages": {
+        "src_compile": {
+          "cmd": [
+            "make",
+            "unit"
+          ],
+          "env": {
+            "CC": "clang"
+          }
+        },
+        "test_compile": {
+          "cmd": [
+            "make",
+            "unit_tests"
+          ]
+        },
+        "test_run": {
+          "cmd": [
+            "build/unit_tests"
+          ]
+        }
+      },
+      "tests": [
+        "Suite.Pass",
+        "Suite.Fail"
+      ],
+      "workdir": "."
+    }
+  ],
+  "vars": {
+    "build": "build"
+  }
+}

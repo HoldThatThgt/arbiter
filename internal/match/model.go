@@ -23,16 +23,40 @@ const (
 )
 
 type Match struct {
-	ID         string            `json:"id"`
-	Playbook   playbook.Playbook `json:"playbook"`
-	Status     string            `json:"status"`
-	Abort      string            `json:"abort,omitempty"`
-	Current    *Round            `json:"current,omitempty"`
-	History    []Round           `json:"history"`
-	TaskSeq    int               `json:"task_seq"`
-	RoundSeq   int               `json:"round_seq"`
-	StopBlocks int               `json:"stop_blocks"` // 本回合内被拦截的停止次数,进入新回合清零
-	StartedAt  string            `json:"started_at"`
+	ID          string                   `json:"id"`
+	Playbook    playbook.Playbook        `json:"playbook"`
+	RecipesPin  RecipePin                `json:"recipes_pin,omitempty"`
+	Status      string                   `json:"status"`
+	Abort       string                   `json:"abort,omitempty"`
+	Current     *Round                   `json:"current,omitempty"`
+	History     []Round                  `json:"history"`
+	TaskSeq     int                      `json:"task_seq"`
+	RoundSeq    int                      `json:"round_seq"`
+	StopBlocks  int                      `json:"stop_blocks"` // 本回合内被拦截的停止次数,进入新回合清零
+	GoalPending *GoalPending             `json:"goal_pending,omitempty"`
+	GoalMemo    map[string]GoalMemoEntry `json:"goal_memo,omitempty"`
+	StartedAt   string                   `json:"started_at"`
+}
+
+type GoalPending struct {
+	RoundSeq   int                 `json:"round_seq"`
+	RunID      string              `json:"run_id"`
+	Spec       playbook.ResultSpec `json:"spec"`
+	MemoDigest string              `json:"memo_digest,omitempty"`
+	StartedAt  string              `json:"started_at"`
+}
+
+type GoalMemoEntry struct {
+	Report   GoalReport `json:"report"`
+	StoredAt string     `json:"stored_at"`
+}
+
+type RecipePin struct {
+	BookSHA256 string `json:"book_sha256"`
+	// Targets 只承载目标 id 的集合(新写入的值恒为空串)。保留 map[string]string
+	// 是为了让旧 state.json(值是逐目标哈希)继续可加载;比较只看键的存在性,
+	// 因为 BookSHA256 相等已保证两本书逐字节一致(见 checkRecipePin)。
+	Targets map[string]string `json:"targets"`
 }
 
 type Round struct {
@@ -44,12 +68,18 @@ type Round struct {
 }
 
 type Task struct {
-	ID      string         `json:"id"`
-	Request string         `json:"request"`
-	Status  string         `json:"status"`
-	Summary string         `json:"summary,omitempty"` // executor 提交的一句话结果概要
-	Report  string         `json:"report,omitempty"`
-	Result  *verify.Result `json:"result,omitempty"`
+	ID       string         `json:"id"`
+	Request  string         `json:"request"`
+	Status   string         `json:"status"`
+	Briefing []BriefingCard `json:"briefing,omitempty"`
+	Summary  string         `json:"summary,omitempty"` // executor 提交的一句话结果概要
+	Report   string         `json:"report,omitempty"`
+	Result   *verify.Result `json:"result,omitempty"`
+}
+
+type BriefingCard struct {
+	Ref     string `json:"ref"`
+	Content string `json:"content"`
 }
 
 type ToolError struct {
@@ -113,16 +143,19 @@ type CheckStepJobOutput struct {
 	Abort     string      `json:"abort,omitempty"`
 	Checkmate bool        `json:"checkmate,omitempty"` // goal 谓词通过,直接胜局
 	Goal      *GoalReport `json:"goal,omitempty"`      // 本次裁决执行过 goal 时附带
+	RunID     string      `json:"run_id,omitempty"`
 }
 
 // GoalReport 是 checkmate 谓词的一次执行结局。
 type GoalReport struct {
 	Verdict    string `json:"verdict"` // pass | fail
+	RunID      string `json:"run_id,omitempty"`
 	ExitCode   *int   `json:"exit_code,omitempty"`
 	IsError    *bool  `json:"is_error,omitempty"`
 	Output     string `json:"output"`
 	DurationMS int    `json:"duration_ms"`
 	Failure    string `json:"failure,omitempty"`
+	Memoized   bool   `json:"memoized,omitempty"`
 }
 
 type AddPlayBookOutput struct {
@@ -146,6 +179,7 @@ type ReviewTaskOutput struct {
 	Archived bool           `json:"archived"`
 	Status   string         `json:"status"`
 	Request  string         `json:"request"`
+	Briefing []BriefingCard `json:"briefing,omitempty"`
 	Summary  string         `json:"summary,omitempty"`
 	Report   string         `json:"report,omitempty"`
 	Result   *verify.Result `json:"result,omitempty"`

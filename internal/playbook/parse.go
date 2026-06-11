@@ -20,6 +20,7 @@ const (
 	tokenCheckList = "[CheckList]"
 	tokenBranch    = "[Branch]"
 	tokenSetGoal   = "[SetGoal]"
+	tokenVerify    = "[Verify]"
 	tokenGotcha    = "[Gotcha]"
 	tokenListItem  = "-"
 
@@ -28,13 +29,15 @@ const (
 	sectionList   = "checklist"
 	sectionJump   = "branch"
 	sectionGoal   = "goal"
+	sectionVerify = "verify"
 	sectionGotcha = "gotcha"
 )
 
 type frontmatter struct {
-	Name        string `yaml:"name"`
-	Description string `yaml:"description"`
-	MaxSteps    int    `yaml:"max_steps"`
+	Name         string   `yaml:"name"`
+	Description  string   `yaml:"description"`
+	MaxSteps     int      `yaml:"max_steps"`
+	Capabilities []string `yaml:"capabilities"`
 }
 
 type stepBuilder struct {
@@ -73,16 +76,22 @@ func ParseBytes(file string, data []byte) (Playbook, []Issue) {
 	}
 
 	book := Playbook{
-		Name:        strings.TrimSpace(meta.Name),
-		Description: strings.TrimSpace(meta.Description),
-		MaxSteps:    meta.MaxSteps,
-		Steps:       map[string]Step{},
+		Name:         strings.TrimSpace(meta.Name),
+		Description:  strings.TrimSpace(meta.Description),
+		MaxSteps:     meta.MaxSteps,
+		Capabilities: normalizeCapabilities(meta.Capabilities),
+		Verify:       map[string]ResultSpec{},
+		Steps:        map[string]Step{},
 	}
 	var current *stepBuilder
 	section := sectionNone
-	var parseIssues []Issue
+	parseIssues := validateCapabilities(file, book.Capabilities)
 	var goal *ResultSpec
 	goalKeys := map[string]bool{}
+	var verifyName string
+	var verifyLine int
+	var verifySpec *ResultSpec
+	verifyKeys := map[string]bool{}
 
 	finish := func() {
 		if current == nil {
@@ -106,6 +115,21 @@ func ParseBytes(file string, data []byte) (Playbook, []Issue) {
 		current = nil
 		section = sectionNone
 	}
+	finishVerify := func() {
+		if verifySpec == nil {
+			return
+		}
+		if issue := validatePredicateSpec(verifySpec, "verify"); issue != "" {
+			parseIssues = append(parseIssues, Issue{File: file, Line: verifyLine, Code: IssueBadVerify, Detail: issue})
+		} else {
+			book.Verify[verifyName] = *verifySpec
+		}
+		verifyName = ""
+		verifyLine = 0
+		verifySpec = nil
+		verifyKeys = map[string]bool{}
+		section = sectionNone
+	}
 
 	for i := bodyStart; i < len(lines); i++ {
 		lineNo := i + 1
@@ -114,6 +138,7 @@ func ParseBytes(file string, data []byte) (Playbook, []Issue) {
 		if hasToken {
 			switch token {
 			case tokenStep:
+				finishVerify()
 				finish()
 				id := strings.TrimSpace(rest)
 				if id == "" {
@@ -131,12 +156,33 @@ func ParseBytes(file string, data []byte) (Playbook, []Issue) {
 				section = sectionNone
 				continue
 			case tokenSetGoal:
+				finishVerify()
 				if current != nil || goal != nil || strings.TrimSpace(rest) != "" {
 					parseIssues = append(parseIssues, Issue{File: file, Line: lineNo, Code: IssueBadGoal, Detail: tokenSetGoal})
 					continue
 				}
 				goal = &ResultSpec{}
 				section = sectionGoal
+				continue
+			case tokenVerify:
+				finish()
+				finishVerify()
+				name := strings.TrimSpace(rest)
+				if !validIdentifier(name) {
+					parseIssues = append(parseIssues, Issue{File: file, Line: lineNo, Code: IssueBadVerify, Detail: "invalid verify name"})
+					section = sectionNone
+					continue
+				}
+				if _, exists := book.Verify[name]; exists {
+					parseIssues = append(parseIssues, Issue{File: file, Line: lineNo, Code: IssueBadVerify, Detail: "duplicate verify " + name})
+					section = sectionNone
+					continue
+				}
+				verifyName = name
+				verifyLine = lineNo
+				verifySpec = &ResultSpec{}
+				verifyKeys = map[string]bool{}
+				section = sectionVerify
 				continue
 			case tokenStepJob, tokenCheckList, tokenBranch, tokenGotcha:
 				if current == nil || strings.TrimSpace(rest) != "" {
@@ -164,8 +210,17 @@ func ParseBytes(file string, data []byte) (Playbook, []Issue) {
 			if strings.TrimSpace(line) == "" {
 				continue
 			}
-			if issue := parseGoalLine(goal, goalKeys, strings.TrimSpace(line)); issue != "" {
+			if issue := parsePredicateLine(goal, goalKeys, strings.TrimSpace(line)); issue != "" {
 				parseIssues = append(parseIssues, Issue{File: file, Line: lineNo, Code: IssueBadGoal, Detail: issue})
+			}
+			continue
+		}
+		if section == sectionVerify {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			if issue := parsePredicateLine(verifySpec, verifyKeys, strings.TrimSpace(line)); issue != "" {
+				parseIssues = append(parseIssues, Issue{File: file, Line: lineNo, Code: IssueBadVerify, Detail: issue})
 			}
 			continue
 		}
@@ -224,14 +279,12 @@ func ParseBytes(file string, data []byte) (Playbook, []Issue) {
 			}
 		}
 	}
+	finishVerify()
 	finish()
 
 	if goal != nil {
-		if goal.Kind == "" {
-			parseIssues = append(parseIssues, Issue{File: file, Code: IssueBadGoal, Detail: "missing shell or mcp"})
-		}
-		if goal.Arguments != nil && goal.Kind != "mcp" {
-			parseIssues = append(parseIssues, Issue{File: file, Code: IssueBadGoal, Detail: "arguments without mcp"})
+		if issue := validatePredicateSpec(goal, "goal"); issue != "" {
+			parseIssues = append(parseIssues, Issue{File: file, Code: IssueBadGoal, Detail: issue})
 		}
 		book.Goal = goal
 	}
@@ -242,8 +295,8 @@ func ParseBytes(file string, data []byte) (Playbook, []Issue) {
 	return book, nil
 }
 
-// parseGoalLine 解析 [SetGoal] 节内的一行(key: value,封闭键集),返回结构化问题描述。
-func parseGoalLine(goal *ResultSpec, seen map[string]bool, line string) string {
+// parsePredicateLine 解析 [SetGoal]/[Verify] 节内的一行(key: value,封闭键集)。
+func parsePredicateLine(spec *ResultSpec, seen map[string]bool, line string) string {
 	key, value, ok := strings.Cut(line, ":")
 	if !ok {
 		return "not a key: value line"
@@ -256,45 +309,150 @@ func parseGoalLine(goal *ResultSpec, seen map[string]bool, line string) string {
 	seen[key] = true
 	switch key {
 	case "shell":
-		if goal.Kind != "" {
+		if spec.Kind != "" {
 			return "multiple predicate kinds"
 		}
 		if value == "" {
 			return "empty shell command"
 		}
-		goal.Kind = "shell"
-		goal.Command = value
+		spec.Kind = "shell"
+		spec.Command = value
 	case "mcp":
-		if goal.Kind != "" {
+		if spec.Kind != "" {
 			return "multiple predicate kinds"
 		}
 		parts := strings.Fields(value)
 		if len(parts) != 2 {
 			return "mcp expects: <server> <tool>"
 		}
-		goal.Kind = "mcp"
-		goal.Server = parts[0]
-		goal.Tool = parts[1]
+		spec.Kind = "mcp"
+		spec.Server = parts[0]
+		spec.Tool = parts[1]
+	case "run":
+		if spec.Kind != "" {
+			return "multiple predicate kinds"
+		}
+		spec.Kind = "run"
+		spec.Recipe = value
+	case "fact":
+		if spec.Kind != "" {
+			return "multiple predicate kinds"
+		}
+		if value == "" {
+			return "empty fact query"
+		}
+		spec.Kind = "fact"
+		spec.Query = value
 	case "arguments":
 		var args map[string]any
 		if err := json.Unmarshal([]byte(value), &args); err != nil {
 			return "arguments is not a JSON object"
 		}
-		goal.Arguments = args
+		spec.Arguments = args
+	case "tests":
+		var tests []string
+		if err := json.Unmarshal([]byte(value), &tests); err != nil {
+			return "tests is not a JSON array"
+		}
+		// 与运行期校验对齐(internal/verify/typed.go validateTyped):tests[] 不允许空串。
+		for _, test := range tests {
+			if test == "" {
+				return "tests entries must not be empty"
+			}
+		}
+		spec.Tests = tests
+	case "options":
+		var options map[string]any
+		if err := json.Unmarshal([]byte(value), &options); err != nil {
+			return "options is not a JSON object"
+		}
+		spec.Options = options
+	case "expect":
+		if !json.Valid([]byte(value)) {
+			return "expect is not JSON"
+		}
+		spec.Expect = json.RawMessage(value)
 	case "timeout_s":
 		n, err := strconv.Atoi(value)
 		if err != nil || n < 1 || n > MaxTimeoutS {
 			return "timeout_s out of range"
 		}
-		goal.TimeoutS = n
+		spec.TimeoutS = n
 	case "output_lines":
 		n, err := strconv.Atoi(value)
 		if err != nil || n < 1 || n > MaxOutputLines {
 			return "output_lines out of range"
 		}
-		goal.OutputLines = n
+		spec.OutputLines = n
 	default:
 		return "unknown key " + key
+	}
+	return ""
+}
+
+func validatePredicateSpec(spec *ResultSpec, name string) string {
+	if spec.Kind == "" {
+		return "missing predicate kind"
+	}
+	if spec.Arguments != nil && spec.Kind != "mcp" {
+		return "arguments without mcp"
+	}
+	if len(spec.Tests) != 0 && spec.Kind != "run" {
+		return "tests without run"
+	}
+	if spec.Options != nil && spec.Kind != "run" {
+		return "options without run"
+	}
+	if len(spec.Expect) != 0 && spec.Kind == "shell" {
+		return "expect without mcp/run/fact"
+	}
+	// 注:以下与运行期 verify 校验对齐的检查是就地复刻 —— playbook 不能 import
+	// verify(verify 已 import playbook),各处注释指向 typed.go 中的对应实现。
+	switch spec.Kind {
+	case "shell":
+		if spec.Command == "" {
+			return "empty shell command"
+		}
+	case "mcp":
+		if spec.Server == "" || spec.Tool == "" {
+			return "incomplete mcp"
+		}
+		// 对应 internal/verify/typed.go ParseMCPExpect:mcp expect 必须是 JSON 数组。
+		if len(spec.Expect) != 0 {
+			var clauses []json.RawMessage
+			if err := json.Unmarshal(spec.Expect, &clauses); err != nil {
+				return "mcp expect must be an array"
+			}
+		}
+	case "run":
+		// 空 recipe 的 run 谓词会流入引擎的 stub 分支并产出空洞的 checkmate;
+		// 引擎(async_runs._validate_spec)与运行期(typed.go validateTyped)同样拒绝。
+		if spec.Recipe == "" {
+			return "run without recipe"
+		}
+		if len(spec.Tests) == 0 {
+			return "run without tests"
+		}
+		if len(spec.Expect) == 0 {
+			return "run without expect"
+		}
+		// 对应 internal/verify/typed.go ParseRunExpect:expect 必须是含 ≥1 子句的对象。
+		var clauses map[string]json.RawMessage
+		if err := json.Unmarshal(spec.Expect, &clauses); err != nil {
+			return "run expect is not a JSON object"
+		}
+		if len(clauses) == 0 {
+			return "run expect must contain at least one clause"
+		}
+	case "fact":
+		if spec.Query == "" {
+			return "empty fact query"
+		}
+		if len(spec.Expect) == 0 {
+			return "fact without expect"
+		}
+	default:
+		return "unknown predicate kind " + name
 	}
 	return ""
 }
@@ -407,6 +565,48 @@ func validate(file string, book Playbook) []Issue {
 		}
 	}
 	return issues
+}
+
+func normalizeCapabilities(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		out = append(out, strings.TrimSpace(value))
+	}
+	return out
+}
+
+func validateCapabilities(file string, values []string) []Issue {
+	var issues []Issue
+	seen := map[string]bool{}
+	for _, value := range values {
+		if !validIdentifier(value) {
+			issues = append(issues, Issue{File: file, Code: IssueBadVerify, Detail: "invalid capability " + value})
+			continue
+		}
+		if value != "recipes" {
+			issues = append(issues, Issue{File: file, Code: IssueBadVerify, Detail: "unknown capability " + value})
+			continue
+		}
+		if seen[value] {
+			issues = append(issues, Issue{File: file, Code: IssueBadVerify, Detail: "duplicate capability " + value})
+			continue
+		}
+		seen[value] = true
+	}
+	return issues
+}
+
+func validIdentifier(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func parseHeader(file string, lines []string) (frontmatter, int, []Issue) {

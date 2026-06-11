@@ -13,6 +13,9 @@ const (
 	CodeEmptyRequest         = "empty_request"
 	CodeBadResult            = "bad_result"
 	CodeEngineUnavailable    = "engine_unavailable"
+	CodeBriefingUnresolved   = "briefing_unresolved"
+	CodeCapabilityRevoked    = "capability_revoked"
+	CodeRecipePinMismatch    = "recipe_pin_mismatch"
 	CodeServerNotFound       = "server_not_found"
 	CodeUnsupportedTransport = "unsupported_transport"
 	CodeReservedServer       = "reserved_server"
@@ -21,6 +24,7 @@ const (
 	CodeStepNotFound         = "step_not_found"
 	CodeBadSummary           = "bad_summary"
 	CodeBadNote              = "bad_note"
+	CodeLockTimeout          = "lock_timeout"
 	CodeStateBusy            = "state_busy"
 	CodeStateCorrupt         = "state_corrupt"
 
@@ -36,6 +40,7 @@ const (
 	IssueOversize            = "oversize"
 	IssueNameConflict        = "name_conflict"
 	IssueBadGoal             = "bad_goal"
+	IssueBadVerify           = "bad_verify"
 	IssueBadMaxSteps         = "bad_max_steps"
 
 	DefaultTimeoutS    = 600
@@ -56,12 +61,14 @@ const (
 )
 
 type Playbook struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	Entry       string          `json:"entry"`
-	MaxSteps    int             `json:"max_steps,omitempty"` // 0 = 未配置,生效 DefaultMaxSteps
-	Goal        *ResultSpec     `json:"goal,omitempty"`      // checkmate 谓词,可选
-	Steps       map[string]Step `json:"steps"`
+	Name         string                `json:"name"`
+	Description  string                `json:"description"`
+	Entry        string                `json:"entry"`
+	MaxSteps     int                   `json:"max_steps,omitempty"` // 0 = 未配置,生效 DefaultMaxSteps
+	Capabilities []string              `json:"capabilities,omitempty"`
+	Goal         *ResultSpec           `json:"goal,omitempty"` // checkmate 谓词,可选
+	Verify       map[string]ResultSpec `json:"verify,omitempty"`
+	Steps        map[string]Step       `json:"steps"`
 
 	order []string
 }
@@ -75,7 +82,7 @@ type ResultSpec struct {
 	Tool      string         `json:"tool,omitempty"`      // mcp: 工具名
 	Arguments map[string]any `json:"arguments,omitempty"` // mcp: 工具入参
 
-	Recipe  string         `json:"recipe,omitempty"`  // run: 可选 recipe 名
+	Recipe  string         `json:"recipe,omitempty"`  // run: recipe 名(必填)
 	Tests   []string       `json:"tests,omitempty"`   // run: 测试目标(必填)
 	Options map[string]any `json:"options,omitempty"` // run: 可选执行参数
 
