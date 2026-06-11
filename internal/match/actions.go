@@ -276,6 +276,7 @@ func (s *Store) settle(m *Match, v roundVerdict, checkmate bool, goal *GoalRepor
 	archived.Outcome = v.outcome
 	m.History = append(m.History, archived)
 	m.Current = nil
+	m.GoalPending = nil
 	s.append("round_adjudicated", map[string]any{"match_id": m.ID, "round": archived.Seq, "step": archived.StepID, "complete": true, "outcome": v.outcome, "target": v.target})
 
 	out := CheckStepJobOutput{Complete: true, Outcome: v.outcome, Goal: goal}
@@ -323,9 +324,21 @@ func (s *Store) settle(m *Match, v roundVerdict, checkmate bool, goal *GoalRepor
 func (s *Store) CheckStepJob(ctx context.Context) (CheckStepJobOutput, error) {
 	var pendingGoal *playbook.ResultSpec
 	var pendingSeq int
+	var startRunGoal *playbook.ResultSpec
+	var startRunSeq int
+	var pollRunGoal *GoalPending
 	out, err := s.withLock(func(m *Match) (*Match, any, error) {
 		if m == nil || m.Status != StatusActive || m.Current == nil {
 			return nil, nil, &ToolError{Code: playbook.CodeNoActiveMatch, Message: "no active match"}
+		}
+		if m.GoalPending != nil {
+			pending := *m.GoalPending
+			if pending.RoundSeq != m.RoundSeq {
+				m.GoalPending = nil
+				return m, CheckStepJobOutput{Complete: false, Reason: "state_changed", RunID: pending.RunID}, nil
+			}
+			pollRunGoal = &pending
+			return nil, nil, nil
 		}
 		v := evaluateRound(m)
 		if !v.complete {
@@ -334,6 +347,14 @@ func (s *Store) CheckStepJob(ctx context.Context) (CheckStepJobOutput, error) {
 		}
 		if m.Playbook.Goal != nil && v.outcome == OutcomeSuccess {
 			spec := *m.Playbook.Goal
+			if spec.Kind == "run" {
+				if err := s.checkRecipePin(m, spec); err != nil {
+					return nil, nil, err
+				}
+				startRunGoal = &spec
+				startRunSeq = m.RoundSeq
+				return nil, nil, nil
+			}
 			pendingGoal = &spec
 			pendingSeq = m.RoundSeq
 			return nil, nil, nil // 锁外执行 checkmate 谓词后再落子
@@ -343,6 +364,12 @@ func (s *Store) CheckStepJob(ctx context.Context) (CheckStepJobOutput, error) {
 	})
 	if err != nil {
 		return CheckStepJobOutput{}, err
+	}
+	if pollRunGoal != nil {
+		return s.pollAsyncRunGoal(ctx, *pollRunGoal)
+	}
+	if startRunGoal != nil {
+		return s.startAsyncRunGoal(ctx, *startRunGoal, startRunSeq)
 	}
 	if pendingGoal == nil {
 		return out.(CheckStepJobOutput), nil

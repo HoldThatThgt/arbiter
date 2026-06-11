@@ -23,17 +23,25 @@ const (
 )
 
 type Match struct {
-	ID         string            `json:"id"`
-	Playbook   playbook.Playbook `json:"playbook"`
-	RecipesPin RecipePin         `json:"recipes_pin,omitempty"`
-	Status     string            `json:"status"`
-	Abort      string            `json:"abort,omitempty"`
-	Current    *Round            `json:"current,omitempty"`
-	History    []Round           `json:"history"`
-	TaskSeq    int               `json:"task_seq"`
-	RoundSeq   int               `json:"round_seq"`
-	StopBlocks int               `json:"stop_blocks"` // 本回合内被拦截的停止次数,进入新回合清零
-	StartedAt  string            `json:"started_at"`
+	ID          string            `json:"id"`
+	Playbook    playbook.Playbook `json:"playbook"`
+	RecipesPin  RecipePin         `json:"recipes_pin,omitempty"`
+	Status      string            `json:"status"`
+	Abort       string            `json:"abort,omitempty"`
+	Current     *Round            `json:"current,omitempty"`
+	History     []Round           `json:"history"`
+	TaskSeq     int               `json:"task_seq"`
+	RoundSeq    int               `json:"round_seq"`
+	StopBlocks  int               `json:"stop_blocks"` // 本回合内被拦截的停止次数,进入新回合清零
+	GoalPending *GoalPending      `json:"goal_pending,omitempty"`
+	StartedAt   string            `json:"started_at"`
+}
+
+type GoalPending struct {
+	RoundSeq  int                 `json:"round_seq"`
+	RunID     string              `json:"run_id"`
+	Spec      playbook.ResultSpec `json:"spec"`
+	StartedAt string              `json:"started_at"`
 }
 
 type RecipePin struct {
@@ -119,11 +127,13 @@ type CheckStepJobOutput struct {
 	Abort     string      `json:"abort,omitempty"`
 	Checkmate bool        `json:"checkmate,omitempty"` // goal 谓词通过,直接胜局
 	Goal      *GoalReport `json:"goal,omitempty"`      // 本次裁决执行过 goal 时附带
+	RunID     string      `json:"run_id,omitempty"`
 }
 
 // GoalReport 是 checkmate 谓词的一次执行结局。
 type GoalReport struct {
 	Verdict    string `json:"verdict"` // pass | fail
+	RunID      string `json:"run_id,omitempty"`
 	ExitCode   *int   `json:"exit_code,omitempty"`
 	IsError    *bool  `json:"is_error,omitempty"`
 	Output     string `json:"output"`

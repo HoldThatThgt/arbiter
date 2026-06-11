@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/HoldThatThgt/arbiter/internal/playbook"
@@ -86,6 +87,72 @@ func TestGoalFailContinuesThenUnmetAtEnd(t *testing.T) {
 	if out.Match != StatusFinishedFailure || out.Checkmate {
 		t.Fatalf("end unmet = %#v", out)
 	}
+}
+
+func TestAsyncRunGoalFalseCheckmateAcrossRestart(t *testing.T) {
+	const runGoalBook = `---
+name: run-goal
+description: async run goal
+---
+
+[SetGoal]
+run: unit
+tests: ["Suite.Case"]
+options: {"stub_result":{"overall":"failed","isError":false,"passed":0,"failed":1}}
+expect: {"overall":"passed"}
+
+[STEP] only
+[StepJob]
+finish
+[CheckList]
+- done
+[Branch]
+success: END
+failure: only
+`
+	root := repoWithBook(t, "run.md", runGoalBook)
+	t.Setenv("PYTHONPATH", checkoutEnginePath(t))
+	writeRecipes(t, root, "unit", "cmd: make test\n")
+	store := New(root, "test")
+	if _, err := store.LoadPlayBook("run-goal"); err != nil {
+		t.Fatal(err)
+	}
+	task, err := store.CreateTask("pass step")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SubmitTask(context.Background(), task.TaskID, "step done", "done", verify.ResultSpec{Kind: "shell", Command: "exit 0"}); err != nil {
+		t.Fatal(err)
+	}
+
+	started, err := store.CheckStepJob(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started.Complete || started.Reason != "goal_running" || started.RunID == "" {
+		t.Fatalf("started = %#v", started)
+	}
+
+	restarted := New(root, "test")
+	settled, err := restarted.CheckStepJob(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settled.Checkmate || settled.Match != StatusFinishedFailure {
+		t.Fatalf("settled = %#v", settled)
+	}
+	if settled.Goal == nil || settled.Goal.Verdict != TaskFail || settled.Goal.IsError == nil || *settled.Goal.IsError {
+		t.Fatalf("goal = %#v", settled.Goal)
+	}
+}
+
+func checkoutEnginePath(t *testing.T) string {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", "..", "engine"))
 }
 
 func TestAddPlayBook(t *testing.T) {

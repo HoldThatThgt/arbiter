@@ -88,12 +88,16 @@ func Spawn(ctx context.Context, role EngineRole, repo string) (*Engine, error) {
 		python = "python3"
 	}
 
+	pythonPath := filepath.Join(repo, "engine")
+	if existing := os.Getenv("PYTHONPATH"); existing != "" {
+		pythonPath += string(os.PathListSeparator) + existing
+	}
 	return spawnConfigured(ctx, spawnConfig{
 		role: role,
 		repo: repo,
 		argv: []string{python, "-m", "arbiter_engine.rpc"},
 		env: setEnv(os.Environ(),
-			"PYTHONPATH", filepath.Join(repo, "engine"),
+			"PYTHONPATH", pythonPath,
 			"ARBITER_ENGINE_ROLE", string(role),
 		),
 	})
