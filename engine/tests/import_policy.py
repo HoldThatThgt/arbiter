@@ -100,6 +100,12 @@ class _ImportVisitor(ast.NodeVisitor):
         if node.module:
             self._check(node.lineno, node.module.split(".", 1)[0])
 
+    def visit_Call(self, node: ast.Call) -> None:
+        root = _dynamic_import_root(node)
+        if root is not None:
+            self._check(node.lineno, root)
+        self.generic_visit(node)
+
     def visit_Try(self, node: ast.Try) -> None:
         guarded = _catches_import_error(node.handlers)
         if guarded:
@@ -145,3 +151,26 @@ def _handler_catches(node: Optional[ast.expr]) -> bool:
     if isinstance(node, ast.Tuple):
         return any(_handler_catches(elt) for elt in node.elts)
     return False
+
+
+def _dynamic_import_root(node: ast.Call) -> Optional[str]:
+    if not node.args:
+        return None
+    if not _is_dynamic_import_call(node.func):
+        return None
+
+    module = node.args[0]
+    if not isinstance(module, ast.Constant) or not isinstance(module.value, str):
+        return None
+    return module.value.split(".", 1)[0]
+
+
+def _is_dynamic_import_call(node: ast.expr) -> bool:
+    if isinstance(node, ast.Name):
+        return node.id == "__import__"
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == "import_module"
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "importlib"
+    )
