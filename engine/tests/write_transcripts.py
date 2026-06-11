@@ -2,6 +2,8 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -44,6 +46,18 @@ REQUESTS: List[Dict[str, Any]] = [
         "method": "arbiter/handshake",
         "params": {"expected_version": "old"},
     },
+    {
+        "jsonrpc": "2.0",
+        "id": 14,
+        "method": "arbiter/startRun",
+        "params": {"duration_ms": 0, "timeout_ms": 1000},
+    },
+    {
+        "jsonrpc": "2.0",
+        "id": 15,
+        "method": "arbiter/runStatus",
+        "params": {"run_id": "$last_run_id"},
+    },
 ]
 
 
@@ -62,45 +76,61 @@ def main() -> int:
 def record(repo: Path) -> List[Dict[str, Any]]:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(repo / "engine")
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "arbiter_engine.rpc"],
-        cwd=repo,
-        env=env,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    assert proc.stdin is not None
-    assert proc.stdout is not None
+    with tempfile.TemporaryDirectory() as tmp:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "arbiter_engine.rpc"],
+            cwd=tmp,
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        assert proc.stdin is not None
+        assert proc.stdout is not None
 
-    entries: List[Dict[str, Any]] = []
-    try:
-        for request in REQUESTS:
-            proc.stdin.write(json.dumps(request, separators=(",", ":")) + "\n")
-            proc.stdin.flush()
-            line = proc.stdout.readline()
-            if line == "":
-                raise AssertionError("rpc stub exited before writing a response")
-            entries.append({"type": "request", "message": request})
-            entries.append(
-                {
-                    "type": "response",
-                    "message": json.loads(line),
-                    "allow_volatile": [],
-                }
-            )
-    finally:
-        proc.stdin.close()
-        stderr = proc.stderr.read() if proc.stderr else ""
-        code = proc.wait(timeout=5)
-        proc.stdout.close()
-        if proc.stderr:
-            proc.stderr.close()
+        entries: List[Dict[str, Any]] = []
+        last_run_id = ""
+        try:
+            for template in REQUESTS:
+                request = _materialize_request(template, last_run_id)
+                if request["method"] == "arbiter/runStatus":
+                    time.sleep(0.05)
+                proc.stdin.write(json.dumps(request, separators=(",", ":")) + "\n")
+                proc.stdin.flush()
+                line = proc.stdout.readline()
+                if line == "":
+                    raise AssertionError("rpc stub exited before writing a response")
+                response = json.loads(line)
+                if request["method"] == "arbiter/startRun":
+                    last_run_id = response["result"]["run_id"]
+                entries.append({"type": "request", "message": request})
+                entries.append(
+                    {
+                        "type": "response",
+                        "message": response,
+                        "allow_volatile": [],
+                    }
+                )
+        finally:
+            proc.stdin.close()
+            stderr = proc.stderr.read() if proc.stderr else ""
+            code = proc.wait(timeout=5)
+            proc.stdout.close()
+            if proc.stderr:
+                proc.stderr.close()
 
     if code != 0:
         raise AssertionError(f"rpc stub exited {code}: {stderr}")
     return entries
+
+
+def _materialize_request(template: Dict[str, Any], last_run_id: str) -> Dict[str, Any]:
+    request = json.loads(json.dumps(template))
+    params = request.get("params")
+    if isinstance(params, dict) and params.get("run_id") == "$last_run_id":
+        params["run_id"] = last_run_id
+    return request
 
 
 if __name__ == "__main__":

@@ -38,7 +38,8 @@ func TestReplayTranscriptsAgainstPythonStub(t *testing.T) {
 
 	for _, path := range paths {
 		t.Run(filepath.Base(path), func(t *testing.T) {
-			replayTranscript(t, repo, path)
+			workdir := transcriptWorkdir(t, repo)
+			replayTranscript(t, workdir, path)
 		})
 	}
 }
@@ -80,6 +81,46 @@ func TestValidateResponseRejectsUnknownEngineErrorKind(t *testing.T) {
 	}
 }
 
+func TestStartRunAndRunStatusMethods(t *testing.T) {
+	repo := repoRoot(t)
+	workdir := transcriptWorkdir(t, repo)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	client, err := Spawn(ctx, RoleExec, workdir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	runID, err := client.StartRun(ctx, map[string]any{
+		"duration_ms": 0,
+		"timeout_ms":  1000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runID == "" {
+		t.Fatal("runID is empty")
+	}
+
+	status := waitRunStatus(t, ctx, client, runID)
+	if status.Status != "finished" {
+		t.Fatalf("status = %q, want finished", status.Status)
+	}
+
+	var result struct {
+		RunID   string `json:"run_id"`
+		Overall string `json:"overall"`
+	}
+	if err := json.Unmarshal(status.Result, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.RunID != runID || result.Overall != "passed" {
+		t.Fatalf("result = %#v, want run_id %q overall passed", result, runID)
+	}
+}
+
 func replayTranscript(t *testing.T, repo, path string) {
 	t.Helper()
 
@@ -107,6 +148,9 @@ func replayTranscript(t *testing.T, repo, path string) {
 		if decoded.ID != int64(i/2+1) {
 			t.Fatalf("request id = %d, want sequential id %d", decoded.ID, i/2+1)
 		}
+		if decoded.Method == "arbiter/runStatus" {
+			time.Sleep(50 * time.Millisecond)
+		}
 		actual, err := client.Call(ctx, decoded.Method, decoded.Params)
 		if transcriptHasError(t, response.Message) {
 			var engineErr *EngineError
@@ -121,6 +165,24 @@ func replayTranscript(t *testing.T, repo, path string) {
 		}
 		assertJSONEqual(t, response.Message, actual, response.AllowVolatile)
 	}
+}
+
+func waitRunStatus(t *testing.T, ctx context.Context, client *Engine, runID string) AsyncRunStatus {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		status, err := client.RunStatus(ctx, runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status.Status != "running" {
+			return status
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("run %s did not finish", runID)
+	return AsyncRunStatus{}
 }
 
 func transcriptHasError(t *testing.T, message json.RawMessage) bool {
@@ -194,6 +256,16 @@ func repoRoot(t *testing.T) string {
 		t.Fatal("runtime.Caller failed")
 	}
 	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+}
+
+func transcriptWorkdir(t *testing.T, repo string) string {
+	t.Helper()
+
+	workdir := t.TempDir()
+	if err := os.Symlink(filepath.Join(repo, "engine"), filepath.Join(workdir, "engine")); err != nil {
+		t.Fatalf("link engine into transcript workdir: %v", err)
+	}
+	return workdir
 }
 
 func bytesLines(data []byte) [][]byte {

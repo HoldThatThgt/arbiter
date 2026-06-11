@@ -6,10 +6,12 @@ import json
 import os
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, TextIO
 
 from arbiter_engine import __version__
 from arbiter_engine.errors import RPCError, engine_stale
+from arbiter_engine.runs import RunManager
 
 
 MAX_LINE_BYTES = 1024 * 1024
@@ -129,6 +131,10 @@ def _dispatch(request: Any, router: Router) -> dict[str, Any]:
         return _handle_tools_call(request_id, request.get("params", {}), router)
     if method == "arbiter/handshake":
         return _handle_handshake(request_id, request.get("params", {}))
+    if method == "arbiter/startRun":
+        return _handle_start_run(request_id, request.get("params", {}))
+    if method == "arbiter/runStatus":
+        return _handle_run_status(request_id, request.get("params", {}))
 
     raise RPCError(-32601, "method not found", {"kind": "method_not_found"})
 
@@ -163,6 +169,41 @@ def _handle_handshake(request_id: Any, params: Any) -> dict[str, Any]:
     if expected is not None and expected != __version__:
         raise engine_stale(expected, __version__)
     return _result(request_id, {"engine": "arbiter-engine", "version": __version__})
+
+
+def _handle_start_run(request_id: Any, params: Any) -> dict[str, Any]:
+    values = _expect_params_object(
+        params,
+        allowed=("duration_ms", "timeout_ms", "overall", "_meta"),
+    )
+    meta = values.pop("_meta", {})
+    if not isinstance(meta, dict):
+        raise RPCError(-32602, "invalid params", {"kind": "invalid_meta"})
+    try:
+        result = RunManager(Path(os.getcwd())).start_run(values, meta=meta)
+    except ValueError as exc:
+        raise RPCError(
+            -32602,
+            "invalid params",
+            {"kind": "invalid_params", "detail": str(exc)},
+        ) from exc
+    return _result(request_id, result)
+
+
+def _handle_run_status(request_id: Any, params: Any) -> dict[str, Any]:
+    values = _expect_params_object(params, allowed=("run_id",))
+    run_id = values.get("run_id")
+    if not isinstance(run_id, str) or not run_id:
+        raise RPCError(-32602, "invalid params", {"kind": "invalid_params", "field": "run_id"})
+    try:
+        result = RunManager(Path(os.getcwd())).run_status(run_id)
+    except KeyError as exc:
+        raise RPCError(
+            -32602,
+            "invalid params",
+            {"kind": "invalid_params", "field": "run_id"},
+        ) from exc
+    return _result(request_id, result)
 
 
 def _expect_params_object(params: Any, allowed: tuple[str, ...]) -> dict[str, Any]:
