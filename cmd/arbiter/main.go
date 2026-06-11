@@ -8,11 +8,20 @@ import (
 	"os"
 
 	"github.com/HoldThatThgt/arbiter/internal/deploy"
+	"github.com/HoldThatThgt/arbiter/internal/interpose"
 	"github.com/HoldThatThgt/arbiter/internal/match"
 	"github.com/HoldThatThgt/arbiter/internal/seat"
 )
 
 func main() {
+	if len(os.Args) >= 2 && os.Args[1] == "cc" {
+		root, err := os.Getwd()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(interpose.Run(root, os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
+	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -21,7 +30,7 @@ func main() {
 
 func run() error {
 	if len(os.Args) < 2 {
-		return fmt.Errorf("usage: arbiter init | serve <seat>")
+		return fmt.Errorf("usage: arbiter init | serve <seat> | hook stop | cc -- <real-compiler> [args...]")
 	}
 	root, err := os.Getwd()
 	if err != nil {
@@ -61,6 +70,6 @@ func run() error {
 		}
 		return nil
 	default:
-		return fmt.Errorf("usage: arbiter init | serve <seat> | hook stop")
+		return fmt.Errorf("usage: arbiter init | serve <seat> | hook stop | cc -- <real-compiler> [args...]")
 	}
 }

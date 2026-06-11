@@ -11,3 +11,4 @@
 | #21 | done | shared: add worktree census (#21) | Red: cannot import shared.census; create/delete/touch/content/glob tests, arbiter/census, transcripts twice, and full gate green. |
 | #22 | done | shared: centralize lock inventory (#22) | Red: cannot import shared.locks / undefined Go lock APIs; ordered lock helpers, match.lock migration, meta-checks, and full gate green. |
 | #23 | question | interpose: add adversarial cc matrix (#23) | Red: arbiter cc is not implemented; matrix skip-gated only until #24 to preserve green per-commit gates. REVIEWER-QUESTION: Is ARBITER_REQUIRE_CC=1 acceptable as the forced-red mode for the tests-before-implementation split? |
+| #24 | question | interpose: implement arbiter cc shim (#24) | Red: arbiter cc is not implemented; #23 matrix forced green, full gate green. REVIEWER-QUESTION: The current repo has no CI benchmark harness for the 3ms startup p95 claim; should that be a separate gate issue? |
