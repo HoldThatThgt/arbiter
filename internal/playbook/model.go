@@ -22,6 +22,7 @@ const (
 	CodeStepNotFound         = "step_not_found"
 	CodeBadSummary           = "bad_summary"
 	CodeBadNote              = "bad_note"
+	CodeLockTimeout          = "lock_timeout"
 	CodeStateBusy            = "state_busy"
 	CodeStateCorrupt         = "state_corrupt"
 

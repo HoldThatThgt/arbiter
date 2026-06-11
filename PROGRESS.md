@@ -9,3 +9,4 @@
 | #36 | done | match: pin recipes at load (#36) | Red: Match missing RecipesPin and recipe_pin_mismatch code; load pin, run mismatch journal, and full gate green. |
 | #37 | done | match: add async run goals (#37) | Red: CheckStepJobOutput missing RunID; startRun/runStatus goal polling, false-checkmate kill test, and full gate green. |
 | #21 | done | shared: add worktree census (#21) | Red: cannot import shared.census; create/delete/touch/content/glob tests, arbiter/census, transcripts twice, and full gate green. |
+| #22 | done | shared: centralize lock inventory (#22) | Red: cannot import shared.locks / undefined Go lock APIs; ordered lock helpers, match.lock migration, meta-checks, and full gate green. |
