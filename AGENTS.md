@@ -1,5 +1,7 @@
 # Repository Guidelines
 
+On any conflict, `PROCESS.md` and `docs/modules/*.md` win over this file.
+
 ## Structure & Authority
 
 Read before work: `PROCESS.md`, `docs/migration.md`,
@@ -12,7 +14,7 @@ Go packages in `internal/*`, Python in `engine/arbiter_engine/*`, tests in
 ## Build, Test, and Development Commands
 
 - `make build` - build the `arbiter` Go binary.
-- `make test` - run `go vet`, `go test -race ./...`, and Python `unittest`
+- `make test` - run `go vet`, `go test -race ./...`, and `unittest`
   discovery with `PYTHONPATH=engine`.
 - `make test-py` - run only the Python engine tests, including the stdlib AST
   import meta-test.
@@ -25,8 +27,7 @@ Go packages in `internal/*`, Python in `engine/arbiter_engine/*`, tests in
 Work only in the current milestone. Take the oldest `ready` issue, comment, and
 branch `issue/<n>-<slug>`. Implement only that scope; file adjacent problems
 separately. Use TDD: show the failing test before the fix. Keep one concern per
-PR, target <=400 net non-test lines, and never merge your own PR or self-assess
-a milestone.
+PR and never merge your own PR or self-assess a milestone.
 
 ## Coding Style & Invariants
 
@@ -48,8 +49,7 @@ JSON-RPC shape change must update golden transcripts in the same PR. Keep
 
 Git history uses prefixes such as `Design: ...`; keep subjects short. PR titles
 use `<module>: <what>`. Bodies must include `WHAT`, `WHY`, `SPEC`, `TESTS`, and
-`RISKS`, quote module-doc lines, and end with `Closes #<n>`. Address every
-review comment on the same branch.
+`RISKS`, quote module-doc lines, and end with `Closes #<n>`.
 
 ## Escalation & Owner Gates
 
