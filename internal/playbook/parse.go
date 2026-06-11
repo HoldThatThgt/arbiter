@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -38,6 +39,7 @@ type frontmatter struct {
 	Description  string   `yaml:"description"`
 	MaxSteps     int      `yaml:"max_steps"`
 	Capabilities []string `yaml:"capabilities"`
+	VerifyPolicy string   `yaml:"verify_policy"`
 }
 
 type stepBuilder struct {
@@ -80,12 +82,18 @@ func ParseBytes(file string, data []byte) (Playbook, []Issue) {
 		Description:  strings.TrimSpace(meta.Description),
 		MaxSteps:     meta.MaxSteps,
 		Capabilities: normalizeCapabilities(meta.Capabilities),
+		VerifyPolicy: strings.TrimSpace(meta.VerifyPolicy),
 		Verify:       map[string]ResultSpec{},
 		Steps:        map[string]Step{},
 	}
 	var current *stepBuilder
 	section := sectionNone
 	parseIssues := validateCapabilities(file, book.Capabilities)
+	switch book.VerifyPolicy {
+	case "", "open", "named":
+	default:
+		parseIssues = append(parseIssues, Issue{File: file, Line: 1, Code: IssueBadFrontmatter, Detail: "verify_policy must be open or named"})
+	}
 	var goal *ResultSpec
 	goalKeys := map[string]bool{}
 	var verifyName string
@@ -207,19 +215,21 @@ func ParseBytes(file string, data []byte) (Playbook, []Issue) {
 		}
 
 		if section == sectionGoal {
-			if strings.TrimSpace(line) == "" {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" || strings.HasPrefix(trimmed, "#") { // 整行注释:首个非空白字符为 #
 				continue
 			}
-			if issue := parsePredicateLine(goal, goalKeys, strings.TrimSpace(line)); issue != "" {
+			if issue := parsePredicateLine(goal, goalKeys, trimmed, section); issue != "" {
 				parseIssues = append(parseIssues, Issue{File: file, Line: lineNo, Code: IssueBadGoal, Detail: issue})
 			}
 			continue
 		}
 		if section == sectionVerify {
-			if strings.TrimSpace(line) == "" {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" || strings.HasPrefix(trimmed, "#") { // 整行注释:首个非空白字符为 #
 				continue
 			}
-			if issue := parsePredicateLine(verifySpec, verifyKeys, strings.TrimSpace(line)); issue != "" {
+			if issue := parsePredicateLine(verifySpec, verifyKeys, trimmed, section); issue != "" {
 				parseIssues = append(parseIssues, Issue{File: file, Line: lineNo, Code: IssueBadVerify, Detail: issue})
 			}
 			continue
@@ -282,6 +292,21 @@ func ParseBytes(file string, data []byte) (Playbook, []Issue) {
 	finishVerify()
 	finish()
 
+	if book.VerifyPolicy == "named" && len(book.Verify) == 0 {
+		parseIssues = append(parseIssues, Issue{File: file, Line: 1, Code: IssueBadFrontmatter, Detail: "verify_policy: named requires at least one [Verify] section"})
+	}
+	if goal != nil && goal.Verify != "" {
+		// goal 别名在全部节解析完成后才解析,使 [SetGoal] 与 [Verify] 的先后顺序无关。
+		if named, ok := book.Verify[goal.Verify]; ok {
+			resolved := named.Clone()
+			resolved.Verify = ""
+			resolved.AllowOverrides = nil
+			goal = &resolved
+		} else {
+			parseIssues = append(parseIssues, Issue{File: file, Code: IssueBadGoal, Detail: "unknown verify " + goal.Verify})
+			goal = nil
+		}
+	}
 	if goal != nil {
 		if issue := validatePredicateSpec(goal, "goal"); issue != "" {
 			parseIssues = append(parseIssues, Issue{File: file, Code: IssueBadGoal, Detail: issue})
@@ -296,7 +321,9 @@ func ParseBytes(file string, data []byte) (Playbook, []Issue) {
 }
 
 // parsePredicateLine 解析 [SetGoal]/[Verify] 节内的一行(key: value,封闭键集)。
-func parsePredicateLine(spec *ResultSpec, seen map[string]bool, line string) string {
+// section 区分上下文:`verify:` 引用仅 [SetGoal] 合法(goal 别名),
+// `allow_overrides:` 仅 [Verify] 合法(curated spec 的开口声明)。
+func parsePredicateLine(spec *ResultSpec, seen map[string]bool, line, section string) string {
 	key, value, ok := strings.Cut(line, ":")
 	if !ok {
 		return "not a key: value line"
@@ -307,7 +334,41 @@ func parsePredicateLine(spec *ResultSpec, seen map[string]bool, line string) str
 		return "duplicate key " + key
 	}
 	seen[key] = true
+	// verify 引用与一切其他键互斥:引用即整体采用具名谓词,不接受拼装。
+	if key != "verify" && spec.Verify != "" {
+		return "verify cannot be combined with other keys"
+	}
 	switch key {
+	case "verify":
+		if section == sectionVerify {
+			return "verify cannot reference verify"
+		}
+		if len(seen) > 1 {
+			return "verify cannot be combined with other keys"
+		}
+		if !validIdentifier(value) {
+			return "invalid verify reference"
+		}
+		spec.Verify = value
+	case "allow_overrides":
+		if section != sectionVerify {
+			return "allow_overrides is only allowed in [Verify] sections"
+		}
+		var fields []string
+		if err := json.Unmarshal([]byte(value), &fields); err != nil {
+			return "allow_overrides is not a JSON array" + commentHint(value)
+		}
+		seenField := map[string]bool{}
+		for _, field := range fields {
+			if field != "tests" && field != "options" {
+				return `allow_overrides entries must be "tests" or "options"`
+			}
+			if seenField[field] {
+				return "duplicate allow_overrides entry " + field
+			}
+			seenField[field] = true
+		}
+		spec.AllowOverrides = fields
 	case "shell":
 		if spec.Kind != "" {
 			return "multiple predicate kinds"
@@ -323,7 +384,7 @@ func parsePredicateLine(spec *ResultSpec, seen map[string]bool, line string) str
 		}
 		parts := strings.Fields(value)
 		if len(parts) != 2 {
-			return "mcp expects: <server> <tool>"
+			return "mcp expects: <server> <tool>" + commentHint(value)
 		}
 		spec.Kind = "mcp"
 		spec.Server = parts[0]
@@ -331,6 +392,9 @@ func parsePredicateLine(spec *ResultSpec, seen map[string]bool, line string) str
 	case "run":
 		if spec.Kind != "" {
 			return "multiple predicate kinds"
+		}
+		if value != "" && !validRecipeID(value) {
+			return "run recipe id must match [A-Za-z0-9_-][A-Za-z0-9._-]* without '..'" + commentHint(value)
 		}
 		spec.Kind = "run"
 		spec.Recipe = value
@@ -341,18 +405,25 @@ func parsePredicateLine(spec *ResultSpec, seen map[string]bool, line string) str
 		if value == "" {
 			return "empty fact query"
 		}
+		// 以 # 开头的检索词不可能命中任何符号/路径,缺席式 expect 还会借此空通过;
+		// 词中混入 # 的病态路径仍然合法 —— 按语法拒绝,不做启发式猜测。
+		for _, term := range strings.Fields(value) {
+			if strings.HasPrefix(term, "#") {
+				return "fact query term '" + term + "' cannot match any symbol" + commentHint(value)
+			}
+		}
 		spec.Kind = "fact"
 		spec.Query = value
 	case "arguments":
 		var args map[string]any
 		if err := json.Unmarshal([]byte(value), &args); err != nil {
-			return "arguments is not a JSON object"
+			return "arguments is not a JSON object" + commentHint(value)
 		}
 		spec.Arguments = args
 	case "tests":
 		var tests []string
 		if err := json.Unmarshal([]byte(value), &tests); err != nil {
-			return "tests is not a JSON array"
+			return "tests is not a JSON array" + commentHint(value)
 		}
 		// 与运行期校验对齐(internal/verify/typed.go validateTyped):tests[] 不允许空串。
 		for _, test := range tests {
@@ -364,30 +435,47 @@ func parsePredicateLine(spec *ResultSpec, seen map[string]bool, line string) str
 	case "options":
 		var options map[string]any
 		if err := json.Unmarshal([]byte(value), &options); err != nil {
-			return "options is not a JSON object"
+			return "options is not a JSON object" + commentHint(value)
 		}
 		spec.Options = options
 	case "expect":
 		if !json.Valid([]byte(value)) {
-			return "expect is not JSON"
+			return "expect is not JSON" + commentHint(value)
 		}
 		spec.Expect = json.RawMessage(value)
 	case "timeout_s":
 		n, err := strconv.Atoi(value)
 		if err != nil || n < 1 || n > MaxTimeoutS {
-			return "timeout_s out of range"
+			return "timeout_s out of range" + commentHint(value)
 		}
 		spec.TimeoutS = n
 	case "output_lines":
 		n, err := strconv.Atoi(value)
 		if err != nil || n < 1 || n > MaxOutputLines {
-			return "output_lines out of range"
+			return "output_lines out of range" + commentHint(value)
 		}
 		spec.OutputLines = n
 	default:
 		return "unknown key " + key
 	}
 	return ""
+}
+
+// commentHint 在含 '#' 的非法值的报错上点名真实病因:行内注释不受支持。
+// 绝不静默剥离 —— 任何启发式剥离都会改写某人的合法值(见提案 Part 2)。
+func commentHint(value string) string {
+	if strings.Contains(value, "#") {
+		return "; inline '#' comments are not supported (use full-line comments)"
+	}
+	return ""
+}
+
+// recipeIDPattern 镜像引擎的 target-id 规则(engine/arbiter_engine/runs/recipes.py
+// SAFE_TARGET_ID):recipe id 会拼进文件系统路径,必须 path-safe。
+var recipeIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-][A-Za-z0-9._-]*$`)
+
+func validRecipeID(value string) bool {
+	return recipeIDPattern.MatchString(value) && !strings.Contains(value, "..")
 }
 
 func validatePredicateSpec(spec *ResultSpec, name string) string {
@@ -402,6 +490,11 @@ func validatePredicateSpec(spec *ResultSpec, name string) string {
 	}
 	if spec.Options != nil && spec.Kind != "run" {
 		return "options without run"
+	}
+	// allow_overrides 只对 run 字段(tests/options)有意义;挂在其他 kind 上是陷阱
+	// (任何按它提交的覆盖都会在运行期 Validate 被拒),解析期即封死。
+	if len(spec.AllowOverrides) != 0 && spec.Kind != "run" {
+		return "allow_overrides without run"
 	}
 	if len(spec.Expect) != 0 && spec.Kind == "shell" {
 		return "expect without mcp/run/fact"

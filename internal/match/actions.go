@@ -128,11 +128,14 @@ func (s *Store) LoadPlayBook(name string) (LoadPlayBookOutput, error) {
 			ID:         newMatchID(now),
 			Playbook:   entry.Book,
 			RecipesPin: recipesPin,
-			Status:     StatusActive,
-			Current:    &Round{Seq: 1, StepID: entry.Book.Entry, EnteredAt: now.Format(time.RFC3339)},
-			History:    []Round{},
-			RoundSeq:   1,
-			StartedAt:  now.Format(time.RFC3339),
+			// 具名谓词随策略一起封盘进对局快照(深拷贝),镜像 RecipePin 信任模型。
+			VerifyPolicy: entry.Book.VerifyPolicy,
+			VerifySpecs:  cloneVerifySpecs(entry.Book.Verify),
+			Status:       StatusActive,
+			Current:      &Round{Seq: 1, StepID: entry.Book.Entry, EnteredAt: now.Format(time.RFC3339)},
+			History:      []Round{},
+			RoundSeq:     1,
+			StartedAt:    now.Format(time.RFC3339),
 		}
 		s.append("match_started", map[string]any{"match_id": m.ID, "playbook": m.Playbook.Name, "entry": m.Playbook.Entry})
 		s.append("round_entered", map[string]any{"match_id": m.ID, "round": 1, "step": m.Playbook.Entry})
@@ -169,6 +172,7 @@ func (s *Store) ShowStepJob() (ShowStepJobOutput, error) {
 			Round:    m.Current.Seq,
 			Step:     &StepOutput{ID: step.ID, Job: step.Job, Checklist: step.Checklist, Gotchas: step.Gotchas},
 			Tasks:    tasks,
+			Verify:   verifyDecls(m.VerifySpecs),
 		}, nil
 	})
 	if err != nil {
@@ -269,10 +273,19 @@ func (s *Store) SubmitTask(ctx context.Context, taskID, summary, report string, 
 	}
 	var roundSeq int
 	var matchID string
+	var verifyName string
 	out, err := s.withLock(func(m *Match) (*Match, any, error) {
 		if m == nil || m.Status != StatusActive || m.Current == nil {
 			return nil, nil, &ToolError{Code: playbook.CodeNoActiveMatch, Message: "no active match"}
 		}
+		// verify 引用在锁内对照对局快照解析成 curated spec(绝不读棋谱文件),
+		// 解析结果照常流经 Validate → recipe pin → ExecuteWithMeta。
+		resolved, name, err := resolveVerifySpec(m, spec)
+		if err != nil {
+			return nil, nil, err
+		}
+		spec = resolved
+		verifyName = name
 		if err := verify.Validate(spec); err != nil {
 			return nil, nil, specError(err)
 		}
@@ -329,6 +342,9 @@ func (s *Store) SubmitTask(ctx context.Context, taskID, summary, report string, 
 			"spec":        result.Spec,
 			"duration_ms": result.DurationMS,
 			"output":      result.Output,
+		}
+		if verifyName != "" {
+			fields["verify"] = verifyName // 台账记下这次裁决出自哪个 curated 谓词
 		}
 		if result.ExitCode != nil {
 			fields["exit_code"] = *result.ExitCode

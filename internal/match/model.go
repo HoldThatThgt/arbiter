@@ -23,19 +23,24 @@ const (
 )
 
 type Match struct {
-	ID          string                   `json:"id"`
-	Playbook    playbook.Playbook        `json:"playbook"`
-	RecipesPin  RecipePin                `json:"recipes_pin,omitempty"`
-	Status      string                   `json:"status"`
-	Abort       string                   `json:"abort,omitempty"`
-	Current     *Round                   `json:"current,omitempty"`
-	History     []Round                  `json:"history"`
-	TaskSeq     int                      `json:"task_seq"`
-	RoundSeq    int                      `json:"round_seq"`
-	StopBlocks  int                      `json:"stop_blocks"` // 本回合内被拦截的停止次数,进入新回合清零
-	GoalPending *GoalPending             `json:"goal_pending,omitempty"`
-	GoalMemo    map[string]GoalMemoEntry `json:"goal_memo,omitempty"`
-	StartedAt   string                   `json:"started_at"`
+	ID         string            `json:"id"`
+	Playbook   playbook.Playbook `json:"playbook"`
+	RecipesPin RecipePin         `json:"recipes_pin,omitempty"`
+	// VerifyPolicy/VerifySpecs 是装载时从棋谱封盘的快照(镜像 RecipePin 信任模型):
+	// 对局中改写棋谱文件换不掉任何在局谓词;SubmitTask 的 verify 引用只对照这里解析。
+	// 旧 state.json 两字段缺省 → 策略 open、无具名谓词,行为与历史一致。
+	VerifyPolicy string                       `json:"verify_policy,omitempty"`
+	VerifySpecs  map[string]verify.ResultSpec `json:"verify_specs,omitempty"`
+	Status       string                       `json:"status"`
+	Abort        string                       `json:"abort,omitempty"`
+	Current      *Round                       `json:"current,omitempty"`
+	History      []Round                      `json:"history"`
+	TaskSeq      int                          `json:"task_seq"`
+	RoundSeq     int                          `json:"round_seq"`
+	StopBlocks   int                          `json:"stop_blocks"` // 本回合内被拦截的停止次数,进入新回合清零
+	GoalPending  *GoalPending                 `json:"goal_pending,omitempty"`
+	GoalMemo     map[string]GoalMemoEntry     `json:"goal_memo,omitempty"`
+	StartedAt    string                       `json:"started_at"`
 }
 
 type GoalPending struct {
@@ -108,6 +113,13 @@ type ShowStepJobOutput struct {
 	Abort    string        `json:"abort,omitempty"`
 	Step     *StepOutput   `json:"step,omitempty"`
 	Tasks    []TaskSummary `json:"tasks,omitempty"`
+	Verify   []VerifyDecl  `json:"verify,omitempty"` // 对局快照里可用的具名谓词(按名排序)
+}
+
+// VerifyDecl 是具名 [Verify] 谓词的路由摘要:执行席按名提交,内容由裁判解析。
+type VerifyDecl struct {
+	Name string `json:"name"`
+	Kind string `json:"kind"`
 }
 
 type StepOutput struct {

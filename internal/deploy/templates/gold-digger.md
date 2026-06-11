@@ -2,6 +2,7 @@
 name: gold-digger
 description: Bug-hunt opening that proves the repro, fixes it, then proves the repro is gone.
 max_steps: 64
+verify_policy: named
 ---
 
 [Verify] gear-up-published

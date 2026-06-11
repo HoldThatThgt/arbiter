@@ -383,7 +383,7 @@ func addSubmitTask(server *mcp.Server, root string, store *match.Store) {
 		"report":  stringSchema(),
 		"result":  map[string]any{"type": "object"},
 	}
-	add(server, root, store.Seat, "SubmitTask", "Submit a task with a one-line summary", objectSchema(props, []string{"task_id", "summary", "report", "result"}), func(ctx context.Context, raw json.RawMessage) (any, error) {
+	add(server, root, store.Seat, "SubmitTask", "Submit a task with a one-line summary. result is either an inline predicate spec or {\"verify\": \"<name>\"} referencing a named [Verify] predicate from the playbook (ShowStepJob lists the names); a reference may add tests/options only when that predicate declares them in allow_overrides. Playbooks with verify_policy: named accept references only.", objectSchema(props, []string{"task_id", "summary", "report", "result"}), func(ctx context.Context, raw json.RawMessage) (any, error) {
 		var in SubmitTaskInput
 		if err := decode(raw, &in); err != nil {
 			return nil, err

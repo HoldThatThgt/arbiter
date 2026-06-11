@@ -19,6 +19,10 @@ func TestOpeningTemplateLint(t *testing.T) {
 	if _, ok := book.Verify["gear-up-published"]; !ok {
 		t.Fatalf("verify predicates = %#v", book.Verify)
 	}
+	// freeplay 的前提就是不受约束的谓词,必须保持 open 策略(endgame 夹具靠它提交内联 shell)。
+	if book.VerifyPolicy != "" {
+		t.Fatalf("freeplay verify_policy = %q, want open default", book.VerifyPolicy)
+	}
 }
 
 func TestInitOpeningsWritesFreeplay(t *testing.T) {
@@ -48,22 +52,26 @@ func TestBaseOpeningTemplatesParse(t *testing.T) {
 		file       string
 		name       string
 		capability string
+		policy     string
 		verify     []string
 	}{
 		{
 			file:   "gold-digger.md",
 			name:   "gold-digger",
+			policy: "named",
 			verify: []string{"gear-up-published", "repro-fails", "repro-passes"},
 		},
 		{
 			file:       "recipe-derivation.md",
 			name:       "recipe-derivation",
 			capability: "recipes",
+			policy:     "",
 			verify:     []string{"gear-up-published", "candidate-proven"},
 		},
 		{
 			file:   "regression-triage.md",
 			name:   "regression-triage",
+			policy: "named",
 			verify: []string{"gear-up-published", "suite-green"},
 		},
 	}
@@ -79,12 +87,27 @@ func TestBaseOpeningTemplatesParse(t *testing.T) {
 			if tc.capability != "" && strings.Join(book.Capabilities, ",") != tc.capability {
 				t.Fatalf("%s capabilities = %#v", tc.file, book.Capabilities)
 			}
+			if book.VerifyPolicy != tc.policy {
+				t.Fatalf("%s verify_policy = %q, want %q", tc.file, book.VerifyPolicy, tc.policy)
+			}
 			for _, name := range tc.verify {
 				if _, ok := book.Verify[name]; !ok {
 					t.Fatalf("%s missing verify %q in %#v", tc.file, name, book.Verify)
 				}
 			}
 		})
+	}
+	// regression-triage 的 goal 经 `verify: suite-green` 别名解析,内容与具名谓词逐字一致。
+	book, issues := playbook.ParseBytes("regression-triage.md", []byte(mustTemplate("templates/regression-triage.md")))
+	if len(issues) != 0 {
+		t.Fatalf("regression-triage issues = %#v", issues)
+	}
+	goal := book.Goal
+	if goal == nil || goal.Kind != "run" || goal.Recipe != "primary" {
+		t.Fatalf("regression-triage goal = %#v", goal)
+	}
+	if string(goal.Expect) != string(book.Verify["suite-green"].Expect) {
+		t.Fatalf("goal expect %s != suite-green expect %s", goal.Expect, book.Verify["suite-green"].Expect)
 	}
 }
 
