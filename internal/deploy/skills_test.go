@@ -61,6 +61,51 @@ func TestArbiterPlayTemplateNamesFreeplayFallback(t *testing.T) {
 	}
 }
 
+func TestArbiterIntroTemplateDefinesAdjudicatedBootstrap(t *testing.T) {
+	text := mustTemplate("templates/arbiter-intro.md")
+	for _, want := range []string{
+		"adjudicated bootstrap match",
+		"probe",
+		"recipe-derivation",
+		"register",
+		`{"overall":{"one_of":["passed","failed"]}}`,
+		"arbiter cc",
+		"__SANITIZE_ADDRESS__",
+		"__has_feature",
+		"facts.key_flags",
+		"proven-recipe count",
+		"published snapshot",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("arbiter-intro template missing %q", want)
+		}
+	}
+}
+
+func TestInstrumentationMacroScanChecklist(t *testing.T) {
+	root := t.TempDir()
+	writeText(t, filepath.Join(root, "src", "asan.c"), "int x;\n#ifdef __SANITIZE_ADDRESS__\n#endif\n")
+	writeText(t, filepath.Join(root, "src", "feature.c"), "#if __has_feature(thread_sanitizer)\n#endif\n")
+	writeText(t, filepath.Join(root, "src", "near.c"), "int NOT__SANITIZE_ADDRESS__ = 0;\n")
+	writeText(t, filepath.Join(root, ".arbiter", "derived.c"), "__SANITIZE_THREAD__\n")
+
+	report, err := ScanInstrumentationMacros(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Checklist) != 2 {
+		t.Fatalf("checklist = %#v", report.Checklist)
+	}
+	got := []string{report.Checklist[0].Token, report.Checklist[1].Token}
+	want := []string{"__SANITIZE_ADDRESS__", "__has_feature(thread_sanitizer)"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("tokens = %#v, want %#v", got, want)
+	}
+	if strings.Join(report.SuggestedKeyFlags, ",") != "-fsanitize=address,-fsanitize=thread" {
+		t.Fatalf("key flags = %#v", report.SuggestedKeyFlags)
+	}
+}
+
 func firstMarkdownFence(t *testing.T, text string) string {
 	t.Helper()
 	start := strings.Index(text, "```markdown\n")
