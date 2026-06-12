@@ -45,15 +45,19 @@ prompt's phrasing of the *solution* fill the gap.
 5. **Write the minimal test**: one behavior per test, deterministic by construction —
    fixed seeds, no sleeps/timing, no network, scratch dirs, single-threaded unless
    concurrency IS the claim. Name tests so patterns select them ("DeadlockRepro.*").
-   **Put it INSIDE the recipe's test binary** — a new case (e.g. a gtest TEST) in the
-   project's existing `*_test` sources, wired into the build the recipe already
-   compiles. Never hand-compile a standalone binary and run it yourself: the referee
-   only ever sees the recipe's run, so a case it cannot select by name is invisible to
-   every predicate (and a `tests` filter that matches nothing now adjudicates `errored`,
-   not a pass). If no test file covers this area, add one to the recipe's test target.
-6. **Prove the claim the referee's way.** run {"tests": ["<your pattern>"]} and read
-   the structured per-test results; for determinism claims run it the number of times
-   the task demands. Then pre-run the exact submission predicate.
+   **Put it INSIDE the recipe's test binary.** Add your case (e.g. a gtest TEST) to the
+   EXISTING `*_test` file for the module under test — the one beside the source
+   (`coding_test.cc` next to `coding.cc`) — which the recipe ALREADY compiles, so no
+   build edit is needed and nothing has to be wired up. Create a new test file only if
+   none fits, and then add it to the recipe's test target. Never hand-compile
+   (`c++`/`g++`/`make` by hand) a standalone binary: building is the recipe's job — you
+   select tests by name and the `run` tool compiles them. The referee only ever sees the
+   recipe's run, so a case it cannot select by name is invisible to every predicate, and
+   a `tests` filter that matches nothing adjudicates `errored`, not a pass.
+6. **Prove the claim the referee's way.** run {"tests": ["<your pattern>"]} — this builds
+   through the recipe and returns structured per-test results; do not invoke the compiler
+   or the test binary yourself. For determinism claims run it the number of times the task
+   demands. Then pre-run the exact submission predicate.
 6a. **Freeze the test — RegisterTest {"paths": ["<your test file(s)>"]}.** Do this ONLY
    after step 6's pre-run shows the test compiles AND adjudicates with the right polarity
    (the referee's verdict will mirror that pre-run). Freezing is irreversible: from this
