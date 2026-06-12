@@ -38,7 +38,7 @@ off — fix that line, do not re-guess from scratch:
           cmd: [<build: e.g. cmake --build build --target your_test_binary>]
         test_run:
           cmd: [<run: e.g. ./build/your_test_binary>]
-        sources: [<globs of compiled sources, e.g. src/*.cc, util/*.cc>]
+        sources: [<globs of the compiled sources, e.g. src/*.cc, src/*.cpp>]
 
 The compile stage must invoke the real compiler through arbiter cc (the shim_cc.sh/shim_cxx.sh
 wrappers above each `exec arbiter cc -- <real-cc> "$@"`), never a synthetic command. Once
