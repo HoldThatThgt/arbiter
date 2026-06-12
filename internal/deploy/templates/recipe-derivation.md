@@ -15,6 +15,9 @@ run: candidate
 tests: ["*"]
 expect: {"overall":{"one_of":["passed","failed"]}}
 
+[SetGoal]
+verify: gear-up-published
+
 [STEP] gear-up
 [StepJob]
 Inspect the current recipe book and publish facts if a src_compile recipe already exists.

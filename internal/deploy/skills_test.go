@@ -143,6 +143,21 @@ func TestBaseOpeningTemplatesParse(t *testing.T) {
 	if string(goal.Expect) != string(book.Verify["suite-green"].Expect) {
 		t.Fatalf("goal expect %s != suite-green expect %s", goal.Expect, book.Verify["suite-green"].Expect)
 	}
+
+	// recipe-derivation 的 checkmate 必须是 gear-up-published 本身:没有这个
+	// 门控,引擎无法发布 facts 时(如 arbiter cc 未真正记账)执行席仍能用一个
+	// 弱内联谓词把 publish 步骤蒙混过关,整局假装 bootstrap 成功。goal 在每轮
+	// 裁决后重跑 src_compile 并核对 facts.published=true,走到 END 仍未发布 ⇒ 败局。
+	rd, issues := playbook.ParseBytes("recipe-derivation.md", []byte(mustTemplate("templates/recipe-derivation.md")))
+	if len(issues) != 0 {
+		t.Fatalf("recipe-derivation issues = %#v", issues)
+	}
+	if rd.Goal == nil || rd.Goal.Kind != "run" || rd.Goal.Recipe != "src_compile" {
+		t.Fatalf("recipe-derivation goal = %#v", rd.Goal)
+	}
+	if string(rd.Goal.Expect) != string(rd.Verify["gear-up-published"].Expect) {
+		t.Fatalf("goal expect %s != gear-up-published expect %s", rd.Goal.Expect, rd.Verify["gear-up-published"].Expect)
+	}
 }
 
 func TestPlaybookCreateScaffoldParsesAndStartsWithGearUp(t *testing.T) {
