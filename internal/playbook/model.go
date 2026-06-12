@@ -33,6 +33,7 @@ const (
 	CodeStepSubmitMismatch   = "step_submit_mismatch"
 	CodeTestRegister         = "test_register"
 	CodeFrozenTestModified   = "frozen_test_modified"
+	CodeCheckpoint           = "checkpoint"
 
 	IssueBadFrontmatter      = "bad_frontmatter"
 	IssueNoSteps             = "no_steps"
@@ -49,6 +50,7 @@ const (
 	IssueBadVerify           = "bad_verify"
 	IssueBadMaxSteps         = "bad_max_steps"
 	IssueBadSubmit           = "bad_submit"
+	IssueBadCheckpoint       = "bad_checkpoint"
 
 	DefaultTimeoutS    = 600
 	MaxTimeoutS        = 3600
@@ -156,7 +158,11 @@ type Step struct {
 	// 空 = 不绑定(沿用 verify_policy 的全局规则)。这把"用哪条证据"从模型手里
 	// 收归棋谱:模型连选哪条 curated 谓词的自由都没有,只能填 allow_overrides。
 	Submit string `json:"submit,omitempty"`
-	Branch Branch `json:"branch"`
+	// Checkpoint 非空时本步骤是"人工确认关卡":没有可执行谓词,由用户对这段
+	// 问题文本作 pass/fail 决定裁决(player 弹 AskUserQuestion 取得,经
+	// SubmitCheckpoint 回传)。互斥于 Checklist —— 关卡步骤无执行任务。
+	Checkpoint string `json:"checkpoint,omitempty"`
+	Branch     Branch `json:"branch"`
 }
 
 type Branch struct {
@@ -172,12 +178,13 @@ type Issue struct {
 }
 
 type StepView struct {
-	ID        string   `json:"id"`
-	Job       string   `json:"job"`
-	Checklist []string `json:"checklist"`
-	Gotchas   []string `json:"gotchas,omitempty"`
-	Submit    string   `json:"submit,omitempty"`
-	Branch    Branch   `json:"branch"`
+	ID         string   `json:"id"`
+	Job        string   `json:"job"`
+	Checklist  []string `json:"checklist"`
+	Gotchas    []string `json:"gotchas,omitempty"`
+	Submit     string   `json:"submit,omitempty"`
+	Checkpoint string   `json:"checkpoint,omitempty"`
+	Branch     Branch   `json:"branch"`
 }
 
 type CatalogEntry struct {

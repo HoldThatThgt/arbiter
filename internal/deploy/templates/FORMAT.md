@@ -90,6 +90,15 @@ Rules:
   reusable caveats for that step, returned alongside it on every ShowStepJob.
   Usually you do not write these by hand — the player model appends them at
   run time via NotePlaybook as it discovers pitfalls.
+- A step is either a TASK step (`[CheckList]`) or a CHECKPOINT step
+  (`[Checkpoint]`) — exactly one, never both. A `[Checkpoint] <question>` step has
+  no executor predicate: it is a human-confirmation gate, adjudicated by the user's
+  pass/fail on the question. The player must put the question to the user with
+  AskUserQuestion and relay the answer via SubmitCheckpoint (pass → success branch,
+  fail → failure branch); CreateTask is refused on it, and it cannot carry `[Submit]`.
+  Use it for the one thing the referee cannot machine-check — a person's approval
+  (e.g. "do these scenarios capture what you want?"). It is a human gate, not an
+  anti-adversarial one: the user is in the loop and sees the question.
 - A step may carry an optional `[Submit] <verify-name>` line: the curated
   `[Verify]` predicate this step's task MUST submit. The referee rejects any
   SubmitTask for this step whose result is not `{"verify": "<that-name>"}`

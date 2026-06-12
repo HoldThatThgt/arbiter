@@ -9,14 +9,15 @@ max_steps: 64
 Interview the user until you can write 1-2 MAIN success scenarios: given which
 concrete input or action, the user observes exactly which output or state
 change. Externally observable behavior only, in the user's own words - no
-design talk, no implementation nouns. Echo the final wording back and get an
-explicit yes; that confirmation is this step's only deliverable. The scenarios
+design talk, no implementation nouns. Echo the final wording back. The scenarios
 become the contract every later predicate enforces, so vague wording here is
-debt every step downstream pays.
-[CheckList]
-- 1-2 scenarios, each with concrete input and observable outcome
-- No implementation details inside the scenario wording
-- User explicitly confirmed the exact wording
+debt every step downstream pays. This step is a checkpoint: only the user's
+explicit yes advances it - put the echoed scenarios to them and relay their
+choice.
+[Checkpoint]
+Do these 1-2 scenarios capture the feature you want built, in your own words
+(concrete input -> observable outcome, no implementation detail)? Approve to
+proceed to writing the tests; reject to revise the wording.
 [Branch]
 success: testcase
 failure: scenario

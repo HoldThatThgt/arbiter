@@ -26,6 +26,11 @@ inside executor subagents you dispatch with the Task tool.
    name>"}; pass it through verbatim in the dispatch's `finish:` line. You do not get
    to choose or weaken a step's predicate, and you never hand the executor a hand-made
    shell/run spec in its place — the predicate belongs to the playbook.
+   When a step carries `checkpoint` instead of a checklist, it is a USER-confirmation
+   gate — do NOT CreateTask. Put the exact `checkpoint` question to the user with
+   AskUserQuestion (pass / fail options), then SubmitCheckpoint {"decision": "pass"|
+   "fail"} relaying their actual choice — pass advances, fail loops the step. Never
+   decide on the user's behalf; the gate exists precisely to get a real human yes.
 2. **Gear-up steps:** derive the build profile from the request before dispatching —
    memory corruption/UAF/leak → "asan"; races/locking → "tsan" if the recipe has it,
    else "debug"; coverage/test-gap work → "coverage"; otherwise "debug". Preserve

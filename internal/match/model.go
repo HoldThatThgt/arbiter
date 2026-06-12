@@ -73,11 +73,14 @@ type RecipePin struct {
 }
 
 type Round struct {
-	Seq       int    `json:"seq"`
-	StepID    string `json:"step_id"`
-	Tasks     []Task `json:"tasks"`
-	Outcome   string `json:"outcome,omitempty"`
-	EnteredAt string `json:"entered_at"`
+	Seq    int    `json:"seq"`
+	StepID string `json:"step_id"`
+	Tasks  []Task `json:"tasks"`
+	// Checkpoint 是人工确认关卡步骤的裁定:"pass" | "fail"(空 = 未决)。
+	// 由 SubmitCheckpoint 写入,evaluateRound 据此裁决(任务步骤不用此字段)。
+	Checkpoint string `json:"checkpoint,omitempty"`
+	Outcome    string `json:"outcome,omitempty"`
+	EnteredAt  string `json:"entered_at"`
 }
 
 type Task struct {
@@ -138,6 +141,9 @@ type StepOutput struct {
 	// Submit 是本步骤强绑定的具名谓词:非空时,本步骤的 SubmitTask 只接受
 	// {"verify": "<Submit>"}(及其 allow_overrides)。让 player 一眼看到该派什么。
 	Submit string `json:"submit,omitempty"`
+	// Checkpoint 非空时本步骤是人工确认关卡:player 须用 AskUserQuestion 向用户
+	// 提这段问题,再用 SubmitCheckpoint 回传 pass/fail —— 没有可派发的任务。
+	Checkpoint string `json:"checkpoint,omitempty"`
 }
 
 type CreateTaskOutput struct {
