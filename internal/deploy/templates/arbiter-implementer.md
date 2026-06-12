@@ -6,7 +6,7 @@ mcpServers:
   arbiter-executor:
     type: stdio
     command: {{ARBITER_BIN}}
-    args: [serve, executor]
+    args: [serve, executor, --root, {{ARBITER_ROOT}}]
     env:
       ARBITER_SEAT_KEY: {{SEAT_KEY}}
 ---

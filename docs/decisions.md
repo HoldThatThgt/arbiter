@@ -161,6 +161,22 @@ survives the in-tree copy. **Consequences:** `import/` is gone; the corpus repla
 golden transcripts are the drift defenses; M4 work re-imports from upstream, not from a stale
 in-tree copy.
 
+## ADR-0014 — cwd is never load-bearing: explicit --root on every spawned entry (2026-06-12, accepted)
+Field report: a match loaded by the curator subagent was invisible to the main-session player
+("no active match"). Match state is file-shared (`.arbiter/match/run/state.json` under flock)
+— the break was that every seat process derived the repo root from `os.Getwd()`, and the host
+does not guarantee the spawn cwd of MCP servers (main session vs subagent contexts can differ;
+the companion -32000 failure already proved cwd unreliability on real machines). Fix:
+`arbiter serve <seat>` and `arbiter hook stop` accept `--root DIR` (resolved absolute; default
+remains cwd for hand-run compatibility), and init writes `--root <abs repo>` into the player
+`.mcp.json` entry, all five seat-agent templates, and the Stop-hook command. The stop-hook
+claim matcher recognizes both the legacy `… hook stop` and rooted `… hook stop --root <dir>`
+forms, so legacy deployments self-heal on re-init; `--remove` strips rooted entries and
+engine-generated companion entries alike. **Consequences:** the cross-process regression test
+(two real seat processes, hostile cwds, one shared root) is the permanent guard; after moving
+a repo, re-run `arbiter init` (already the posture for the binary path); user-guide documents
+"no active match" troubleshooting.
+
 ---
 
 *Template for new entries:*

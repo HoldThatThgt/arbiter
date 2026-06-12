@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/HoldThatThgt/arbiter/internal/cli"
 	"github.com/HoldThatThgt/arbiter/internal/deploy"
@@ -110,14 +111,17 @@ func run() error {
 		fmt.Print(cli.FormatReport(report))
 		return nil
 	case "serve":
-		if len(os.Args) != 3 {
-			return fmt.Errorf("usage: arbiter serve <seat>")
+		seatName, seatRoot, err := parseRootArgs(os.Args[2:], root, 1)
+		if err != nil {
+			return fmt.Errorf("usage: arbiter serve <player|curator|executor> [--root DIR]")
 		}
-		return seat.Run(context.Background(), root, os.Args[2])
+		return seat.Run(context.Background(), seatRoot, seatName)
 	case "hook":
-		if len(os.Args) != 3 || os.Args[2] != "stop" {
-			return fmt.Errorf("usage: arbiter hook stop")
+		sub, hookRoot, err := parseRootArgs(os.Args[2:], root, 1)
+		if err != nil || sub != "stop" {
+			return fmt.Errorf("usage: arbiter hook stop [--root DIR]")
 		}
+		root = hookRoot
 		_, _ = io.Copy(io.Discard, os.Stdin) // 宿主写入事件 JSON;门控只依赖对局状态
 		decision, err := match.New(root, "hook").StopGate()
 		if err != nil {
@@ -206,4 +210,32 @@ func wantsHelp(rest []string) bool {
 		}
 	}
 	return false
+}
+
+// parseRootArgs 解析 "<positional…> [--root DIR]" 形态:返回首个位置参数与
+// 解析到的绝对 root(缺省 = 调用方传入的 cwd)。席位与 Stop 门控的仓根
+// 必须显式可指定 —— 宿主拉起子进程的 cwd 不可假设(参见 -32000 教训),
+// init 写出的所有条目都携带 --root。
+func parseRootArgs(args []string, fallback string, positional int) (string, string, error) {
+	var positionals []string
+	rootDir := fallback
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--root" {
+			if i+1 >= len(args) {
+				return "", "", fmt.Errorf("--root requires a directory")
+			}
+			rootDir = args[i+1]
+			i++
+			continue
+		}
+		positionals = append(positionals, args[i])
+	}
+	if len(positionals) != positional {
+		return "", "", fmt.Errorf("expected %d positional argument(s)", positional)
+	}
+	abs, err := filepath.Abs(rootDir)
+	if err != nil {
+		return "", "", err
+	}
+	return positionals[0], abs, nil
 }

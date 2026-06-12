@@ -50,7 +50,7 @@ func TestInitWiresCompanionsInstalledMode(t *testing.T) {
 
 	agent := readText(t, filepath.Join(root, fileDebugger))
 	for _, want := range []string{
-		"args: [serve, executor]",
+		"args: [serve, executor, --root, " + root + "]",
 		"mcp__arbiter-executor__SubmitTask",
 		"mcp__gdb-mcp__gdb_snapshot",
 		"mcp__perf-mcp__perf.scan_c",
