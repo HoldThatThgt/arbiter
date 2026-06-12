@@ -30,6 +30,7 @@ const (
 	CodeVerifyNotFound       = "verify_not_found"
 	CodeVerifyPolicy         = "verify_policy"
 	CodeVerifyOverride       = "verify_override"
+	CodeStepSubmitMismatch   = "step_submit_mismatch"
 
 	IssueBadFrontmatter      = "bad_frontmatter"
 	IssueNoSteps             = "no_steps"
@@ -45,6 +46,7 @@ const (
 	IssueBadGoal             = "bad_goal"
 	IssueBadVerify           = "bad_verify"
 	IssueBadMaxSteps         = "bad_max_steps"
+	IssueBadSubmit           = "bad_submit"
 
 	DefaultTimeoutS    = 600
 	MaxTimeoutS        = 3600
@@ -147,7 +149,12 @@ type Step struct {
 	Job       string   `json:"job"`
 	Checklist []string `json:"checklist"`
 	Gotchas   []string `json:"gotchas,omitempty"` // [Gotcha] 注记:历史对局沉淀的踩坑提示,可由 NotePlaybook 追加
-	Branch    Branch   `json:"branch"`
+	// Submit 是该步骤强绑定的具名 [Verify] 谓词:本步骤的任务提交必须引用它
+	// (允许其 allow_overrides 范围内的覆盖),裁判拒绝任何其他谓词或内联 spec。
+	// 空 = 不绑定(沿用 verify_policy 的全局规则)。这把"用哪条证据"从模型手里
+	// 收归棋谱:模型连选哪条 curated 谓词的自由都没有,只能填 allow_overrides。
+	Submit string `json:"submit,omitempty"`
+	Branch Branch `json:"branch"`
 }
 
 type Branch struct {
@@ -167,6 +174,7 @@ type StepView struct {
 	Job       string   `json:"job"`
 	Checklist []string `json:"checklist"`
 	Gotchas   []string `json:"gotchas,omitempty"`
+	Submit    string   `json:"submit,omitempty"`
 	Branch    Branch   `json:"branch"`
 }
 

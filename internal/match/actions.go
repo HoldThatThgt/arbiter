@@ -170,7 +170,7 @@ func (s *Store) ShowStepJob() (ShowStepJobOutput, error) {
 			Status:   StatusActive,
 			Playbook: m.Playbook.Name,
 			Round:    m.Current.Seq,
-			Step:     &StepOutput{ID: step.ID, Job: step.Job, Checklist: step.Checklist, Gotchas: step.Gotchas},
+			Step:     &StepOutput{ID: step.ID, Job: step.Job, Checklist: step.Checklist, Gotchas: step.Gotchas, Submit: step.Submit},
 			Tasks:    tasks,
 			Verify:   verifyDecls(m.VerifySpecs),
 		}, nil
@@ -277,6 +277,17 @@ func (s *Store) SubmitTask(ctx context.Context, taskID, summary, report string, 
 	out, err := s.withLock(func(m *Match) (*Match, any, error) {
 		if m == nil || m.Status != StatusActive || m.Current == nil {
 			return nil, nil, &ToolError{Code: playbook.CodeNoActiveMatch, Message: "no active match — the curator must LoadPlayBook first; match tools only work inside a loaded match"}
+		}
+		// 步骤强绑定([Submit]):本步骤若钉死了谓词,提交必须正是它 —— 在解析
+		// 之前比对原始提交,连"选哪条 curated 谓词/塞内联 spec"的自由都不给,
+		// 模型挑一条更弱谓词蒙混的路被堵死。allow_overrides 范围内的覆盖随谓词
+		// 一起带,由后续 resolveVerifySpec 裁定。
+		if required := m.Playbook.Steps[m.Current.StepID].Submit; required != "" && spec.Verify != required {
+			return nil, nil, &ToolError{
+				Code:    playbook.CodeStepSubmitMismatch,
+				Message: fmt.Sprintf("this step is bound to result {\"verify\": %q} — submit exactly that (only its allowed overrides may ride along); the predicate is the step's to dictate, not yours to choose", required),
+				Data:    map[string]any{"required": required, "submitted_verify": spec.Verify},
+			}
 		}
 		// verify 引用在锁内对照对局快照解析成 curated spec(绝不读棋谱文件),
 		// 解析结果照常流经 Validate → recipe pin → ExecuteWithMeta。

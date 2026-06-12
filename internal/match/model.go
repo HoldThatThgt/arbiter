@@ -130,6 +130,9 @@ type StepOutput struct {
 	Job       string   `json:"job"`
 	Checklist []string `json:"checklist"`
 	Gotchas   []string `json:"gotchas,omitempty"`
+	// Submit 是本步骤强绑定的具名谓词:非空时,本步骤的 SubmitTask 只接受
+	// {"verify": "<Submit>"}(及其 allow_overrides)。让 player 一眼看到该派什么。
+	Submit string `json:"submit,omitempty"`
 }
 
 type CreateTaskOutput struct {

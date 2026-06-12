@@ -90,6 +90,16 @@ Rules:
   reusable caveats for that step, returned alongside it on every ShowStepJob.
   Usually you do not write these by hand — the player model appends them at
   run time via NotePlaybook as it discovers pitfalls.
+- A step may carry an optional `[Submit] <verify-name>` line: the curated
+  `[Verify]` predicate this step's task MUST submit. The referee rejects any
+  SubmitTask for this step whose result is not `{"verify": "<that-name>"}`
+  (its `allow_overrides` fields may ride along) — an inline spec or a different
+  curated predicate fails with `step_submit_mismatch`. This binds the proof to
+  the step so the model can neither author the predicate nor pick a weaker
+  curated one; its only freedom is the curator-whitelisted override (typically
+  the test name). The name must match a `[Verify]` section. Strongly recommended
+  on every checkable step: a step that says "Submit X" in prose but does not
+  bind it with `[Submit] X` can be gamed by any trivially-true predicate.
 
 Named `[Verify]` predicates:
 - `[Verify] <name>` sections (any number, names are `[A-Za-z0-9_-]+` and
