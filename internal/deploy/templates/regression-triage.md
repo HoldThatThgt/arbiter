@@ -1,6 +1,6 @@
 ---
 name: regression-triage
-description: Opening for reducing a fresh regression to a failing test and a verified fix path.
+description: Use when a fresh regression must be reduced to a failing test and a verified fix — something that worked before now misbehaves. A test-author pins the regression in a test and FREEZES it; production code is changed until that immutable test flips green with the suite intact. Do not use for never-worked features (use build-feature) or unknown defects (use hunt-latent-bugs).
 max_steps: 64
 verify_policy: named
 ---
@@ -12,8 +12,9 @@ expect: {"overall":"passed","facts":{"published":true}}
 
 [Verify] regression-reproduced
 run: src_compile
-tests: ["Regression.*"]
-expect: {"overall":"failed","min_passed":0}
+tests: ["*"]
+expect: {"overall":"failed"}
+allow_overrides: ["tests"]
 
 [Verify] suite-green
 run: src_compile
@@ -25,50 +26,41 @@ verify: suite-green
 
 [STEP] gear-up
 [StepJob]
-Publish fresh facts with the profile implied by the regression report.
+Publish fresh facts through src_compile with the profile the regression report implies, before
+touching source, so triage is grounded in a typed index.
 [CheckList]
-- Submit gear-up-published with request-named feature flags
-- Record the snapshot id before dispatching triage tasks
+- Submit gear-up-published with any request-named feature flags
+- Record the snapshot id before dispatching triage
+[Submit] gear-up-published
 [Branch]
 success: reproduce
 failure: gear-up
 
 [STEP] reproduce
 [StepJob]
-Reproduce the regression and capture the smallest failing test or test filter.
+Dispatch the arbiter-test-author with the regression as a SCENARIO (what worked before, what
+misbehaves now, since when), never how to write the test. It pins the regression in a deterministic
+test that asserts the CORRECT (pre-regression) behavior — so it FAILS now — proves it runs red
+through src_compile, and RegisterTest-freezes it.
 [CheckList]
-- Submit regression-reproduced when a failing filter is available
-- If reproduction is environment-specific, capture the typed run failure rather than prose
-[Branch]
-success: localize
-failure: gear-up
-
-[STEP] localize
-[StepJob]
-Use facts and run history to bound the suspect files, call paths, or recent changes before edits.
-[CheckList]
-- Attach fact_refs for suspect entry points or state mutations
-- Create one executor task per independently testable hypothesis
+- The test-author owns the test; the dispatch carries the regression, not an implementation
+- Submit regression-reproduced with tests overridden to the new test — it runs and fails
+- The test is RegisterTest-frozen before finishing; zero production code touched
+[Submit] regression-reproduced
 [Branch]
 success: fix
 failure: reproduce
 
 [STEP] fix
 [StepJob]
-Apply the smallest correction and rerun the failing filter before the wider suite.
+Dispatch the arbiter-implementer (arbiter-debugger first if the regression is a crash/UAF/race and
+gdb-mcp is wired). Ground the suspect change in facts (search/detail for callers and writers of the
+implicated state), then change PRODUCT code only — the test is frozen — until the frozen regression
+test flips green and the whole suite passes. A failed attempt loops here.
 [CheckList]
-- Executor submissions include the failing filter evidence
-- Follow-up tasks are narrower than the failed hypothesis
-[Branch]
-success: verify
-failure: localize
-
-[STEP] verify
-[StepJob]
-Prove the regression is gone and the primary suite is green.
-[CheckList]
-- Submit suite-green
-- Report residual failures as separate triage tasks
+- Fix confined to product code; the frozen test is untouched (enforced by the freeze)
+- Submit suite-green — the full suite, including the now-green regression test, passes
+[Submit] suite-green
 [Branch]
 success: END
 failure: fix

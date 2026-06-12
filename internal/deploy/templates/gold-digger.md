@@ -1,6 +1,6 @@
 ---
 name: gold-digger
-description: Bug-hunt opening that proves the repro, fixes it, then proves the repro is gone.
+description: Use when you must HUNT a bug whose symptom you can describe but whose failing test does not exist yet — a suspected crash, leak, race, or wrong result. A test-author writes a test that exposes it and FREEZES it; production code is then changed until that immutable test flips green with the suite intact. Do not use when a test already fails (use fix-reported-bug) or for slowness (use fix-slow-path).
 max_steps: 64
 verify_policy: named
 ---
@@ -12,67 +12,53 @@ expect: {"overall":"passed","facts":{"published":true}}
 
 [Verify] repro-fails
 run: src_compile
-tests: ["Bug.Repro"]
-expect: {"overall":"failed","test":{"name":"Bug.Repro","result":"failed"}}
+tests: ["*"]
+expect: {"overall":"failed"}
+allow_overrides: ["tests"]
 
-[Verify] repro-passes
-run: src_compile
-tests: ["Bug.Repro"]
-expect: {"overall":"passed","max_failed":0}
-
-[SetGoal]
+[Verify] suite-green
 run: src_compile
 tests: ["*"]
 expect: {"overall":"passed","max_failed":0}
 
 [STEP] gear-up
 [StepJob]
-Select the profile from the request and publish fresh facts through the src_compile recipe before
-touching source.
+Pick the build profile the symptom calls for — memory corruption/UAF/leak → asan, races → tsan
+(when the recipe has it, else debug), otherwise debug — and publish fresh facts through src_compile
+under that profile before touching source, so the hunt is grounded in a typed index.
 [CheckList]
-- Submit gear-up-published with the selected profile and any feature flags from the request
+- Submit gear-up-published with the profile the symptom calls for
 - Record the snapshot id or the typed publication failure
+[Submit] gear-up-published
 [Branch]
 success: reproduce
 failure: gear-up
 
 [STEP] reproduce
 [StepJob]
-Narrow the reported bug to a failing gtest and prove the failure with structured output only.
+Dispatch the arbiter-test-author with the symptom as a SCENARIO (what is wrong, when, any captured
+signature), never how to write the test. It hunts the bug down to a deterministic gtest that
+asserts the CORRECT behavior — so it FAILS while the bug is live — proves it runs red through
+src_compile, and RegisterTest-freezes it. From that instant the reproduction is immutable.
 [CheckList]
-- Submit repro-fails for the smallest available reproducer
-- Attach fact_refs for code regions that explain why the failure is plausible
+- The test-author owns the test; the dispatch carries the symptom, not an implementation
+- Submit repro-fails with tests overridden to the new test — it runs and fails (bug exposed)
+- The repro is RegisterTest-frozen before finishing; zero production code touched
+[Submit] repro-fails
 [Branch]
 success: fix
-failure: gear-up
+failure: reproduce
 
 [STEP] fix
 [StepJob]
-Dispatch the smallest fact-informed source change that can make the proven reproducer pass.
+Dispatch the arbiter-debugger first when the symptom is a crash/UAF/race and gdb-mcp is wired (read
+the runtime state at the fault), else the arbiter-implementer. It changes PRODUCT code only — the
+repro is frozen — until the frozen repro flips green and the whole suite passes. A failed attempt
+loops here; you cannot make the test pass by touching it.
 [CheckList]
-- Executor tasks include fact_refs for touched functions or fields
-- No task asks the executor to decide whether the bug is fixed
-[Branch]
-success: verify
-failure: reproduce
-
-[STEP] verify
-[StepJob]
-Run the reproducer and the primary suite predicate; use failures to create narrower follow-up
-tasks.
-[CheckList]
-- Submit repro-passes
-- Report any remaining failed test as a new task with machine-checkable evidence
-[Branch]
-success: learn
-failure: fix
-
-[STEP] learn
-[StepJob]
-Record reusable gotchas and finish with referee-owned evidence.
-[CheckList]
-- Add step-scoped gotchas through NotePlaybook when the hunt exposed a reusable trap
-- Final report cites the failing-before and passing-after run evidence
+- Fix confined to product code; the frozen repro is untouched (enforced by the freeze)
+- Submit suite-green — the full suite, including the now-green repro, passes
+[Submit] suite-green
 [Branch]
 success: END
-failure: verify
+failure: fix

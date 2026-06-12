@@ -57,11 +57,12 @@ func TestBaseOpeningTemplatesParse(t *testing.T) {
 		overridable []string
 	}{
 		{
-			file:   "gold-digger.md",
-			name:   "gold-digger",
-			entry:  "gear-up",
-			policy: "named",
-			verify: []string{"gear-up-published", "repro-fails", "repro-passes"},
+			file:        "gold-digger.md",
+			name:        "gold-digger",
+			entry:       "gear-up",
+			policy:      "named",
+			verify:      []string{"gear-up-published", "repro-fails", "suite-green"},
+			overridable: []string{"repro-fails"},
 		},
 		{
 			file:       "recipe-derivation.md",
@@ -72,11 +73,12 @@ func TestBaseOpeningTemplatesParse(t *testing.T) {
 			verify:     []string{"gear-up-published", "candidate-proven"},
 		},
 		{
-			file:   "regression-triage.md",
-			name:   "regression-triage",
-			entry:  "gear-up",
-			policy: "named",
-			verify: []string{"gear-up-published", "suite-green"},
+			file:        "regression-triage.md",
+			name:        "regression-triage",
+			entry:       "gear-up",
+			policy:      "named",
+			verify:      []string{"gear-up-published", "regression-reproduced", "suite-green"},
+			overridable: []string{"regression-reproduced"},
 		},
 		{
 			file:  "openings/hunt-latent-bugs.md",
