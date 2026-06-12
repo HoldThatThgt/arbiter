@@ -40,10 +40,17 @@ When the result comes back, show the user the test code and the failing output,
 and get explicit approval. The user's yes - not the predicate - is this step's
 gate; the predicate only guarantees what they approved is real. Rejected tests
 or a wrong failure reason: branch failure, back to scenario.
+
+Once the user approves, RegisterTest the test file(s) to FREEZE them. From that
+instant no one can modify the approved tests by any means - the referee re-hashes
+them before every verdict and the guard denies edits - so the implementation must
+satisfy the tests as approved, and the untouchability law below is enforced by
+content hash, not just by diff.
 [CheckList]
 - Tests compile; predicate "build && ! run" passed
 - Failure output shows the feature-missing reason, not a test bug
 - User saw the test code and explicitly approved it
+- Approved test file(s) RegisterTest-frozen before advancing
 - Scenario-test run command recorded for later steps
 [Branch]
 success: hack

@@ -63,9 +63,14 @@ the task report alongside the test.
 Judge the returned task: predicate passed for the predicted reason = proven,
 branch success. Test could not be made to pass (hypothesis wrong) or passes for
 an unrelated reason = disproven; record the disproof and branch failure.
+
+Once the symptom test passes for the predicted reason, RegisterTest it to FREEZE
+the proof: the referee re-hashes it before every verdict, so the machine-proven
+symptom can never be quietly weakened or deleted after the fact.
 [CheckList]
 - Symptom test written (passes iff bug present); polarity stated in the task report
 - Result predicate "<build> && <run>" submitted and judged
+- Proven symptom test RegisterTest-frozen so the proof cannot be weakened later
 - Corruption-class: watchpoint stop evidence captured when gdb-mcp is wired
 - Verdict recorded: proven for the predicted reason, or disproof noted
 [Branch]
