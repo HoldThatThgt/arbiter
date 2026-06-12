@@ -96,9 +96,12 @@ func TestBaseOpeningTemplatesParse(t *testing.T) {
 			verify: []string{"repro-runs-red", "suite-green"},
 		},
 		{
-			file:  "openings/fix-slow-path.md",
-			name:  "fix-slow-path",
-			entry: "scope",
+			file:        "openings/fix-slow-path.md",
+			name:        "fix-slow-path",
+			entry:       "write-ratio-test",
+			policy:      "named",
+			verify:      []string{"ratio-runs-red", "suite-green"},
+			overridable: []string{"ratio-runs-red"},
 		},
 	}
 	for _, tc := range cases {

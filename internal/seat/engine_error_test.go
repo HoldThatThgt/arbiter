@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/HoldThatThgt/arbiter/internal/engineclient"
+	"github.com/HoldThatThgt/arbiter/internal/match"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -58,6 +59,51 @@ func TestRunUnknownRecipeTeachesThroughProxy(t *testing.T) {
 	}
 	if body.Data["field"] != "recipe" || body.Data["kind"] != "invalid_args" {
 		t.Fatalf("data = %#v, want engine data.kind/field propagated", body.Data)
+	}
+}
+
+// TestRegisterBadPathTeachesThroughProxy is the register analogue of the run
+// test: a GATED engine tool whose engine-side invalid_args (a malformed/missing
+// recipe book) must reach the model with field/detail, not collapse into
+// engine_unavailable. This is the path the GLM intro stalled on — register
+// failed 16x and the model saw only "invalid arguments" with no field.
+func TestRegisterBadPathTeachesThroughProxy(t *testing.T) {
+	root := repoWithEngine(t)
+	writePlaybook(t, root, "recipes.md", recipesBook)
+	if _, err := match.New(root, Curator).LoadPlayBook("recipes-flow"); err != nil {
+		t.Fatal(err)
+	}
+	server, rt, err := buildServerWithRuntime(context.Background(), root, Executor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(rt.Close)
+	client := testClientForServer(t, server)
+
+	res, err := client.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "register",
+		Arguments: map[string]any{"path": "nope.yaml"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError || len(res.Content) == 0 {
+		t.Fatalf("result = %#v", res)
+	}
+	text := res.Content[0].(*mcp.TextContent).Text
+	var body struct {
+		Code    string         `json:"code"`
+		Message string         `json:"message"`
+		Data    map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(text), &body); err != nil {
+		t.Fatalf("body %s: %v", text, err)
+	}
+	if body.Code != "invalid_args" {
+		t.Fatalf("code = %q, want invalid_args (engine answered; the path was bad): %s", body.Code, text)
+	}
+	if body.Data["field"] != "path" || body.Data["detail"] == nil {
+		t.Fatalf("data = %#v, want engine field=path + detail propagated", body.Data)
 	}
 }
 
