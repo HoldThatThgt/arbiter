@@ -40,7 +40,7 @@ func TestInitOpeningsWritesFreeplay(t *testing.T) {
 	if book.Entry != "gear-up" {
 		t.Fatalf("entry = %q", book.Entry)
 	}
-	for _, name := range []string{"gold-digger.md", "recipe-derivation.md", "regression-triage.md"} {
+	for _, name := range []string{"debug.md", "feature.md", "gold-digger.md", "recipe-derivation.md", "regression-triage.md", "review.md"} {
 		if _, issues := playbook.ParseFile(filepath.Join(root, ".arbiter", "playbook", name)); len(issues) != 0 {
 			t.Fatalf("missing or invalid %s: %#v", name, issues)
 		}
@@ -49,21 +49,25 @@ func TestInitOpeningsWritesFreeplay(t *testing.T) {
 
 func TestBaseOpeningTemplatesParse(t *testing.T) {
 	cases := []struct {
-		file       string
-		name       string
-		capability string
-		policy     string
-		verify     []string
+		file        string
+		name        string
+		entry       string
+		capability  string
+		policy      string
+		verify      []string
+		overridable []string
 	}{
 		{
 			file:   "gold-digger.md",
 			name:   "gold-digger",
+			entry:  "gear-up",
 			policy: "named",
 			verify: []string{"gear-up-published", "repro-fails", "repro-passes"},
 		},
 		{
 			file:       "recipe-derivation.md",
 			name:       "recipe-derivation",
+			entry:      "gear-up",
 			capability: "recipes",
 			policy:     "",
 			verify:     []string{"gear-up-published", "candidate-proven"},
@@ -71,8 +75,33 @@ func TestBaseOpeningTemplatesParse(t *testing.T) {
 		{
 			file:   "regression-triage.md",
 			name:   "regression-triage",
+			entry:  "gear-up",
 			policy: "named",
 			verify: []string{"gear-up-published", "suite-green"},
+		},
+		{
+			file:        "review.md",
+			name:        "review",
+			entry:       "inspect",
+			policy:      "open",
+			verify:      []string{"bug-proven"},
+			overridable: []string{"bug-proven"},
+		},
+		{
+			file:        "feature.md",
+			name:        "feature",
+			entry:       "scenarios",
+			policy:      "open",
+			verify:      []string{"feature-red", "feature-green", "suite-green"},
+			overridable: []string{"feature-red", "feature-green"},
+		},
+		{
+			file:        "debug.md",
+			name:        "debug",
+			entry:       "design-repro",
+			policy:      "open",
+			verify:      []string{"repro-fails", "repro-passes"},
+			overridable: []string{"repro-fails", "repro-passes"},
 		},
 	}
 	for _, tc := range cases {
@@ -81,7 +110,7 @@ func TestBaseOpeningTemplatesParse(t *testing.T) {
 			if len(issues) != 0 {
 				t.Fatalf("%s issues = %#v", tc.file, issues)
 			}
-			if book.Name != tc.name || book.Entry != "gear-up" {
+			if book.Name != tc.name || book.Entry != tc.entry {
 				t.Fatalf("%s name/entry = %q/%q", tc.file, book.Name, book.Entry)
 			}
 			if tc.capability != "" && strings.Join(book.Capabilities, ",") != tc.capability {
@@ -94,6 +123,16 @@ func TestBaseOpeningTemplatesParse(t *testing.T) {
 				if _, ok := book.Verify[name]; !ok {
 					t.Fatalf("%s missing verify %q in %#v", tc.file, name, book.Verify)
 				}
+			}
+			for _, name := range tc.overridable {
+				if got := strings.Join(book.Verify[name].AllowOverrides, ","); got != "tests" {
+					t.Fatalf("%s verify %q allow_overrides = %q, want tests", tc.file, name, got)
+				}
+			}
+			// 三个新开局(review/feature/debug)刻意不设 [SetGoal]:终局条件是走到 END,
+			// 一个 suite-green goal 会在红测试出现前的第 1 回合就被误判为 checkmate。
+			if tc.policy == "open" && tc.capability == "" && book.Goal != nil {
+				t.Fatalf("%s unexpectedly declares a goal: %#v", tc.file, book.Goal)
 			}
 		})
 	}

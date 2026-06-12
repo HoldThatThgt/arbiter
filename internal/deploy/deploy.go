@@ -36,6 +36,8 @@ const (
 	fileSkillCreate = ".claude/skills/playbook-create/SKILL.md"
 	fileGitignore   = ".gitignore"
 	fileExecutor    = ".claude/agents/arbiter-executor.md"
+	fileTestAuthor  = ".claude/agents/arbiter-test-author.md"
+	fileImplementer = ".claude/agents/arbiter-implementer.md"
 )
 
 //go:embed templates/*
@@ -157,9 +159,11 @@ func InitWithOptions(root string, opts Options) (string, error) {
 		return "", err
 	}
 	if !opts.NoExecutor {
-		executor := render(mustTemplate("templates/arbiter-executor.md"), exe, key)
-		if err := atomicWrite(filepath.Join(root, fileExecutor), []byte(executor), 0o600); err != nil {
-			return "", err
+		for _, agent := range executorAgents {
+			rendered := render(mustTemplate(agent.template), exe, key)
+			if err := atomicWrite(filepath.Join(root, agent.file), []byte(rendered), 0o600); err != nil {
+				return "", err
+			}
 		}
 	}
 	skill := mustTemplate("templates/arbiter-play.md")
@@ -185,10 +189,25 @@ var baseOpenings = []struct {
 	file     string
 	template string
 }{
+	{"debug.md", "templates/debug.md"},
+	{"feature.md", "templates/feature.md"},
 	{"freeplay.md", "templates/freeplay.md"},
 	{"gold-digger.md", "templates/gold-digger.md"},
 	{"recipe-derivation.md", "templates/recipe-derivation.md"},
 	{"regression-triage.md", "templates/regression-triage.md"},
+	{"review.md", "templates/review.md"},
+}
+
+// executorAgents are the executor-seat subagents deployed with the executor
+// (and skipped together under --no-executor): all of them speak to
+// `arbiter serve executor` with the injected seat key.
+var executorAgents = []struct {
+	file     string
+	template string
+}{
+	{fileExecutor, "templates/arbiter-executor.md"},
+	{fileImplementer, "templates/arbiter-implementer.md"},
+	{fileTestAuthor, "templates/arbiter-test-author.md"},
 }
 
 func MCPConfigPath(root string) string {
@@ -376,8 +395,8 @@ func remove(root, exe string) error {
 		return err
 	}
 	for _, file := range []string{
-		fileEngines, fileSeatKey, fileCurator, fileExecutor, fileSkill, fileSkillIntro,
-		fileSkillCreate, fileFormat, fileConfig, fileRecipes,
+		fileEngines, fileSeatKey, fileCurator, fileExecutor, fileTestAuthor, fileImplementer,
+		fileSkill, fileSkillIntro, fileSkillCreate, fileFormat, fileConfig, fileRecipes,
 	} {
 		if err := os.Remove(filepath.Join(root, file)); err != nil && !os.IsNotExist(err) {
 			return err
@@ -765,6 +784,8 @@ func generatedGitignoreLines(embedded bool) []string {
 		".arbiter/locks/",
 		".claude/agents/arbiter-curator.md",
 		".claude/agents/arbiter-executor.md",
+		".claude/agents/arbiter-implementer.md",
+		".claude/agents/arbiter-test-author.md",
 	}
 	if embedded {
 		lines = append(lines, ".arbiter/engine/")

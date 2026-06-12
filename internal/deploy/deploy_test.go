@@ -164,6 +164,10 @@ func TestInitWritesUnifiedDeploymentTree(t *testing.T) {
 	for _, path := range []string{
 		".claude/agents/arbiter-curator.md",
 		".claude/agents/arbiter-executor.md",
+		".claude/agents/arbiter-implementer.md",
+		".claude/agents/arbiter-test-author.md",
+		".claude/agents/arbiter-test-author.md",
+		".claude/agents/arbiter-implementer.md",
 	} {
 		data := readText(t, filepath.Join(root, path))
 		if !strings.Contains(data, key) {
@@ -224,8 +228,10 @@ func TestInitNoExecutorSkipsExecutorAgent(t *testing.T) {
 	if _, err := InitWithOptions(root, opts); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(root, fileExecutor)); !os.IsNotExist(err) {
-		t.Fatalf("executor agent exists or stat failed: %v", err)
+	for _, file := range []string{fileExecutor, fileTestAuthor, fileImplementer} {
+		if _, err := os.Stat(filepath.Join(root, file)); !os.IsNotExist(err) {
+			t.Fatalf("executor-seat agent %s exists or stat failed: %v", file, err)
+		}
 	}
 }
 
@@ -286,6 +292,10 @@ func TestRemoveRoundTripPreservesForeignContent(t *testing.T) {
 		".arbiter/match/seat.key",
 		".claude/agents/arbiter-curator.md",
 		".claude/agents/arbiter-executor.md",
+		".claude/agents/arbiter-implementer.md",
+		".claude/agents/arbiter-test-author.md",
+		".claude/agents/arbiter-test-author.md",
+		".claude/agents/arbiter-implementer.md",
 	} {
 		if _, err := os.Stat(filepath.Join(root, path)); !os.IsNotExist(err) {
 			t.Fatalf("%s still exists or stat failed: %v", path, err)

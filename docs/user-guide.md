@@ -200,7 +200,10 @@ failure: diagnose
 
 The base opening library (installed by `--openings`): **freeplay** (open
 predicates, general work), **gold-digger** (prove the repro fails → fix → prove
-it passes), **regression-triage**, and **recipe-derivation**.
+it passes), **regression-triage**, **recipe-derivation**, **review** (bug-hunt
+that proves one bug with a failing test plus reachability facts), **feature**
+(user scenarios → approved red tests → green by any means → elevate into the
+rightful module), and **debug** (pin a deterministic repro test before any fix).
 
 ## 6. Verification predicates
 

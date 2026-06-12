@@ -39,7 +39,7 @@ func TestEndgameDemoFixtureZeroCeremony(t *testing.T) {
 	if demo.ProvenRecipes != 1 || demo.SnapshotID == "" {
 		t.Fatalf("intro evidence recipes=%d snapshot=%q", demo.ProvenRecipes, demo.SnapshotID)
 	}
-	if strings.Join(demo.Openings, ",") != "freeplay,gold-digger,recipe-derivation,regression-triage" {
+	if strings.Join(demo.Openings, ",") != "debug,feature,freeplay,gold-digger,recipe-derivation,regression-triage,review" {
 		t.Fatalf("openings = %#v", demo.Openings)
 	}
 	if len(demo.MacroChecklist) == 0 {
