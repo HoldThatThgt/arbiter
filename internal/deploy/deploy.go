@@ -607,6 +607,81 @@ func mergeStopHook(root map[string]any, exe, repoRoot string) {
 	}
 	hooks["Stop"] = keptStops
 	mergeGuardHook(hooks, exe, repoRoot)
+	mergeSubagentStopHook(hooks, exe, repoRoot)
+}
+
+// subagentStopMatcher 限定门控只对执行席位子代理生效:curator 不交
+// SubmitTask,匹配不到它就永远不会被误拦。
+const subagentStopMatcher = "arbiter-executor|arbiter-implementer|arbiter-test-author|arbiter-debugger"
+
+// mergeSubagentStopHook 注册 SubagentStop 门控(幂等):被派发 task 未交
+// SubmitTask 的执行子代理不准收工。识别本工具的既有条目就刷新命令与
+// matcher,否则追加;外来条目原样保留。门控本体见 internal/match
+// (SubagentStopGate)与 `arbiter hook subagent-stop`。
+func mergeSubagentStopHook(hooks map[string]any, exe, repoRoot string) {
+	entries, _ := hooks["SubagentStop"].([]any)
+	cmd := exe + " hook subagent-stop --root " + repoRoot
+	claimed := false
+	var kept []any
+	for _, entry := range entries {
+		em, ok := entry.(map[string]any)
+		if !ok {
+			kept = append(kept, entry)
+			continue
+		}
+		inner, _ := em["hooks"].([]any)
+		var keptHooks []any
+		for _, h := range inner {
+			hm, ok := h.(map[string]any)
+			if !ok {
+				keptHooks = append(keptHooks, h)
+				continue
+			}
+			c, _ := hm["command"].(string)
+			if !isArbiterSubagentStopHook(c, exe) {
+				keptHooks = append(keptHooks, h)
+				continue
+			}
+			if claimed {
+				continue
+			}
+			hm["command"] = cmd
+			em["matcher"] = subagentStopMatcher
+			claimed = true
+			keptHooks = append(keptHooks, hm)
+		}
+		if len(inner) > 0 && len(keptHooks) == 0 {
+			continue
+		}
+		if len(inner) > 0 {
+			em["hooks"] = keptHooks
+		}
+		kept = append(kept, em)
+	}
+	if !claimed {
+		kept = append(kept, map[string]any{
+			"matcher": subagentStopMatcher,
+			"hooks":   []any{map[string]any{"type": "command", "command": cmd, "timeout": 10}},
+		})
+	}
+	hooks["SubagentStop"] = kept
+}
+
+func isArbiterSubagentStopHook(command, exe string) bool {
+	fields := strings.Fields(command)
+	if len(fields) >= 4 && fields[len(fields)-2] == "--root" {
+		fields = fields[:len(fields)-2]
+	}
+	if len(fields) < 3 || fields[len(fields)-2] != "hook" || fields[len(fields)-1] != "subagent-stop" {
+		return false
+	}
+	if fields[0] == exe {
+		return true
+	}
+	if filepath.Base(fields[0]) != "arbiter" {
+		return false
+	}
+	return !binaryExists(fields[0])
 }
 
 // mergeGuardHook 注册 PreToolUse 门控(幂等):识别本工具的既有条目
@@ -766,6 +841,7 @@ func removeSettings(path, exe string) error {
 	}
 	removeStopHook(root, exe)
 	removeGuardHook(root, exe)
+	removeSubagentStopHook(root, exe)
 	return writeJSON(path, root, 0o644)
 }
 
@@ -1147,6 +1223,49 @@ func generatedGitignoreLines(embedded bool) []string {
 // not keep dead generated entries behind.
 func legacyGitignoreLines() []string {
 	return []string{".arbiter/match/status.json"}
+}
+
+// removeSubagentStopHook 撤除本工具的 SubagentStop 门控条目;外来条目保留。
+func removeSubagentStopHook(root map[string]any, exe string) {
+	hooks, _ := root["hooks"].(map[string]any)
+	if hooks == nil {
+		return
+	}
+	entries, _ := hooks["SubagentStop"].([]any)
+	var kept []any
+	for _, entry := range entries {
+		em, ok := entry.(map[string]any)
+		if !ok {
+			kept = append(kept, entry)
+			continue
+		}
+		inner, _ := em["hooks"].([]any)
+		var keptHooks []any
+		for _, h := range inner {
+			hm, ok := h.(map[string]any)
+			if !ok {
+				keptHooks = append(keptHooks, h)
+				continue
+			}
+			c, _ := hm["command"].(string)
+			if isArbiterSubagentStopHook(c, exe) {
+				continue
+			}
+			keptHooks = append(keptHooks, hm)
+		}
+		if len(inner) > 0 && len(keptHooks) == 0 {
+			continue
+		}
+		if len(inner) > 0 {
+			em["hooks"] = keptHooks
+		}
+		kept = append(kept, em)
+	}
+	if len(kept) == 0 {
+		delete(hooks, "SubagentStop")
+	} else {
+		hooks["SubagentStop"] = kept
+	}
 }
 
 // removeGuardHook 撤除本工具的 PreToolUse 门控条目;外来条目保留。

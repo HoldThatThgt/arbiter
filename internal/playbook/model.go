@@ -56,9 +56,12 @@ const (
 	DefaultMaxSteps    = 256
 	MaxStepsCeiling    = 1024
 	StopBlockCap       = 32
-	MaxPlaybookBytes   = 1024 * 1024
-	MaxSummaryBytes    = 1024
-	MaxNoteBytes       = 1024
+	// SubagentBlockCap 是单个 task 上子代理停止可被拦截的次数上限;到顶
+	// 放行,把重派决定交还给 player(镜像 StopBlockCap 的放行姿态)。
+	SubagentBlockCap = 8
+	MaxPlaybookBytes = 1024 * 1024
+	MaxSummaryBytes  = 1024
+	MaxNoteBytes     = 1024
 
 	SeatEnvKey       = "ARBITER_SEAT_KEY"
 	SeatKeyHexLength = 32
