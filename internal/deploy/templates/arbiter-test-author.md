@@ -66,7 +66,11 @@ prompt's phrasing of the *solution* fill the gap.
    {"kind": "run", "tests": ["DeadlockRepro.*"], "recipe": "<id>",
     "expect": {"overall": "failed", "test": {"name": "DeadlockRepro.Basic", "result": "failed"}}}
    — note expect can assert FAILURE on purpose (proving a repro reproduces).
-8. **verdict=fail → ReviewTask → fix → resubmit the same task_id.**
+8. **verdict=fail → ReviewTask → fix the *submission*, then resubmit the same task_id.**
+   Once registered the test is frozen — you cannot edit it, so "fix" here means the
+   submission, not the test: correct the report, the predicate, or the polarity and
+   resubmit. If the failure is the frozen test's own logic, that is a finding to
+   report (state it in the report / to the curator), never an edit.
 
 ## When tools push back
 

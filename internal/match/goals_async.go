@@ -11,6 +11,32 @@ import (
 )
 
 func (s *Store) startAsyncRunGoal(ctx context.Context, spec playbook.ResultSpec, roundSeq int, memoDigest string) (CheckStepJobOutput, error) {
+	// 起跑前的完整性闸:引擎 worker 在仓内"当前字节"上编译并运行冻结测试。若此刻
+	// 测试已被旁路 guard 的 Bash 改写,直接判负、绝不开跑——否则 worker 跑的是被弱化
+	// 的套件。这与 poll/settle 时的复核一道,把"起跑前篡改"挡在引擎之外。
+	// (残余:开跑后趁 worker 异步编译窗口篡改、于下次 poll 前复原的竞态,需引擎上报
+	//  实际编译源的摘要方能根除;见随附 PR。)
+	gate, err := s.withLock(func(m *Match) (*Match, any, error) {
+		if m == nil || m.Status != StatusActive || m.Current == nil || m.RoundSeq != roundSeq {
+			return nil, CheckStepJobOutput{Complete: false, Reason: "state_changed"}, nil
+		}
+		v := evaluateRound(m)
+		if !v.complete || v.outcome != OutcomeSuccess {
+			return nil, CheckStepJobOutput{Complete: false, Reason: "state_changed"}, nil
+		}
+		if violated := frozenViolation(s.Root, m.FrozenTests); violated != "" {
+			next, o := s.settle(m, v, false, frozenGoalReport(violated))
+			return next, o, nil
+		}
+		return nil, nil, nil // 闸通过,照常开跑
+	})
+	if err != nil {
+		return CheckStepJobOutput{}, err
+	}
+	if gate != nil {
+		return gate.(CheckStepJobOutput), nil
+	}
+
 	runID, err := s.startRunGoal(ctx, spec)
 	if err != nil {
 		return CheckStepJobOutput{}, engineUnavailable(err)

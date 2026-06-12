@@ -317,6 +317,76 @@ failure: only
 	}
 }
 
+// The async run-goal path (the normal gtest path) must also gate on frozen-test
+// integrity: a test tampered before the goal launches must fail the goal at the
+// start-time check, never spin up the engine, and never declare checkmate — even
+// though the goal predicate (a passing gtest) would otherwise win.
+func TestAsyncRunGoalRejectsTamperedFrozenTestAtStart(t *testing.T) {
+	const runGoalBook = `---
+name: run-goal
+description: async run goal
+---
+
+[SetGoal]
+run: unit
+tests: ["Suite.Case"]
+expect: {"overall":"passed"}
+
+[STEP] only
+[StepJob]
+finish
+[CheckList]
+- done
+[Branch]
+success: END
+failure: only
+`
+	root := repoWithBook(t, "run.md", runGoalBook)
+	t.Setenv("PYTHONPATH", checkoutEnginePath(t))
+	script := writeFakeGtest(t, root, false) // PASSING gtest — would checkmate if it ran
+	writeRecipes(t, root, "unit", "harness:\n  kind: gtest\ntest_run:\n  cmd: ["+script+"]\n")
+	testPath := filepath.Join(root, "tests", "repro_test.cc")
+	if err := os.MkdirAll(filepath.Dir(testPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(testPath, []byte("ORIGINAL\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := New(root, "test")
+	if _, err := store.LoadPlayBook("run-goal"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RegisterTest([]string{"tests/repro_test.cc"}); err != nil {
+		t.Fatal(err)
+	}
+	task, err := store.CreateTask("pass step")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SubmitTask(context.Background(), task.TaskID, "step done", "done", verify.ResultSpec{Kind: "shell", Command: "exit 0"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Tamper the frozen test, THEN drive the goal: the start-time gate must refuse
+	// to launch the engine and fail the goal.
+	if err := os.WriteFile(testPath, []byte("TAMPERED\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := store.CheckStepJob(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Reason == "goal_running" {
+		t.Fatalf("engine launched despite tampered frozen test: %#v", out)
+	}
+	if out.Checkmate || out.Match == StatusFinishedSuccess {
+		t.Fatalf("tampered frozen test won via async goal start: %#v", out)
+	}
+	if out.Goal == nil || out.Goal.Failure != playbook.CodeFrozenTestModified {
+		t.Fatalf("goal = %#v, want failure %s", out.Goal, playbook.CodeFrozenTestModified)
+	}
+}
+
 func checkoutEnginePath(t *testing.T) string {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)
