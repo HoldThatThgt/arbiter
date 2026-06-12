@@ -39,7 +39,7 @@ func TestEndgameDemoFixtureZeroCeremony(t *testing.T) {
 	if demo.ProvenRecipes != 1 || demo.SnapshotID == "" {
 		t.Fatalf("intro evidence recipes=%d snapshot=%q", demo.ProvenRecipes, demo.SnapshotID)
 	}
-	if strings.Join(demo.Openings, ",") != "debug,feature,freeplay,gold-digger,recipe-derivation,regression-triage,review" {
+	if strings.Join(demo.Openings, ",") != "build-feature,fix-reported-bug,fix-slow-path,freeplay,gold-digger,hunt-latent-bugs,recipe-derivation,regression-triage" {
 		t.Fatalf("openings = %#v", demo.Openings)
 	}
 	if len(demo.MacroChecklist) == 0 {
@@ -77,9 +77,8 @@ func runEndgameDemoFixture(t *testing.T) endgameDemoResult {
 	}
 
 	opts := deploy.Options{
-		Openings: true,
-		Python:   "python3",
-		Now:      func() time.Time { return time.Date(2026, 6, 11, 0, 0, 0, 0, time.UTC) },
+		Python: "python3",
+		Now:    func() time.Time { return time.Date(2026, 6, 11, 0, 0, 0, 0, time.UTC) },
 		VerifyEngine: func(string, string) (string, error) {
 			return "test-engine", nil
 		},

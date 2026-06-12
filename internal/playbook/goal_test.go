@@ -48,6 +48,7 @@ description: d
 [SetGoal]
 mcp: probe SomeTool
 arguments: {"pr": 42}
+expect: [{"path":"summary.all_successful","op":"eq","value":true}]
 
 [STEP] only
 [StepJob]
@@ -69,6 +70,9 @@ failure: only
 	if g.Arguments["pr"] != float64(42) {
 		t.Fatalf("arguments = %#v", g.Arguments)
 	}
+	if string(g.Expect) != `[{"path":"summary.all_successful","op":"eq","value":true}]` {
+		t.Fatalf("expect = %s", g.Expect)
+	}
 }
 
 func TestParseGoalAndBudgetIssues(t *testing.T) {
@@ -81,6 +85,9 @@ func TestParseGoalAndBudgetIssues(t *testing.T) {
 		{"no kind", "[SetGoal]\ntimeout_s: 5\n", IssueBadGoal},
 		{"bad args json", "[SetGoal]\nmcp: s t\narguments: not-json\n", IssueBadGoal},
 		{"args without mcp", "[SetGoal]\nshell: a\narguments: {}\n", IssueBadGoal},
+		{"bad expect json", "[SetGoal]\nmcp: s t\nexpect: not-json\n", IssueBadGoal},
+		{"expect not array", "[SetGoal]\nmcp: s t\nexpect: {\"path\":\"a\"}\n", IssueBadGoal},
+		{"expect without mcp", "[SetGoal]\nshell: a\nexpect: [{\"path\":\"a\",\"op\":\"exists\"}]\n", IssueBadGoal},
 		{"unknown key", "[SetGoal]\nshell: a\nwhat: x\n", IssueBadGoal},
 		{"dup key", "[SetGoal]\nshell: a\nshell: b\n", IssueBadGoal},
 		{"timeout range", "[SetGoal]\nshell: a\ntimeout_s: 999999\n", IssueBadGoal},

@@ -39,16 +39,22 @@ func run() error {
 		return err
 	}
 	switch os.Args[1] {
+	case "help", "-h", "--help":
+		fmt.Print(usage)
+		return nil
 	case "init":
+		if wantsHelp(os.Args[2:]) {
+			fmt.Print(initHelp)
+			return nil
+		}
 		fs := flag.NewFlagSet("init", flag.ContinueOnError)
 		fs.SetOutput(io.Discard)
 		opts := deploy.Options{}
 		fs.BoolVar(&opts.NoExecutor, "no-executor", false, "skip executor agent")
 		fs.BoolVar(&opts.Remove, "remove", false, "remove generated init wiring")
 		fs.BoolVar(&opts.EmbeddedEngine, "embedded-engine", false, "deny edits to embedded engine files")
-		fs.BoolVar(&opts.Openings, "openings", false, "install opening playbooks")
 		if err := fs.Parse(os.Args[2:]); err != nil || fs.NArg() != 0 {
-			return fmt.Errorf("usage: arbiter init [--openings] [--no-executor] [--remove] [--embedded-engine]")
+			return fmt.Errorf("usage: arbiter init [--no-executor] [--remove] [--embedded-engine] — see: arbiter init --help")
 		}
 		msg, err := deploy.InitWithOptions(root, opts)
 		if err != nil {
@@ -128,4 +134,76 @@ func run() error {
 	default:
 		return fmt.Errorf("usage: arbiter init [flags] | adopt | status [--json] | report [--json] [match_id] | serve <seat> | hook stop | cc -- <real-compiler> [args...]")
 	}
+}
+
+const usage = `arbiter — referee-adjudicated dev loop for C codebases
+
+Usage:
+  arbiter <command>
+
+Commands:
+  init     Wire the current repository. One command, idempotent, seconds, never
+           builds or indexes. Delivers the starter openings and the bundled
+           gdb-mcp + perf-mcp diagnostic servers; the engine ships inside this
+           binary — the only system prerequisite is python3 (>= 3.9). Re-run
+           any time, including after upgrading arbiter. See: arbiter init --help
+  adopt    Migrate a legacy chess/crun-mcp/cipher-2 deployment into .arbiter/.
+  status   Deployment, engine, match, and runs status (add --json for machines).
+  report   Journal + run evidence for a finished match (--json supported).
+  serve    Run a seat MCP server (player|curator|executor). Spawned by Claude
+           Code from .mcp.json and the agent files — not run by hand.
+  hook     The Stop-hook gate (arbiter hook stop). Wired by init — not run by hand.
+  cc       The per-TU compiler shim (arbiter cc -- <real-cc> ...). Installed
+           into recipes by /arbiter-intro — not run by hand.
+  help     Show this help. init also accepts -h / --help.
+
+Inside Claude Code (after init):
+  /arbiter-intro            once per repo: adjudicated bootstrap (recipes, shim, first index)
+  /arbiter-play <request>   every request: play a refereed match
+  /playbook-create          capture knowledge as a new playbook
+
+Docs: README.md (quick start) · docs/user-guide.md (the manual)
+`
+
+const initHelp = `arbiter init — wire the current repository (idempotent, seconds, no build)
+
+Writes or merges, always preserving foreign content:
+  .mcp.json                arbiter (serve player) + gdb-mcp + perf-mcp entries
+  .claude/agents/          curator, executor, implementer, test-author, debugger
+                           (seat credential injected, 0600, gitignored)
+  .claude/skills/          arbiter-play, arbiter-intro, playbook-create
+  .claude/settings.json    deny rules + the Stop-hook gate
+  .arbiter/playbook/       FORMAT.md + starter openings, write-if-missing:
+                           fix-reported-bug, hunt-latent-bugs, build-feature,
+                           fix-slow-path, freeplay, gold-digger,
+                           recipe-derivation, regression-triage
+  .arbiter/                config.yml, recipes.yaml scaffolds; seat key;
+                           run/engines.json (verified engine record)
+  .gitignore               derived-state entries
+
+Engine resolution — automatic, in this order (ADR-0011):
+  1. an installed arbiter-engine package for python3          (preferred)
+  2. the engine embedded in this binary -> .arbiter/engine/   (zero extra installs)
+  3. python3 missing/broken -> typed error; installing python3 (>= 3.9)
+     is the only setup you will ever be asked to do.
+
+Flags:
+  --no-executor      skip the executor-seat agents (incl. arbiter-debugger)
+  --embedded-engine  force the embedded engine even when a package is installed
+  --remove           reverse everything init wrote and nothing else
+
+Exit 0 on success.
+`
+
+func isHelp(arg string) bool {
+	return arg == "help" || arg == "-h" || arg == "--help"
+}
+
+func wantsHelp(rest []string) bool {
+	for _, arg := range rest {
+		if isHelp(arg) {
+			return true
+		}
+	}
+	return false
 }

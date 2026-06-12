@@ -10,10 +10,11 @@ running refereed development matches from Claude Code.
 - [5. Playbooks and openings](#5-playbooks-and-openings)
 - [6. Verification predicates](#6-verification-predicates)
 - [7. Facts: the build-driven index](#7-facts-the-build-driven-index)
-- [8. Configuration reference](#8-configuration-reference)
-- [9. CLI reference](#9-cli-reference)
-- [10. Runtime layout](#10-runtime-layout)
-- [11. Troubleshooting](#11-troubleshooting)
+- [8. Bundled diagnostics: gdb-mcp & perf-mcp](#8-bundled-diagnostics--gdb-mcp--perf-mcp)
+- [9. Configuration reference](#9-configuration-reference)
+- [10. CLI reference](#10-cli-reference)
+- [11. Runtime layout](#11-runtime-layout)
+- [12. Troubleshooting](#12-troubleshooting)
 
 ## 1. Installation
 
@@ -25,32 +26,42 @@ Requirements:
 - Linux or macOS; a local filesystem (Arbiter refuses to deploy onto NFS/SMB)
 - [Claude Code](https://claude.com/claude-code) for the agent loop
 
-Build the binary:
+Install — one command, one artifact (ADR-0011):
 
 ```sh
 git clone https://github.com/HoldThatThgt/arbiter && cd arbiter
-make build          # → ./arbiter ; put it anywhere on your machine
+make install        # → $HOME/.local/bin/arbiter (override with PREFIX=…)
 ```
 
 **Offline installation is fully supported.** Go dependencies are vendored under
-`vendor/` (the build never touches the network), and the Python engine is
-embedded inside the binary, so a single `arbiter` file is everything a target
-machine needs. The binary does not have to be on `PATH` — every wiring Arbiter
-writes uses absolute paths.
+`vendor/` (the build never touches the network), and the Python engine —
+including the bundled `gdb-mcp` and `perf-mcp` diagnostic servers — is embedded
+inside the binary, so a single `arbiter` file is everything a target machine
+needs. The binary does not have to be on `PATH` — every wiring Arbiter writes
+uses absolute paths.
 
-The engine can run in either of two modes:
+**How the engine resolves** (automatic, per repo, at `arbiter init`):
 
-| Mode | How | When |
-|---|---|---|
-| **Embedded** (recommended) | `arbiter init --embedded-engine` unpacks a digest-verified copy of the engine into `.arbiter/engine` | No pip, no network, hermetic per-repo |
-| Installed | `pip install ./engine` (from this repo — works offline) so `python -m arbiter_engine` resolves | Shared engine across repos |
+1. an **installed** `arbiter-engine` package for `python3` is preferred when
+   present (`pip install ./engine` from this repo — optional, for sharing one
+   engine across repos);
+2. otherwise init **materializes the embedded engine** into repo-local
+   `.arbiter/engine/` — digest-verified on every spawn, gitignored, protected
+   by Edit/Write deny rules; `--embedded-engine` forces this mode even when a
+   package is installed;
+3. only when `python3` itself is missing does init fail — with the fix in the
+   error. Installing python3 (≥ 3.9) is the only setup you will ever be asked
+   to do.
+
+Upgrading arbiter = reinstall the binary, re-run `arbiter init` in each repo
+(idempotent; it refreshes the embedded engine and the wiring).
 
 ## 2. Deploying into a repository
 
 In the root of the C/C++ repository you want to develop in:
 
 ```sh
-arbiter init --embedded-engine --openings
+arbiter init
 ```
 
 This is a **merge, not an overwrite** — pre-existing settings, MCP servers,
@@ -64,7 +75,12 @@ hooks, and `.gitignore` entries are preserved. It writes:
 - `.claude/settings.json` — deny rules protecting referee state, plus the Stop
   hook (`arbiter hook stop`)
 - `.arbiter/config.yml`, `.arbiter/recipes.yaml`, `.arbiter/playbook/` — the
-  three things you commit; with `--openings`, a base playbook library
+  three things you commit; the opening library is delivered write-if-missing
+  (your edits are never overwritten)
+- `.mcp.json` entries for the bundled **gdb-mcp** and **perf-mcp** diagnostic
+  servers (launched via the engine interpreter; existing entries are preserved)
+- `.claude/agents/arbiter-debugger.md` — the diagnose-and-fix executor agent
+  wired with both diagnostic servers
 - `.arbiter/run/engines.json` — the verified engine record
 
 Flags: `--no-executor` skips the executor seat; `--remove` round-trips the
@@ -198,12 +214,24 @@ failure: diagnose
 - **`[Gotcha]`** sections accumulate reusable caveats — the player appends them
   at run time via `NotePlaybook`.
 
-The base opening library (installed by `--openings`): **freeplay** (open
-predicates, general work), **gold-digger** (prove the repro fails → fix → prove
-it passes), **regression-triage**, **recipe-derivation**, **review** (bug-hunt
-that proves one bug with a failing test plus reachability facts), **feature**
-(user scenarios → approved red tests → green by any means → elevate into the
-rightful module), and **debug** (pin a deterministic repro test before any fix).
+The opening library is delivered by `arbiter init` (write-if-missing). Four
+starter openings are named by USER INTENT (ADR-0012 — imperative, verb-first,
+kebab-case, ≤3 segments; descriptions lead "Use when …" and cross-point
+"Do not use … (use <other>)" so the curator deduplicates at selection time):
+
+| Opening | Use when | The referee mechanism inside |
+|---|---|---|
+| `fix-reported-bug` | a known crash/misbehavior must die | deterministic-repro contract: a 5x all-fail loop proves the repro; the fix passes only `git diff --quiet` repro-untouched + 5x green + suite green in ONE predicate |
+| `hunt-latent-bugs` | find defects nobody pinned down | symptom-test polarity: the test passes iff the bug exists, so `build && run` exit 0 is a machine proof |
+| `build-feature` | new functionality, scenario-first | `build && ! run` proves tests red for the right reason; test untouchability rides every later predicate |
+| `fix-slow-path` | something is measurably slow | expect-clause measurements; two baselines define the noise band; a gain must beat the band or the change reverts |
+
+Alongside them ship the design-canonical intro openings: **freeplay** (open
+predicates, general work), **gold-digger** (prove the repro fails → fix →
+prove it passes, on typed run/fact predicates), **regression-triage**, and
+**recipe-derivation** (capability-gated recipe authoring). The full naming and
+predicate-discipline rules are in your repo's `.arbiter/playbook/FORMAT.md`
+after init, and `/playbook-create` enforces them on new openings.
 
 ## 6. Verification predicates
 
@@ -226,10 +254,25 @@ verdict.
 `total_at_least`.
 
 `mcp` expect is an array of at most 8 clauses
-`{"path": "result.field", "op": "eq|ne|ge|le|exists", "value": <scalar>}` —
-closed operator set, scalar operands, no wildcards. A predicate targeting the
+`{"path": "summary.all_successful", "op": "eq|ne|ge|le|exists", "value": <scalar>}` —
+closed operator set, scalar operands, no wildcards. Paths are dot-separated and
+rooted at the tool's `structuredContent` (object keys and array indices, e.g.
+`checks.0.ok`); the response envelope (`isError`, `content`) is not addressable.
+An errored call (`isError=true`) fails the verdict automatically, even when
+every clause matches — and missing paths or type mismatches fail their clause,
+including `ne`. Example against the bundled perf server:
+
+```json
+{"kind": "mcp", "server": "perf-mcp", "tool": "perf.measure_command",
+ "arguments": {"command": ["./bench"], "repeat": 5},
+ "expect": [{"path": "summary.all_successful", "op": "eq", "value": true},
+            {"path": "summary.median_wall_seconds", "op": "le", "value": 2.5}]}
+```
+
+A predicate targeting the
 arbiter binary itself is rejected (`reserved_server`) — the referee cannot be
-asked to interrogate itself.
+asked to interrogate itself; the bundled diagnostic servers run via the engine
+interpreter, so they are valid targets.
 
 Empty expects fail closed: a predicate with no clauses can never pass.
 
@@ -251,7 +294,60 @@ and semantic flags — `-fsanitize=*` always keys (a sanitizer build never reuse
 plain-build facts); `-O`/`-g` are ignored unless listed in
 `facts.index_on_build.key_flags`.
 
-## 8. Configuration reference
+**Two toolchains, isolated** (inherited verbatim from cipher-2): your repo
+builds with whatever it needs — gcc/g++ of any vintage is the normal case —
+and arbiter never replaces or version-gates it; `arbiter cc` only journals and
+execs your compiler bit-exact. Extraction parses the journaled TUs with its
+*own* Clang + libclang (**LLVM Clang ≥ 16 / Apple Clang ≥ 15**, located
+automatically, capability-probed) after cleaning gcc-only flags out of the
+recorded commands; the AST path never requires GCC. No capable Clang on the
+machine ⇒ no facts index (a typed failure on the gear-up verdict) — builds,
+matches, shell/mcp predicates, and the bundled diagnostics keep working.
+
+## 8. Bundled diagnostics — gdb-mcp & perf-mcp
+
+The engine ships two diagnostic MCP servers (ADR-0010); init wires both into
+`.mcp.json` and writes the `arbiter-debugger` executor agent that uses them.
+They are FOREIGN servers in the predicate sense — launched via the engine
+interpreter, never via the arbiter binary — so mcp-kind `expect` predicates
+adjudicate their structured fields.
+
+**gdb-mcp** (`python3 -m arbiter_engine.gdbmcp`) — structured GDB/MI debugging,
+typed JSON in `structuredContent`, never scraped terminal text: `gdb_start`
+(exec/core; attach/remote are opt-in serve flags), `gdb_exec`, `gdb_breakpoint`
+(including watchpoints — `kind: watch` is the memory-corruption workhorse),
+`gdb_select`, `gdb_stack`, `gdb_snapshot` (stop reason + threads + stack +
+locals + registers in one call), `gdb_eval`, `gdb_memory` (bounded reads),
+`gdb_command` (guarded console — `shell`/`python`/`source`/… denied unless the
+server runs with `--allow-dangerous-commands`), `gdb_sessions`, `gdb_stop`,
+`gdb_diagnostics`. Session state and a redacted audit log live in `.gdb-mcp/`.
+
+`gdb-mcp` wraps the **host** `gdb`, which remains a system prerequisite for
+live debugging. Check readiness — the probe compiles a one-liner and verifies
+GDB can actually run it:
+
+```sh
+python3 -m arbiter_engine.gdbmcp doctor --root .
+```
+
+On macOS, Homebrew GDB commonly parses symbols but cannot launch local
+inferiors (`gdb_run: Don't know how to run`) — codesign gdb, use a remote
+target, or do live debugging on Linux; everything else keeps working. Build
+debug targets with `-g -gdwarf-4 -O0`; the server returns typed guidance
+(`darwin_gdb_codesign_required`, `debug_info_format_unsupported`) when it
+recognizes these failures.
+
+**perf-mcp** (`python3 -m arbiter_engine.perfmcp`) — C performance triage:
+`perf.scan_c` (ranked findings with stable rule ids — `C.PERF.ALLOC_IN_LOOP`,
+`C.PERF.STRLEN_IN_LOOP`, … — file:line evidence, severity/confidence, file and
+byte budgets), `perf.explain_finding` (false-positive checks, safe fix
+strategy, measurement plan), `perf.measure_command` (argv arrays only — shell
+strings rejected; wall/user/system seconds, max RSS, median summary),
+`perf.toolchain_probe`. All results are schema-versioned (`perf-mcp.scan.v1`,
+…) so `expect` paths stay stable. A scan is **triage, not proof** — the
+fix-slow-path opening insists on a measured baseline and a measured gain.
+
+## 9. Configuration reference
 
 `.arbiter/config.yml`:
 
@@ -271,10 +367,10 @@ Environment variables:
 | `ARBITER_ENGINE_PYTHON` | interpreter used for the engine (then `PYTHON`, then `python3`) |
 | `ARBITER_ENGINE_CALL_TIMEOUT_S` | engine call deadline when the caller has none (default 600) |
 
-## 9. CLI reference
+## 10. CLI reference
 
 ```
-arbiter init [--embedded-engine] [--openings] [--no-executor] [--remove]
+arbiter init [--no-executor] [--remove] [--embedded-engine]
 arbiter adopt
 arbiter status [--json]
 arbiter report [--json] [match_id]
@@ -289,7 +385,7 @@ a build, even when journaling fails (the miss is recorded and facts publication
 is withheld instead). `hook stop` is the only other component allowed to fail
 open.
 
-## 10. Runtime layout
+## 11. Runtime layout
 
 ```
 .arbiter/
@@ -306,10 +402,13 @@ open.
 Commit `config.yml`, `recipes.yaml`, and `playbook/`. Everything else under
 `.arbiter/` is runtime state and is gitignored by `init`.
 
-## 11. Troubleshooting
+## 12. Troubleshooting
 
 **`arbiter-engine verification failed` during init** — the engine isn't
-resolvable. Either deploy hermetically (`arbiter init --embedded-engine`) or
+resolvable. The ladder falls back to the embedded engine automatically, so
+this normally means `python3` itself is missing or broken — install python3
+(≥ 3.9) and re-run `arbiter init`. To pin the embedded copy explicitly use
+`arbiter init --embedded-engine`, or
 install it (`pip install ./engine` from the Arbiter repo, offline-capable), and
 ensure the right interpreter wins via `ARBITER_ENGINE_PYTHON`.
 

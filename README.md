@@ -39,13 +39,19 @@ and the Python engine is embedded in the binary, so both the build and the
 deployment work **fully offline**.
 
 ```sh
-# 1. Build the binary (no network needed — deps are vendored)
-git clone https://github.com/HoldThatThgt/arbiter && cd arbiter
-make build                                   # produces ./arbiter
+# 1. Install — one command, one artifact (engine + gdb-mcp + perf-mcp embedded)
+git clone https://github.com/HoldThatThgt/arbiter && cd arbiter && make install
 
-# 2. In your C/C++ repository: deploy with the embedded engine (no pip needed)
-arbiter init --embedded-engine --openings
+# 2. Wire your C/C++ repository — one command (idempotent, seconds)
+cd /path/to/your/repo && arbiter init
 ```
+
+`arbiter init` resolves the engine automatically: an installed `arbiter-engine`
+package when present, otherwise the copy embedded in the binary (no pip, no
+network); the starter openings and the bundled **gdb-mcp** (structured GDB
+debugging) + **perf-mcp** (C perf triage) diagnostic servers are delivered with
+it. `arbiter --help` and `arbiter init --help` state exactly what each command
+does.
 
 Then, inside Claude Code in that repository:
 
@@ -57,7 +63,13 @@ Then, inside Claude Code in that repository:
 | capture knowledge | `/playbook-create` — turn a session into a reusable opening |
 
 Everything else is stock Claude Code: no index commands, no seat management, no
-recipe ceremony. See the **[User Guide](docs/user-guide.md)** for the full
+recipe ceremony.
+
+Your repo keeps building with **its own compiler** (gcc/g++ of any version) —
+arbiter never swaps it. Only the facts index needs LLVM Clang ≥ 16 (or Apple
+Clang ≥ 15) for its own AST extraction, isolated from your build toolchain;
+without it you lose facts, never builds. Live debugging additionally wants a
+working host `gdb` (`python3 -m arbiter_engine.gdbmcp doctor --root .` tells you). See the **[User Guide](docs/user-guide.md)** for the full
 walkthrough.
 
 ## How it works
@@ -79,7 +91,7 @@ and `config.yml`. No daemons, no network.
 ## CLI
 
 ```
-arbiter init [--embedded-engine] [--openings] [--no-executor] [--remove]
+arbiter init [--no-executor] [--remove] [--embedded-engine]
 arbiter adopt                 # migrate a legacy chess/crun/cipher deployment
 arbiter status [--json]       # compose-on-read deployment & match status
 arbiter report [--json] [id]  # journal + run evidence for a match

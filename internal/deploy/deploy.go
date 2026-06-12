@@ -38,7 +38,121 @@ const (
 	fileExecutor    = ".claude/agents/arbiter-executor.md"
 	fileTestAuthor  = ".claude/agents/arbiter-test-author.md"
 	fileImplementer = ".claude/agents/arbiter-implementer.md"
+	fileDebugger    = ".claude/agents/arbiter-debugger.md"
 )
+
+// companion 是随 arbiter 一体交付的伙伴诊断 MCP 服务器(ADR-0010):
+// FOREIGN stdio 服务器,永不充当席位。经引擎解释器(python -m)拉起,
+// 而非本二进制 —— mcp-kind 谓词的 deny-self 守卫(ADR-0006)因此不受影响。
+type companion struct {
+	Name       string
+	Module     string
+	Serve      []string
+	Tools      []string
+	Command    string
+	Args       []string
+	PythonPath string
+}
+
+var companionSpecs = []companion{
+	{
+		Name:   "gdb-mcp",
+		Module: "arbiter_engine.gdbmcp",
+		Serve:  []string{"serve", "--root", "."},
+		Tools: []string{
+			"gdb_start", "gdb_exec", "gdb_breakpoint", "gdb_select", "gdb_stack",
+			"gdb_snapshot", "gdb_eval", "gdb_memory", "gdb_command", "gdb_sessions",
+			"gdb_stop", "gdb_diagnostics",
+		},
+	},
+	{
+		Name:   "perf-mcp",
+		Module: "arbiter_engine.perfmcp",
+		Serve:  []string{"serve"},
+		Tools: []string{
+			"perf.scan_c", "perf.explain_finding", "perf.measure_command", "perf.toolchain_probe",
+		},
+	},
+}
+
+// companionsFor 按解析到的引擎运行时实例化伙伴条目:embedded 模式附
+// PYTHONPATH(指向释放出的引擎树),installed 模式直接 import。
+func companionsFor(python string, embedded bool) []companion {
+	out := make([]companion, 0, len(companionSpecs))
+	for _, spec := range companionSpecs {
+		spec.Command = python
+		spec.Args = append([]string{"-m", spec.Module}, spec.Serve...)
+		if embedded {
+			spec.PythonPath = embeddedengine.RootRel
+		}
+		out = append(out, spec)
+	}
+	return out
+}
+
+// mergeCompanions 把伙伴服务器并入 .mcp.json,add-if-missing:既有同名条目
+// 是外来内容,原样保留。
+func mergeCompanions(path string, companions []companion) error {
+	if len(companions) == 0 {
+		return nil
+	}
+	root, err := readJSON(path)
+	if err != nil {
+		return err
+	}
+	servers, _ := root["mcpServers"].(map[string]any)
+	if servers == nil {
+		servers = map[string]any{}
+		root["mcpServers"] = servers
+	}
+	changed := false
+	for _, comp := range companions {
+		if _, exists := servers[comp.Name]; exists {
+			continue
+		}
+		args := make([]any, 0, len(comp.Args))
+		for _, arg := range comp.Args {
+			args = append(args, arg)
+		}
+		entry := map[string]any{
+			"type":    "stdio",
+			"command": comp.Command,
+			"args":    args,
+		}
+		if comp.PythonPath != "" {
+			entry["env"] = map[string]any{"PYTHONPATH": comp.PythonPath}
+		}
+		servers[comp.Name] = entry
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	return writeJSON(path, root, 0o644)
+}
+
+// renderDebugger 渲染诊断执行席 agent:席位凭证注入 + 伙伴服务器进
+// frontmatter(mcpServers 与 tools 同步生成;embedded 模式附 PYTHONPATH)。
+func renderDebugger(text, exe, key string, companions []companion) string {
+	var servers strings.Builder
+	var tools strings.Builder
+	for i, comp := range companions {
+		if i > 0 {
+			servers.WriteString("\n")
+		}
+		servers.WriteString(fmt.Sprintf("  %s:\n    type: stdio\n    command: %s\n    args: [%s]",
+			comp.Name, comp.Command, strings.Join(comp.Args, ", ")))
+		if comp.PythonPath != "" {
+			servers.WriteString(fmt.Sprintf("\n    env:\n      PYTHONPATH: %s", comp.PythonPath))
+		}
+		for _, tool := range comp.Tools {
+			tools.WriteString(", mcp__" + comp.Name + "__" + tool)
+		}
+	}
+	text = render(text, exe, key)
+	text = strings.ReplaceAll(text, "{{COMPANION_SERVERS}}", servers.String())
+	return strings.ReplaceAll(text, "{{COMPANION_TOOLS}}", tools.String())
+}
 
 //go:embed templates/*
 var templates embed.FS
@@ -47,7 +161,6 @@ type Options struct {
 	NoExecutor     bool
 	Remove         bool
 	EmbeddedEngine bool
-	Openings       bool
 	Python         string
 	FSKind         string
 	Now            func() time.Time
@@ -104,22 +217,34 @@ func InitWithOptions(root string, opts Options) (string, error) {
 	if isNetworkFilesystem(fsKind) {
 		return "", &Error{Kind: "network_filesystem", Message: "arbiter init refused network filesystem: " + fsKind}
 	}
-	var embeddedDigest string
-	if opts.EmbeddedEngine {
-		manifest, err := embeddedengine.Unpack(root)
-		if err != nil {
-			return "", err
-		}
-		embeddedDigest = manifest.Digest
-	}
 	python := ResolvePython(opts.Python)
 	verify := opts.VerifyEngine
 	if verify == nil {
 		verify = verifyEngine
 	}
-	engineVersion, err := verify(python, root)
-	if err != nil {
-		return "", &Error{Kind: "engine_verify_failed", Message: "arbiter-engine verification failed", Err: err}
+	// ADR-0011 解析阶梯:已安装包优先;不可用即自动释放内置引擎(零额外安装);
+	// 仅当 python3 本身缺席/不可用时才失败 —— 这是唯一的系统前置条件。
+	embedded := opts.EmbeddedEngine || isEmbeddedDeployment(root)
+	var embeddedDigest string
+	var engineVersion string
+	if !embedded {
+		if version, probeErr := verify(python, root); probeErr == nil {
+			engineVersion = version
+		} else {
+			embedded = true
+		}
+	}
+	if embedded {
+		manifest, err := embeddedengine.Unpack(root)
+		if err != nil {
+			return "", err
+		}
+		embeddedDigest = manifest.Digest
+		version, err := verify(python, root)
+		if err != nil {
+			return "", &Error{Kind: "engine_verify_failed", Message: "engine verification failed — the one system prerequisite is python3 (>= 3.9); install it and re-run arbiter init", Err: err}
+		}
+		engineVersion = version
 	}
 
 	for _, dir := range []string{dirPlaybook, dirRun, dirMatchRun, dirLog, ".arbiter/match", ".claude/agents", ".claude/skills/arbiter-play", ".claude/skills/arbiter-intro", ".claude/skills/playbook-create"} {
@@ -134,11 +259,10 @@ func InitWithOptions(root string, opts Options) (string, error) {
 	if err := writeIfMissing(filepath.Join(root, fileFormat), mustTemplate("templates/FORMAT.md"), 0o644); err != nil {
 		return "", err
 	}
-	if opts.Openings {
-		for _, opening := range baseOpenings {
-			if err := writeIfMissing(filepath.Join(root, dirPlaybook, opening.file), mustTemplate(opening.template), 0o644); err != nil {
-				return "", err
-			}
+	// 起手棋谱随 init 永远就位(ADR-0012),write-if-missing:用户内容神圣。
+	for _, opening := range baseOpenings {
+		if err := writeIfMissing(filepath.Join(root, dirPlaybook, opening.file), mustTemplate(opening.template), 0o644); err != nil {
+			return "", err
 		}
 	}
 	if err := writeIfMissing(filepath.Join(root, fileConfig), defaultConfig(), 0o644); err != nil {
@@ -147,11 +271,15 @@ func InitWithOptions(root string, opts Options) (string, error) {
 	if err := writeIfMissing(filepath.Join(root, fileRecipes), defaultRecipes(), 0o644); err != nil {
 		return "", err
 	}
-	if err := writeEngines(filepath.Join(root, fileEngines), python, engineVersion, now(opts), opts.EmbeddedEngine, embeddedDigest); err != nil {
+	if err := writeEngines(filepath.Join(root, fileEngines), python, engineVersion, now(opts), embedded, embeddedDigest); err != nil {
 		return "", err
 	}
 	replacedMCP, err := mergeMCP(filepath.Join(root, fileMCP), exe)
 	if err != nil {
+		return "", err
+	}
+	companions := companionsFor(python, embedded)
+	if err := mergeCompanions(filepath.Join(root, fileMCP), companions); err != nil {
 		return "", err
 	}
 	curator := render(mustTemplate("templates/arbiter-curator.md"), exe, key)
@@ -165,6 +293,10 @@ func InitWithOptions(root string, opts Options) (string, error) {
 				return "", err
 			}
 		}
+		debugger := renderDebugger(mustTemplate("templates/arbiter-debugger.md"), exe, key, companions)
+		if err := atomicWrite(filepath.Join(root, fileDebugger), []byte(debugger), 0o600); err != nil {
+			return "", err
+		}
 	}
 	skill := mustTemplate("templates/arbiter-play.md")
 	if err := atomicWrite(filepath.Join(root, fileSkill), []byte(skill), 0o644); err != nil {
@@ -176,26 +308,30 @@ func InitWithOptions(root string, opts Options) (string, error) {
 	if err := atomicWrite(filepath.Join(root, fileSkillCreate), []byte(mustTemplate("templates/playbook-create.md")), 0o644); err != nil {
 		return "", err
 	}
-	if err := mergeSettings(filepath.Join(root, fileSettings), exe, opts.EmbeddedEngine); err != nil {
+	if err := mergeSettings(filepath.Join(root, fileSettings), exe, embedded); err != nil {
 		return "", err
 	}
-	if err := appendGitignore(filepath.Join(root, fileGitignore), opts.EmbeddedEngine); err != nil {
+	if err := appendGitignore(filepath.Join(root, fileGitignore), embedded); err != nil {
 		return "", err
 	}
-	return guidance(replacedMCP, opts.NoExecutor), nil
+	return guidance(replacedMCP, opts.NoExecutor, embedded), nil
 }
 
+// baseOpenings:ADR-0012 起手棋谱(templates/openings/,命名规约 CI 校验)
+// + 设计钦定的 intro 系棋谱。旧 debug/feature/review 已被裁判原生的
+// fix-reported-bug / build-feature / hunt-latent-bugs 取代并退役。
 var baseOpenings = []struct {
 	file     string
 	template string
 }{
-	{"debug.md", "templates/debug.md"},
-	{"feature.md", "templates/feature.md"},
+	{"build-feature.md", "templates/openings/build-feature.md"},
+	{"fix-reported-bug.md", "templates/openings/fix-reported-bug.md"},
+	{"fix-slow-path.md", "templates/openings/fix-slow-path.md"},
+	{"hunt-latent-bugs.md", "templates/openings/hunt-latent-bugs.md"},
 	{"freeplay.md", "templates/freeplay.md"},
 	{"gold-digger.md", "templates/gold-digger.md"},
 	{"recipe-derivation.md", "templates/recipe-derivation.md"},
 	{"regression-triage.md", "templates/regression-triage.md"},
-	{"review.md", "templates/review.md"},
 }
 
 // executorAgents are the executor-seat subagents deployed with the executor
@@ -395,7 +531,7 @@ func remove(root, exe string) error {
 		return err
 	}
 	for _, file := range []string{
-		fileEngines, fileSeatKey, fileCurator, fileExecutor, fileTestAuthor, fileImplementer,
+		fileEngines, fileSeatKey, fileCurator, fileExecutor, fileTestAuthor, fileImplementer, fileDebugger,
 		fileSkill, fileSkillIntro, fileSkillCreate, fileFormat, fileConfig, fileRecipes,
 	} {
 		if err := os.Remove(filepath.Join(root, file)); err != nil && !os.IsNotExist(err) {
@@ -651,10 +787,17 @@ func hasString(values []string, target string) bool {
 	return false
 }
 
-func guidance(replacedMCP, noExecutor bool) string {
+func guidance(replacedMCP, noExecutor, embedded bool) string {
 	msg := "arbiter 已部署。已写入引擎校验、席位凭证、Claude agents、skills、MCP 与 Stop hook 配置。\n"
+	if embedded {
+		msg += "引擎:已从二进制释放到 .arbiter/engine(零额外安装;Edit/Write 拒绝规则 + 摘要校验已就位;升级 arbiter 后重跑 init 自动刷新)。\n"
+	} else {
+		msg += "引擎:使用已安装的 arbiter-engine 包。\n"
+	}
+	msg += "起手棋谱已就位:.arbiter/playbook/(fix-reported-bug, hunt-latent-bugs, build-feature, fix-slow-path + freeplay, gold-digger, recipe-derivation, regression-triage;既有文件不覆盖)。\n"
+	msg += "伙伴诊断服务器已接线(ADR-0010):gdb-mcp, perf-mcp(既有同名 .mcp.json 条目保留);崩溃/内存破坏/性能类任务派发给 arbiter-debugger 子代理。\n"
 	if noExecutor {
-		msg += "提示:--no-executor 已跳过 executor agent。\n"
+		msg += "提示:--no-executor 已跳过 executor agents(含 arbiter-debugger)。\n"
 	}
 	if replacedMCP {
 		msg += "提示:.mcp.json 中既有 arbiter 服务器指向不同命令,已覆盖为当前二进制。\n"
@@ -786,6 +929,7 @@ func generatedGitignoreLines(embedded bool) []string {
 		".claude/agents/arbiter-executor.md",
 		".claude/agents/arbiter-implementer.md",
 		".claude/agents/arbiter-test-author.md",
+		".claude/agents/arbiter-debugger.md",
 	}
 	if embedded {
 		lines = append(lines, ".arbiter/engine/")

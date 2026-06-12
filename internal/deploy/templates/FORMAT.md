@@ -40,6 +40,37 @@ success: END
 failure: diagnose
 ```
 
+Naming & dedup (binding for every playbook in this directory):
+- `name` is the USER INTENT as an imperative phrase: verb-first, kebab-case,
+  at most 3 segments — `fix-reported-bug`, `hunt-latent-bugs`, `build-feature`,
+  `fix-slow-path`. Not the method, not the mechanism, never a codename.
+  (Design-canonical intro openings — freeplay, gold-digger, recipe-derivation,
+  regression-triage — are grandfathered by ADR-0012.)
+- The file name is `<name>.md` — they must match exactly.
+- `description` starts with "Use when …" (the curator's first selection
+  signal) and contains a "Do not use … (use <other-playbook>)" cross-pointer
+  whenever another playbook's intent is adjacent — dedup happens at selection
+  time, in the description, not by hoping nobody notices the overlap.
+- One playbook per distinct intent. Before adding, read the existing names: if
+  the intent overlaps an existing book, extend that book instead of forking a
+  near-copy. `AddPlayBook` refuses duplicate names; near-synonym names are on
+  you.
+
+Predicate discipline (what makes a playbook worth the referee):
+- Every step whose work is checkable tells the executor the EXACT result
+  predicate to submit — a concrete shell command (mind the exit-code polarity),
+  an mcp call with `expect` clauses on structuredContent fields, a typed
+  run/fact spec, or a curated `[Verify]` name. A step that only says "verify
+  it works" will be gamed by the first trivially-true predicate an executor
+  invents.
+- Encode laws as machine checks inside the predicate, not as prose: test-file
+  untouchability is `git diff --quiet -- <paths> && …`, determinism is a 5x
+  shell loop, measured improvement is two expect-clause measurements compared
+  against a recorded noise band.
+- Checklist items must be mechanically checkable — each one should map to a
+  predicate or an artifact a reviewer can open. If you cannot write the check,
+  the step is mis-split: redesign it.
+
 Rules:
 - File size must be at most 1 MiB.
 - Frontmatter must include `name` and `description`; optional `max_steps`

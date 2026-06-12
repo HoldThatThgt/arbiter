@@ -103,20 +103,22 @@ func TestMCPExpectClausesDriveVerdictAndReport(t *testing.T) {
 	root := t.TempDir()
 	stub := copiedSelf(t)
 	writeMCP(t, root, map[string]any{
-		"ok": map[string]any{
+		"structured": map[string]any{
 			"type":    "stdio",
 			"command": stub,
-			"env":     map[string]any{"ARBITER_TEST_STUB": "1", "ARBITER_TEST_MODE": "ok"},
+			"env":     map[string]any{"ARBITER_TEST_STUB": "1", "ARBITER_TEST_MODE": "structured"},
 		},
 	})
 
+	// expect 路径以 structuredContent 为根(ADR-0006/0010):信封字段
+	// (isError、content)不可寻址;isError 由 runTool 自动门控。
 	pass, err := Execute(context.Background(), root, ResultSpec{
 		Kind:   "mcp",
-		Server: "ok",
+		Server: "structured",
 		Tool:   "probe",
 		Expect: mustRaw(t, `[
-			{"path":"isError","op":"eq","value":false},
-			{"path":"content.0.text","op":"eq","value":"ok"}
+			{"path":"ok","op":"eq","value":true},
+			{"path":"state","op":"eq","value":"stopped"}
 		]`),
 	})
 	if err != nil {
@@ -128,9 +130,9 @@ func TestMCPExpectClausesDriveVerdictAndReport(t *testing.T) {
 
 	fail, err := Execute(context.Background(), root, ResultSpec{
 		Kind:   "mcp",
-		Server: "ok",
+		Server: "structured",
 		Tool:   "probe",
-		Expect: mustRaw(t, `[{"path":"content.0.text","op":"eq","value":"nope"}]`),
+		Expect: mustRaw(t, `[{"path":"state","op":"eq","value":"nope"}]`),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -140,6 +142,20 @@ func TestMCPExpectClausesDriveVerdictAndReport(t *testing.T) {
 	}
 	if len(fail.ExpectReport) != 1 || fail.ExpectReport[0].OK {
 		t.Fatalf("fail report = %#v", fail.ExpectReport)
+	}
+
+	// 信封路径在新约定下不可解析 → fail-closed。
+	envelope, err := Execute(context.Background(), root, ResultSpec{
+		Kind:   "mcp",
+		Server: "structured",
+		Tool:   "probe",
+		Expect: mustRaw(t, `[{"path":"isError","op":"eq","value":false}]`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if Pass(envelope) {
+		t.Fatalf("envelope path must not resolve: %#v", envelope.ExpectReport)
 	}
 }
 

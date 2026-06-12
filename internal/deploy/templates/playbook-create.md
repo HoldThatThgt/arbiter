@@ -10,9 +10,21 @@ machine-checkable predicates, primary recipe or fact goal, and any required capa
 
 Every generated playbook must follow this contract:
 
+- Naming (ADR-0012, FORMAT.md "Naming & dedup"): `name` is the USER INTENT as
+  an imperative phrase — verb-first, kebab-case, ≤3 segments (fix-reported-bug,
+  build-feature) — never the method, mechanism, or a codename. `description`
+  leads with "Use when …" and cross-points "Do not use … (use <other>)" when
+  another opening's intent is adjacent. Check the existing names first: if the
+  intent overlaps, extend that opening instead of forking a near-copy; on
+  name_conflict pick a new intent phrase, never overwrite.
 - Step 1 is always `gear-up`.
 - `gear-up` uses a typed `src_compile` run predicate named `gear-up-published`.
 - Steps with external effects should declare named `[Verify]` predicates.
+- Every checkable step states the EXACT predicate the executor must submit —
+  shell with explicit exit-code polarity, mcp + `expect` clauses, a typed
+  run/fact spec, or a curated `[Verify]` name. Encode laws as machine checks
+  (test untouchability = `git diff --quiet -- <paths> && …`, determinism = a
+  5x loop, measured gain = expect-clause measurements vs a recorded noise band).
 - Checklists must be fact- or run-groundable; never ask a model to decide success.
 - Gotchas are one-line, step-scoped, append-only notes.
 

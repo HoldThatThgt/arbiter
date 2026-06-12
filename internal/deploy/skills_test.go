@@ -28,7 +28,6 @@ func TestOpeningTemplateLint(t *testing.T) {
 func TestInitOpeningsWritesFreeplay(t *testing.T) {
 	root := t.TempDir()
 	opts := testInitOptions()
-	opts.Openings = true
 	if _, err := InitWithOptions(root, opts); err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +39,7 @@ func TestInitOpeningsWritesFreeplay(t *testing.T) {
 	if book.Entry != "gear-up" {
 		t.Fatalf("entry = %q", book.Entry)
 	}
-	for _, name := range []string{"debug.md", "feature.md", "gold-digger.md", "recipe-derivation.md", "regression-triage.md", "review.md"} {
+	for _, name := range []string{"build-feature.md", "fix-reported-bug.md", "fix-slow-path.md", "hunt-latent-bugs.md", "gold-digger.md", "recipe-derivation.md", "regression-triage.md"} {
 		if _, issues := playbook.ParseFile(filepath.Join(root, ".arbiter", "playbook", name)); len(issues) != 0 {
 			t.Fatalf("missing or invalid %s: %#v", name, issues)
 		}
@@ -80,28 +79,24 @@ func TestBaseOpeningTemplatesParse(t *testing.T) {
 			verify: []string{"gear-up-published", "suite-green"},
 		},
 		{
-			file:        "review.md",
-			name:        "review",
-			entry:       "inspect",
-			policy:      "open",
-			verify:      []string{"bug-proven"},
-			overridable: []string{"bug-proven"},
+			file:  "openings/hunt-latent-bugs.md",
+			name:  "hunt-latent-bugs",
+			entry: "hypothesize",
 		},
 		{
-			file:        "feature.md",
-			name:        "feature",
-			entry:       "scenarios",
-			policy:      "open",
-			verify:      []string{"feature-red", "feature-green", "suite-green"},
-			overridable: []string{"feature-red", "feature-green"},
+			file:  "openings/build-feature.md",
+			name:  "build-feature",
+			entry: "scenario",
 		},
 		{
-			file:        "debug.md",
-			name:        "debug",
-			entry:       "design-repro",
-			policy:      "open",
-			verify:      []string{"repro-fails", "repro-passes"},
-			overridable: []string{"repro-fails", "repro-passes"},
+			file:  "openings/fix-reported-bug.md",
+			name:  "fix-reported-bug",
+			entry: "design-repro",
+		},
+		{
+			file:  "openings/fix-slow-path.md",
+			name:  "fix-slow-path",
+			entry: "scope",
 		},
 	}
 	for _, tc := range cases {
@@ -129,9 +124,9 @@ func TestBaseOpeningTemplatesParse(t *testing.T) {
 					t.Fatalf("%s verify %q allow_overrides = %q, want tests", tc.file, name, got)
 				}
 			}
-			// 三个新开局(review/feature/debug)刻意不设 [SetGoal]:终局条件是走到 END,
+			// 起手棋谱(repo 无关)刻意不设 [SetGoal]:终局条件是走到 END,
 			// 一个 suite-green goal 会在红测试出现前的第 1 回合就被误判为 checkmate。
-			if tc.policy == "open" && tc.capability == "" && book.Goal != nil {
+			if tc.policy == "" && tc.capability == "" && book.Goal != nil {
 				t.Fatalf("%s unexpectedly declares a goal: %#v", tc.file, book.Goal)
 			}
 		})

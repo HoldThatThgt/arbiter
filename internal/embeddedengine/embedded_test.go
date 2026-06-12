@@ -109,13 +109,26 @@ func TestVerifySurvivesRealBytecodeGeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cmd := exec.Command(python, "-m", "compileall", "-q", filepath.Join(repo, RootRel, "arbiter_engine"))
+	// -b 强制 legacy 同目录 .pyc:Apple 系统 Python 设有 sys.pycache_prefix
+	// (集中缓存目录),普通 compileall 不会在树内产生 __pycache__,
+	// 该断言在 mac 上永远失败;-b 绕过前缀,树内必有字节码。
+	tree := filepath.Join(repo, RootRel, "arbiter_engine")
+	cmd := exec.Command(python, "-m", "compileall", "-q", "-b", tree)
 	cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=") // ensure bytecode is written
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("compileall: %v\n%s", err, out)
 	}
-	if _, err := os.Stat(filepath.Join(repo, RootRel, "arbiter_engine", "__pycache__")); err != nil {
-		t.Fatalf("compileall produced no __pycache__: %v", err)
+	pycs := 0
+	if err := filepath.WalkDir(tree, func(path string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && filepath.Ext(path) == ".pyc" {
+			pycs++
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if pycs == 0 {
+		t.Fatal("compileall produced no in-tree bytecode")
 	}
 
 	if _, err := Verify(repo, manifest.Digest); err != nil {

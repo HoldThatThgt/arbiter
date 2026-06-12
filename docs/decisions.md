@@ -80,6 +80,71 @@ engines read base + latest published overlay; fact-predicate evidence records
 `{snapshot_id, overlay_id, view_state}`. Claim level: "DB-safe and build-serialized" until
 8-way contention tests pass. `arbiter init` refuses network filesystems (typed error).
 
+## ADR-0010 — Companion diagnostic MCP servers ship inside arbiter-engine (2026-06-12, accepted)
+`gdb-mcp` (structured GDB/MI debugging) and `perf-mcp` (C perf triage + measurement) are
+**absorbed into the engine package** as `arbiter_engine.gdbmcp` / `arbiter_engine.perfmcp` —
+the user installs arbiter + arbiter-engine and has both; there is no separate companion
+distribution. They stay FOREIGN stdio MCP servers in the ADR-0006 sense: launched from
+`.mcp.json` via the resolved engine interpreter (`python3 -m arbiter_engine.gdbmcp serve --root .`
+/ `… perfmcp serve`), NEVER via the arbiter binary — so the deny-self `reserved_server` guard
+keeps holding and mcp-kind predicates with `expect[]` clauses adjudicate their
+`structuredContent` typed fields. They are not seats and not engine JSON-RPC namespaces: their
+processes hold no referee or evaluator state. Their standalone `init` subcommands are dropped
+(Go deploy owns all wiring); serve/doctor/scan/measure/probe/tools survive. `arbiter init`
+probes `python3` + namespace importability; when the engine resolves it merges the two
+`.mcp.json` entries (add-if-missing — an existing entry is foreign content and survives
+untouched) and writes `.claude/agents/arbiter-debugger.md`, an executor-seat agent variant
+wired with both companions. An absent engine degrades silently with a guidance hint.
+**Consequences:** both namespaces obey the engine red lines (stdlib-only — AST-meta-test
+enforced — repo-local state, no network); the debugger agent file is key-injected, 0600,
+gitignored, deny-read like the other agents; default playbooks may direct gdb/perf evidence
+gathering while adjudication stays typed (`expect[]` field comparison, never prose); the seat
+RBAC boundary is unchanged — companion tools are host-level capabilities like Bash, not seat
+tools; the source checkouts (`~/Project/gdb-mcp`, `~/Project/perf-mcp`) freeze for new features
+— one-way import, the same posture as cipher-2's M4 import.
+
+## ADR-0011 — One-command delivery: engine embedded, materialized at init (2026-06-12, accepted)
+Owner verdict on UX: install is ONE command (`make install` → one binary), repo setup is ONE
+command (`arbiter init`), and everything delivered must work instantly — no separate pip step,
+no silently-skipped wiring discovered mid-flow. This amends ADR-0007's default posture: the
+engine is embedded in the binary via go:embed, and `arbiter init` automatically materializes it
+into repo-local `.arbiter/engine/` (digest-keyed, idempotent, `*.py` only) whenever no installed
+`arbiter-engine` package resolves for `python3`. An installed package remains **preferred** when
+importable (probed with a PYTHONPATH-scrubbed environment so a dev shell can't fake "installed").
+Companion `.mcp.json` entries in embedded mode carry `env.PYTHONPATH=.arbiter/engine`; the
+referee's mcp evaluation merges entry env **over** inherited env. ADR-0007's tamper-resistance
+survives the flip: Edit/Write deny rules on `.arbiter/engine/**`, the tree is digest-tracked and
+re-materialized on drift at init, and evaluator spawn-time digest verification still lands with
+engineclient spawning (M4/M5) as signed there. The system prerequisite is exactly one: python3
+≥ 3.9 (host gdb additionally for live debugging only). **Consequences:** `make install` is the
+single install command; init reports which mode resolved; upgrading = reinstall the binary and
+re-run init (digest change re-materializes); `.gitignore` gains `.arbiter/engine/`; ADR-0007's
+`--embedded-engine` flag is subsumed by the automatic fallback.
+
+## ADR-0012 — Starter openings ship with init; naming & predicate conventions (2026-06-12, accepted)
+Owner verdict on the playbook library: names were pattern-chaos, content was generic prose a
+capable model could ignore, and nothing actually shipped. Three fixes, all binding:
+(1) **Delivery** — four starter openings are embedded in the binary and written by
+`arbiter init` into `.arbiter/match/playbook/` write-if-missing (user edits are sacred). This
+complements, not replaces, the M7 intro's repo-specific openings (gear-up, gold-digger,
+recipe-derivation — those need facts/runs).
+(2) **Naming convention** (FORMAT.md, CI-linted) — a playbook name is the USER INTENT as an
+imperative phrase: verb-first, kebab-case, ≤3 segments, file stem == name; the description
+leads with "Use when …" and carries "Do not use … (use <other>)" cross-pointers so dedup
+happens at curator-selection time. The four: `fix-reported-bug`, `hunt-latent-bugs`,
+`build-feature`, `fix-slow-path`; the prior names from both parallel efforts (debug-repro-fix,
+review-bug-hunt, feature-tdd, perf-triage-fix; debug, feature, review) are retired. The
+design-canonical intro openings (freeplay, gold-digger, recipe-derivation, regression-triage)
+are grandfathered and ship alongside.
+(3) **Predicate discipline** — steps state the EXACT result predicate the executor must
+submit (shell with explicit exit-code polarity, or mcp + `expect` clauses), and laws are
+machine checks inside predicates (`git diff --quiet` untouchability, 5x determinism loops,
+noise-band-beating measured gain), never prose. A playbook that does not wire the referee in
+is not worth shipping. **Consequences:**
+`TestEmbeddedOpeningsParseAndFollowConvention` is the permanent lint; `/playbook-create`
+enforces the convention on user-authored books; the sibling `arbiter-playbooks/` directory is
+a mirror of the embedded openings, no longer the delivery channel.
+
 ---
 
 *Template for new entries:*

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -215,7 +216,7 @@ func runTool(parent context.Context, root string, spec ResultSpec) (Result, erro
 
 	cmd := exec.CommandContext(ctx, cfg.Command, cfg.Args...)
 	cmd.Dir = root
-	cmd.Env = append(os.Environ(), cfg.envList()...)
+	cmd.Env = mergeEnv(os.Environ(), cfg.Env)
 	client := mcp.NewClient(&mcp.Implementation{Name: "arbiter-verify", Version: "v1"}, nil)
 	session, err := client.Connect(ctx, &mcp.CommandTransport{Command: cmd}, nil)
 	result := Result{Spec: spec}
@@ -248,7 +249,10 @@ func runTool(parent context.Context, root string, spec ResultSpec) (Result, erro
 			result.DurationMS = int(time.Since(start).Milliseconds())
 			return result, nil
 		}
-		verdict, report := CompareMCP(expect, payload)
+		clausesOK, report := CompareMCP(expect, payload)
+		// isError 门控(fail-closed):出错的调用不能满足任何期望,纵使
+		// structuredContent 字段恰好匹配;子句仍逐条评估供复盘。
+		verdict := clausesOK && !call.IsError
 		result.Verdict = &verdict
 		result.ExpectReport = report
 	}
@@ -417,10 +421,29 @@ type serverConfig struct {
 	Env     map[string]string `json:"env"`
 }
 
-func (s serverConfig) envList() []string {
-	out := make([]string, 0, len(s.Env))
-	for k, v := range s.Env {
-		out = append(out, k+"="+v)
+// mergeEnv 以条目 env 覆盖继承环境:glibc getenv 取首个匹配,简单 append
+// 会让继承值遮蔽条目值(如 embedded 引擎条目的 PYTHONPATH)。
+func mergeEnv(base []string, override map[string]string) []string {
+	if len(override) == 0 {
+		return base
+	}
+	out := make([]string, 0, len(base)+len(override))
+	for _, kv := range base {
+		key, _, ok := strings.Cut(kv, "=")
+		if ok {
+			if _, shadowed := override[key]; shadowed {
+				continue
+			}
+		}
+		out = append(out, kv)
+	}
+	keys := make([]string, 0, len(override))
+	for k := range override {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		out = append(out, k+"="+override[k])
 	}
 	return out
 }
@@ -501,16 +524,21 @@ func contentText(result *mcp.CallToolResult) string {
 	return string(data)
 }
 
+// mcpPayload 把响应的 structuredContent 归一为 JSON 形(map/slice/标量):
+// expect 路径以 structuredContent 为根(ADR-0006/0010 —— 裁决只读外部工具
+// 的类型化结构字段,信封与文本摘要不可寻址;isError 由调用方门控)。
 func mcpPayload(result *mcp.CallToolResult) (any, error) {
-	data, err := json.Marshal(result)
+	if result.StructuredContent == nil {
+		return nil, nil
+	}
+	data, err := json.Marshal(result.StructuredContent)
 	if err != nil {
 		return nil, err
 	}
-	var payload map[string]any
+	var payload any
 	if err := json.Unmarshal(data, &payload); err != nil {
 		return nil, err
 	}
-	payload["isError"] = result.IsError
 	return payload, nil
 }
 
