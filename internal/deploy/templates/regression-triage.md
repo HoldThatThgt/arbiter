@@ -2,6 +2,7 @@
 name: regression-triage
 description: Opening for reducing a fresh regression to a failing test and a verified fix path.
 max_steps: 64
+verify_policy: named
 ---
 
 [Verify] gear-up-published
@@ -20,9 +21,7 @@ tests: ["*"]
 expect: {"overall":"passed","max_failed":0}
 
 [SetGoal]
-run: primary
-tests: ["*"]
-expect: {"overall":"passed","max_failed":0}
+verify: suite-green
 
 [STEP] gear-up
 [StepJob]

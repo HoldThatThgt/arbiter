@@ -61,6 +61,8 @@ func TestValidateClosedSets(t *testing.T) {
 		{"fact unknown expect key", ResultSpec{Kind: "fact", Query: "q", Expect: mustRaw(t, `{"junk":true}`)}},
 		{"fact expect empty", ResultSpec{Kind: "fact", Query: "q", Expect: mustRaw(t, `{}`)}},
 		{"fact negative min", ResultSpec{Kind: "fact", Query: "q", Expect: mustRaw(t, `{"min_results":-1}`)}},
+		{"verify reference with inline kind", ResultSpec{Verify: "suite-green", Kind: "shell", Command: "true"}},
+		{"verify reference with inline run", ResultSpec{Verify: "suite-green", Kind: "run", Recipe: "unit", Tests: []string{"t"}, Expect: mustRaw(t, `{"overall":"passed"}`)}},
 		{"shell with recipe", ResultSpec{Kind: "shell", Command: "true", Recipe: "r"}},
 		{"shell with query", ResultSpec{Kind: "shell", Command: "true", Query: "q"}},
 		{"mcp with tests", ResultSpec{Kind: "mcp", Server: "s", Tool: "t", Tests: []string{"x"}}},

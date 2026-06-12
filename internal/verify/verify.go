@@ -83,6 +83,11 @@ func ExecuteWithMeta(ctx context.Context, root string, spec ResultSpec, meta map
 }
 
 func Validate(spec ResultSpec) error {
+	// 具名 [Verify] 引用必须先由 match 对照对局快照解析成 curated spec;
+	// 引用与内联谓词混搭到达这里即拒绝(深度防御,match 解析侧已先行拦截)。
+	if spec.Verify != "" && spec.Kind != "" {
+		return &SpecError{Code: playbook.CodeBadResult, Message: "verify reference cannot carry an inline predicate"}
+	}
 	switch spec.Kind {
 	case "run", "fact":
 		if err := validateTyped(spec); err != nil {

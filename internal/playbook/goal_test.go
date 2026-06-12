@@ -117,6 +117,89 @@ failure: only
 	}
 }
 
+func TestParseGoalVerifyAlias(t *testing.T) {
+	verifySection := `[Verify] suite-green
+run: unit
+tests: ["*"]
+expect: {"overall":"passed","max_failed":0}
+allow_overrides: ["tests"]
+`
+	goalSection := `[SetGoal]
+verify: suite-green
+`
+	step := `[STEP] only
+[StepJob]
+work
+[CheckList]
+- done
+[Branch]
+success: END
+failure: only
+`
+	orders := map[string]string{
+		"verify first": verifySection + "\n" + goalSection + "\n" + step,
+		"goal first":   goalSection + "\n" + verifySection + "\n" + step,
+	}
+	for name, body := range orders {
+		t.Run(name, func(t *testing.T) {
+			book, issues := ParseBytes("g.md", []byte("---\nname: n\ndescription: d\n---\n\n"+body))
+			if len(issues) != 0 {
+				t.Fatalf("issues = %#v", issues)
+			}
+			g := book.Goal
+			if g == nil || g.Kind != "run" || g.Recipe != "unit" {
+				t.Fatalf("goal = %#v", g)
+			}
+			if len(g.Tests) != 1 || g.Tests[0] != "*" {
+				t.Fatalf("goal tests = %#v", g.Tests)
+			}
+			if string(g.Expect) != `{"overall":"passed","max_failed":0}` {
+				t.Fatalf("goal expect = %s", g.Expect)
+			}
+			// 解析后的 goal 是纯内联谓词:引用与 curator 专属字段都已清除。
+			if g.Verify != "" || len(g.AllowOverrides) != 0 {
+				t.Fatalf("goal not fully resolved: %#v", g)
+			}
+			// 深拷贝:goal 与具名谓词不共享底层存储。
+			g.Tests[0] = "mutated"
+			if book.Verify["suite-green"].Tests[0] != "*" {
+				t.Fatalf("goal aliases named spec storage: %#v", book.Verify["suite-green"])
+			}
+		})
+	}
+}
+
+func TestParseGoalVerifyAliasIssues(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"unknown name", "[SetGoal]\nverify: missing\n"},
+		{"verify then inline", "[SetGoal]\nverify: pass\nshell: exit 0\n"},
+		{"inline then verify", "[SetGoal]\nshell: exit 0\nverify: pass\n"},
+		{"verify with timeout", "[SetGoal]\nverify: pass\ntimeout_s: 30\n"},
+		{"invalid reference", "[SetGoal]\nverify: bad/name\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := "---\nname: n\ndescription: d\n---\n\n[Verify] pass\nshell: exit 0\n\n" + tc.body + `
+[STEP] only
+[StepJob]
+work
+[CheckList]
+- done
+[Branch]
+success: END
+failure: only
+`
+			_, issues := ParseBytes("g.md", []byte(body))
+			if !hasIssueCode(issues, IssueBadGoal) {
+				t.Fatalf("issues = %#v, want %s", issues, IssueBadGoal)
+			}
+		})
+	}
+}
+
 func hasIssueCode(issues []Issue, code string) bool {
 	for _, issue := range issues {
 		if issue.Code == code {

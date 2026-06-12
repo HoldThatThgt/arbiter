@@ -343,6 +343,238 @@ func TestScanDirNameConflict(t *testing.T) {
 	}
 }
 
+const oneStepTail = `[STEP] a
+[StepJob]
+job
+[CheckList]
+- item
+[Branch]
+success: END
+failure: END
+`
+
+func TestParseVerifyPolicy(t *testing.T) {
+	verifySection := "[Verify] pass\nshell: exit 0\n\n"
+	cases := []struct {
+		name      string
+		policy    string
+		verify    bool
+		wantBook  string
+		wantIssue string
+	}{
+		{name: "default open", policy: "", verify: true, wantBook: ""},
+		{name: "explicit open", policy: "verify_policy: open\n", verify: true, wantBook: "open"},
+		{name: "named", policy: "verify_policy: named\n", verify: true, wantBook: "named"},
+		{name: "invalid value", policy: "verify_policy: closed\n", verify: true, wantIssue: IssueBadFrontmatter},
+		{name: "named without verify", policy: "verify_policy: named\n", verify: false, wantIssue: IssueBadFrontmatter},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := "---\nname: n\ndescription: d\n" + tc.policy + "---\n\n"
+			if tc.verify {
+				body += verifySection
+			}
+			body += oneStepTail
+			book, issues := ParseBytes("p.md", []byte(body))
+			if tc.wantIssue != "" {
+				if !hasIssue(issues, tc.wantIssue) {
+					t.Fatalf("issues = %#v, want %s", issues, tc.wantIssue)
+				}
+				return
+			}
+			if len(issues) != 0 {
+				t.Fatalf("issues = %#v", issues)
+			}
+			if book.VerifyPolicy != tc.wantBook {
+				t.Fatalf("verify_policy = %q, want %q", book.VerifyPolicy, tc.wantBook)
+			}
+		})
+	}
+}
+
+func TestParseAllowOverrides(t *testing.T) {
+	body := "---\nname: n\ndescription: d\n---\n\n" +
+		"[Verify] suite\nrun: unit\ntests: [\"*\"]\nexpect: {\"overall\":\"passed\"}\nallow_overrides: [\"tests\", \"options\"]\n\n" +
+		oneStepTail
+	book, issues := ParseBytes("a.md", []byte(body))
+	if len(issues) != 0 {
+		t.Fatalf("issues = %#v", issues)
+	}
+	if got := strings.Join(book.Verify["suite"].AllowOverrides, ","); got != "tests,options" {
+		t.Fatalf("allow_overrides = %#v", book.Verify["suite"].AllowOverrides)
+	}
+}
+
+func TestParseAllowOverridesIssues(t *testing.T) {
+	runHead := "[Verify] suite\nrun: unit\ntests: [\"*\"]\nexpect: {\"overall\":\"passed\"}\n"
+	cases := []struct {
+		name string
+		body string
+		code string
+	}{
+		{"illegal value", runHead + "allow_overrides: [\"expect\"]\n", IssueBadVerify},
+		{"not json", runHead + "allow_overrides: tests\n", IssueBadVerify},
+		{"duplicate entry", runHead + "allow_overrides: [\"tests\", \"tests\"]\n", IssueBadVerify},
+		{"non-run kind", "[Verify] sh\nshell: exit 0\nallow_overrides: [\"tests\"]\n", IssueBadVerify},
+		{"in setgoal", "[SetGoal]\nshell: exit 0\nallow_overrides: [\"tests\"]\n", IssueBadGoal},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := "---\nname: n\ndescription: d\n---\n\n" + tc.body + "\n" + oneStepTail
+			_, issues := ParseBytes("a.md", []byte(body))
+			if !hasIssue(issues, tc.code) {
+				t.Fatalf("issues = %#v, want %s", issues, tc.code)
+			}
+		})
+	}
+}
+
+func TestParseVerifyCannotReferenceVerify(t *testing.T) {
+	body := "---\nname: n\ndescription: d\n---\n\n" +
+		"[Verify] one\nshell: exit 0\n\n[Verify] two\nverify: one\n\n" + oneStepTail
+	_, issues := ParseBytes("v.md", []byte(body))
+	if !hasIssue(issues, IssueBadVerify) {
+		t.Fatalf("issues = %#v, want %s", issues, IssueBadVerify)
+	}
+	found := false
+	for _, issue := range issues {
+		if strings.Contains(issue.Detail, "verify cannot reference verify") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("issues = %#v, want detail naming the rule", issues)
+	}
+}
+
+func TestParseFullLineComments(t *testing.T) {
+	body := "---\nname: n\ndescription: d\n---\n\n" +
+		"[Verify] pass\n# leading comment\nshell: exit 0\n  # indented comment\ntimeout_s: 30\n\n" +
+		"[SetGoal]\n# goal comment\nfact: symbol:Foo\nexpect: {\"min_results\":1}\n\n" +
+		oneStepTail
+	book, issues := ParseBytes("c.md", []byte(body))
+	if len(issues) != 0 {
+		t.Fatalf("issues = %#v", issues)
+	}
+	spec := book.Verify["pass"]
+	if spec.Kind != "shell" || spec.Command != "exit 0" || spec.TimeoutS != 30 {
+		t.Fatalf("verify spec = %#v", spec)
+	}
+	if book.Goal == nil || book.Goal.Kind != "fact" || book.Goal.Query != "symbol:Foo" {
+		t.Fatalf("goal = %#v", book.Goal)
+	}
+}
+
+func TestParseRunRecipeCharset(t *testing.T) {
+	const hint = "inline '#' comments are not supported"
+	bad := []struct {
+		name   string
+		recipe string
+		hinted bool
+	}{
+		{"inline comment", "unit # prod", true},
+		{"path escape", "../evil", false},
+		{"dotdot", "a..b", false},
+		{"leading dot", ".hidden", false},
+		{"slash", "dir/unit", false},
+	}
+	for _, tc := range bad {
+		t.Run(tc.name, func(t *testing.T) {
+			body := "---\nname: n\ndescription: d\n---\n\n" +
+				"[Verify] r\nrun: " + tc.recipe + "\ntests: [\"*\"]\nexpect: {\"overall\":\"passed\"}\n\n" + oneStepTail
+			_, issues := ParseBytes("r.md", []byte(body))
+			if !hasIssue(issues, IssueBadVerify) {
+				t.Fatalf("issues = %#v, want %s", issues, IssueBadVerify)
+			}
+			detail := ""
+			for _, issue := range issues {
+				if issue.Code == IssueBadVerify && strings.Contains(issue.Detail, "[A-Za-z0-9_-][A-Za-z0-9._-]*") {
+					detail = issue.Detail
+				}
+			}
+			if detail == "" {
+				t.Fatalf("issues = %#v, want charset named", issues)
+			}
+			if strings.Contains(detail, hint) != tc.hinted {
+				t.Fatalf("detail = %q, hint expected=%t", detail, tc.hinted)
+			}
+		})
+	}
+	good := "---\nname: n\ndescription: d\n---\n\n" +
+		"[Verify] r\nrun: unit-v2.1_x\ntests: [\"*\"]\nexpect: {\"overall\":\"passed\"}\n\n" + oneStepTail
+	if _, issues := ParseBytes("r.md", []byte(good)); len(issues) != 0 {
+		t.Fatalf("good recipe id issues = %#v", issues)
+	}
+}
+
+func TestParseFactCommentTerm(t *testing.T) {
+	body := "---\nname: n\ndescription: d\n---\n\n" +
+		"[Verify] f\nfact: symbol:foo # bar\nexpect: {\"min_results\":1}\n\n" + oneStepTail
+	_, issues := ParseBytes("f.md", []byte(body))
+	if !hasIssue(issues, IssueBadVerify) {
+		t.Fatalf("issues = %#v, want %s", issues, IssueBadVerify)
+	}
+	found := false
+	for _, issue := range issues {
+		if strings.Contains(issue.Detail, "fact query term '#' cannot match any symbol") &&
+			strings.Contains(issue.Detail, "inline '#' comments are not supported") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("issues = %#v, want term rejection with hint", issues)
+	}
+
+	// 词中混入 # 的病态查询仍然合法:按语法拒绝,不做启发式猜测。
+	embedded := "---\nname: n\ndescription: d\n---\n\n" +
+		"[Verify] f\nfact: path:a#b\nexpect: {\"min_results\":1}\n\n" + oneStepTail
+	if _, issues := ParseBytes("f.md", []byte(embedded)); len(issues) != 0 {
+		t.Fatalf("embedded # issues = %#v", issues)
+	}
+}
+
+func TestParseCommentHints(t *testing.T) {
+	const hint = "inline '#' comments are not supported (use full-line comments)"
+	cases := []struct {
+		name string
+		line string
+	}{
+		{"expect", "fact: q\nexpect: {\"min_results\":1} # note"},
+		{"arguments", "mcp: s t\narguments: {} # note"},
+		{"tests", "run: unit\ntests: [\"*\"] # note\nexpect: {\"overall\":\"passed\"}"},
+		{"options", "run: unit\ntests: [\"*\"]\nexpect: {\"overall\":\"passed\"}\noptions: {} # note"},
+		{"timeout_s", "shell: exit 0\ntimeout_s: 30 # note"},
+		{"output_lines", "shell: exit 0\noutput_lines: 10 # note"},
+		{"mcp", "mcp: s t # note"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := "---\nname: n\ndescription: d\n---\n\n[Verify] v\n" + tc.line + "\n\n" + oneStepTail
+			_, issues := ParseBytes("h.md", []byte(body))
+			found := false
+			for _, issue := range issues {
+				if issue.Code == IssueBadVerify && strings.HasSuffix(issue.Detail, hint) {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("issues = %#v, want %s detail ending with hint", issues, IssueBadVerify)
+			}
+		})
+	}
+	// 不含 # 的同类失败不携带提示。
+	body := "---\nname: n\ndescription: d\n---\n\n[Verify] v\nshell: exit 0\ntimeout_s: bogus\n\n" + oneStepTail
+	_, issues := ParseBytes("h.md", []byte(body))
+	for _, issue := range issues {
+		if strings.Contains(issue.Detail, "inline '#'") {
+			t.Fatalf("unexpected hint without '#': %#v", issues)
+		}
+	}
+	if !hasIssue(issues, IssueBadVerify) {
+		t.Fatalf("issues = %#v", issues)
+	}
+}
+
 func hasIssue(issues []Issue, code string) bool {
 	for _, issue := range issues {
 		if issue.Code == code {
