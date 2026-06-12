@@ -392,6 +392,45 @@ func TestParseVerifyPolicy(t *testing.T) {
 	}
 }
 
+func TestParseStepSubmit(t *testing.T) {
+	head := "---\nname: n\ndescription: d\n---\n\n[Verify] pass\nshell: exit 0\n\n"
+	step := func(submit string) string {
+		s := "[STEP] a\n[StepJob]\njob\n[CheckList]\n- item\n"
+		if submit != "" {
+			s += submit + "\n"
+		}
+		return s + "[Branch]\nsuccess: END\nfailure: END\n"
+	}
+
+	// 绑定到已存在的 [Verify]:Step.Submit 落位,无 issue。
+	book, issues := ParseBytes("p.md", []byte(head+step("[Submit] pass")))
+	if len(issues) != 0 {
+		t.Fatalf("valid [Submit] issues = %#v", issues)
+	}
+	if book.Steps["a"].Submit != "pass" {
+		t.Fatalf("Submit = %q, want pass", book.Steps["a"].Submit)
+	}
+
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"unknown verify", head + step("[Submit] nope"), IssueBadSubmit},
+		{"invalid name", head + step("[Submit] not a name"), IssueBadSubmit},
+		{"duplicate", head + step("[Submit] pass\n[Submit] pass"), IssueBadSubmit},
+		{"outside a step", "---\nname: n\ndescription: d\n---\n\n[Submit] pass\n\n" + step(""), IssueStrayContent},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, issues := ParseBytes("p.md", []byte(tc.body))
+			if !hasIssue(issues, tc.want) {
+				t.Fatalf("issues = %#v, want %s", issues, tc.want)
+			}
+		})
+	}
+}
+
 func TestParseAllowOverrides(t *testing.T) {
 	body := "---\nname: n\ndescription: d\n---\n\n" +
 		"[Verify] suite\nrun: unit\ntests: [\"*\"]\nexpect: {\"overall\":\"passed\"}\nallow_overrides: [\"tests\", \"options\"]\n\n" +

@@ -22,6 +22,7 @@ const (
 	tokenBranch    = "[Branch]"
 	tokenSetGoal   = "[SetGoal]"
 	tokenVerify    = "[Verify]"
+	tokenSubmit    = "[Submit]"
 	tokenGotcha    = "[Gotcha]"
 	tokenListItem  = "-"
 
@@ -191,6 +192,26 @@ func ParseBytes(file string, data []byte) (Playbook, []Issue) {
 				verifySpec = &ResultSpec{}
 				verifyKeys = map[string]bool{}
 				section = sectionVerify
+				continue
+			case tokenSubmit:
+				// [Submit] <verify-name>:单行指令(名字在同行),无后续内容节。
+				// 必须在步骤内;名字须是合法标识;每步最多一条。指向的 [Verify]
+				// 是否存在留到 validate() 末尾统一校验(与分支目标一样,允许前向引用)。
+				name := strings.TrimSpace(rest)
+				if current == nil {
+					parseIssues = append(parseIssues, Issue{File: file, Line: lineNo, Code: IssueStrayContent, Detail: tokenSubmit})
+					continue
+				}
+				if !validIdentifier(name) {
+					parseIssues = append(parseIssues, Issue{File: file, Line: lineNo, Code: IssueBadSubmit, Detail: "invalid submit name"})
+					continue
+				}
+				if current.step.Submit != "" {
+					parseIssues = append(parseIssues, Issue{File: file, Line: lineNo, Code: IssueBadSubmit, Detail: "duplicate [Submit] in step " + current.step.ID})
+					continue
+				}
+				current.step.Submit = name
+				section = sectionNone
 				continue
 			case tokenStepJob, tokenCheckList, tokenBranch, tokenGotcha:
 				if current == nil || strings.TrimSpace(rest) != "" {
@@ -654,6 +675,11 @@ func validate(file string, book Playbook) []Issue {
 			}
 			if _, ok := book.Steps[target]; !ok {
 				issues = append(issues, Issue{File: file, Code: IssueUnknownBranchTarget, Detail: target})
+			}
+		}
+		if step.Submit != "" {
+			if _, ok := book.Verify[step.Submit]; !ok {
+				issues = append(issues, Issue{File: file, Code: IssueBadSubmit, Detail: "[Submit] " + step.Submit + " names no [Verify] predicate"})
 			}
 		}
 	}
