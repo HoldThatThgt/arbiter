@@ -142,7 +142,7 @@ func TestBaseOpeningTemplatesParse(t *testing.T) {
 		t.Fatalf("regression-triage issues = %#v", issues)
 	}
 	goal := book.Goal
-	if goal == nil || goal.Kind != "run" || goal.Recipe != "primary" {
+	if goal == nil || goal.Kind != "run" || goal.Recipe != "src_compile" {
 		t.Fatalf("regression-triage goal = %#v", goal)
 	}
 	if string(goal.Expect) != string(book.Verify["suite-green"].Expect) {

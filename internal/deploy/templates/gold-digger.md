@@ -11,17 +11,17 @@ tests: ["src_compile"]
 expect: {"overall":"passed","facts":{"published":true}}
 
 [Verify] repro-fails
-run: primary
+run: src_compile
 tests: ["Bug.Repro"]
 expect: {"overall":"failed","test":{"name":"Bug.Repro","result":"failed"}}
 
 [Verify] repro-passes
-run: primary
+run: src_compile
 tests: ["Bug.Repro"]
 expect: {"overall":"passed","max_failed":0}
 
 [SetGoal]
-run: primary
+run: src_compile
 tests: ["*"]
 expect: {"overall":"passed","max_failed":0}
 

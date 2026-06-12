@@ -6,13 +6,13 @@ verify_policy: named
 ---
 
 [Verify] repro-runs-red
-run: primary
+run: src_compile
 tests: ["*"]
 expect: {"overall":"failed"}
 allow_overrides: ["tests"]
 
 [Verify] suite-green
-run: primary
+run: src_compile
 tests: ["*"]
 expect: {"overall":"passed","max_failed":0}
 

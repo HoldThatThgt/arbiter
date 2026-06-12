@@ -11,12 +11,12 @@ tests: ["src_compile"]
 expect: {"overall":"passed","facts":{"published":true}}
 
 [Verify] regression-reproduced
-run: primary
+run: src_compile
 tests: ["Regression.*"]
 expect: {"overall":"failed","min_passed":0}
 
 [Verify] suite-green
-run: primary
+run: src_compile
 tests: ["*"]
 expect: {"overall":"passed","max_failed":0}
 

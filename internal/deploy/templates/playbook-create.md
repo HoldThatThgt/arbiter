@@ -55,12 +55,12 @@ tests: ["src_compile"]
 expect: {"overall":"passed","facts":{"published":true}}
 
 [Verify] primary-proof
-run: primary
+run: src_compile
 tests: ["PrimarySuite.*"]
 expect: {"overall":"passed"}
 
 [SetGoal]
-run: primary
+run: src_compile
 tests: ["PrimarySuite.*"]
 expect: {"overall":"passed"}
 
