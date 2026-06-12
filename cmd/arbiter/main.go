@@ -151,11 +151,8 @@ func run() error {
 				return nil
 			}
 			transcript := match.ResolveSubagentTranscript(input.TranscriptPath, input.AgentID)
-			ids := match.ExtractDispatchTaskIDs(transcript)
-			if len(ids) == 0 {
-				return nil
-			}
-			decision, err := match.New(root, "hook").SubagentStopGate(ids)
+			submitted := match.SubagentSubmitted(transcript)
+			decision, err := match.New(root, "hook").SubagentStopGate(submitted)
 			if err != nil {
 				return err // 非零退出但无 block 决策:门控故障放行(fail-open),错误进 stderr
 			}

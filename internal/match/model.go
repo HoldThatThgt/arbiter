@@ -38,9 +38,9 @@ type Match struct {
 	TaskSeq      int                          `json:"task_seq"`
 	RoundSeq     int                          `json:"round_seq"`
 	StopBlocks   int                          `json:"stop_blocks"` // 本回合内被拦截的停止次数,进入新回合清零
-	// SubagentBlocks 按 task 记录子代理停止被拦截的次数(SubagentStop 门控)。
-	// 旧 state.json 缺省 → nil,行为等同从零计数。
-	SubagentBlocks map[string]int `json:"subagent_blocks,omitempty"`
+	// SubagentBlocks 记录本回合内子代理停止被拦截的次数(SubagentStop 门控),
+	// 进入新回合清零;旧 state.json 缺省 → 0。
+	SubagentBlocks int `json:"subagent_blocks,omitempty"`
 	// FrozenTests 是 RegisterTest 冻结的测试文件:仓根相对路径 → 内容 sha256。
 	// 一经登记不可改写(append-only,改哈希即拒)。任何谓词裁决前重算哈希,
 	// 不符即判负 —— 这是"测试一经注册无人可改"的检测层,不依赖列举所有改写

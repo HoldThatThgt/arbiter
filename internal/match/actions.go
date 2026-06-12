@@ -495,6 +495,7 @@ func (s *Store) settle(m *Match, v roundVerdict, checkmate bool, goal *GoalRepor
 	}
 	m.RoundSeq = nextSeq
 	m.StopBlocks = 0
+	m.SubagentBlocks = 0
 	m.Current = &Round{Seq: nextSeq, StepID: v.target, EnteredAt: utcNow()}
 	s.append("round_entered", map[string]any{"match_id": m.ID, "round": nextSeq, "step": v.target})
 	out.NextStep = v.target

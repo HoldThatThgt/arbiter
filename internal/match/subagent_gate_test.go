@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/HoldThatThgt/arbiter/internal/playbook"
@@ -15,47 +14,49 @@ func TestSubagentStopGate(t *testing.T) {
 	root := repoWithBook(t, "flow.md", twoStepBook)
 	store := New(root, "test")
 
-	// 无对局:放行
-	if d, err := store.SubagentStopGate([]string{"T1"}); err != nil || !d.Allow {
+	// 无对局:放行(无论是否提交)。
+	if d, err := store.SubagentStopGate(false); err != nil || !d.Allow {
 		t.Fatalf("idle gate = %#v err=%v", d, err)
 	}
 	if _, err := store.LoadPlayBook("flow"); err != nil {
 		t.Fatal(err)
 	}
-
 	task, err := store.CreateTask("do the thing")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// open task → 拒绝,reason 点名 task id
-	d, err := store.SubagentStopGate([]string{task.TaskID})
-	if err != nil || d.Allow || !strings.Contains(d.Reason, task.TaskID) {
-		t.Fatalf("open gate = %#v err=%v", d, err)
+
+	// 提交过 → 放行,即便仍有 open 任务。
+	if d, err := store.SubagentStopGate(true); err != nil || !d.Allow {
+		t.Fatalf("submitted gate = %#v err=%v", d, err)
 	}
-	// 不在局的 id / 空候选:放行
-	if d, err := store.SubagentStopGate([]string{"T999"}); err != nil || !d.Allow {
-		t.Fatalf("unknown-id gate = %#v err=%v", d, err)
+	// 未提交且当前回合有 open 任务 → 拒绝。
+	d, err := store.SubagentStopGate(false)
+	if err != nil || d.Allow || d.Reason == "" {
+		t.Fatalf("open-unsubmitted gate = %#v err=%v", d, err)
 	}
-	if d, err := store.SubagentStopGate(nil); err != nil || !d.Allow {
-		t.Fatalf("no-id gate = %#v err=%v", d, err)
-	}
-	// 已交 → 放行
+	// 提交后无 open 任务 → 放行。
 	if _, err := store.SubmitTask(context.Background(), task.TaskID, "ok", "ok", verify.ResultSpec{Kind: "shell", Command: "exit 0"}); err != nil {
 		t.Fatal(err)
 	}
-	if d, err := store.SubagentStopGate([]string{task.TaskID}); err != nil || !d.Allow {
-		t.Fatalf("submitted gate = %#v err=%v", d, err)
+	if d, err := store.SubagentStopGate(false); err != nil || !d.Allow {
+		t.Fatalf("no-open gate = %#v err=%v", d, err)
 	}
+}
 
-	// 连续拦截到上限 → 放行,但对局不被中止(区别于 StopGate 的 abort)
-	task2, err := store.CreateTask("again")
-	if err != nil {
+// 连续拦截到上限 → 放行,对局不被中止(用独立 store,使计数从零起)。
+func TestSubagentStopGateCap(t *testing.T) {
+	root := repoWithBook(t, "flow.md", twoStepBook)
+	store := New(root, "test")
+	if _, err := store.LoadPlayBook("flow"); err != nil {
 		t.Fatal(err)
 	}
-	allowed := false
-	blocks := 0
+	if _, err := store.CreateTask("open work"); err != nil {
+		t.Fatal(err)
+	}
+	allowed, blocks := false, 0
 	for i := 0; i < playbook.SubagentBlockCap+2; i++ {
-		d, err := store.SubagentStopGate([]string{task2.TaskID})
+		d, err := store.SubagentStopGate(false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -66,57 +67,48 @@ func TestSubagentStopGate(t *testing.T) {
 		blocks++
 	}
 	if !allowed || blocks != playbook.SubagentBlockCap {
-		t.Fatalf("cap: allowed=%t blocks=%d", allowed, blocks)
+		t.Fatalf("cap: allowed=%t blocks=%d, want %d blocks then allow", allowed, blocks, playbook.SubagentBlockCap)
 	}
-	show, err := store.ShowStepJob()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if show.Status != StatusActive {
-		t.Fatalf("match status after cap = %q, want active", show.Status)
+	if show, err := store.ShowStepJob(); err != nil || show.Status != StatusActive {
+		t.Fatalf("match status after cap = %#v err=%v, want active", show, err)
 	}
 }
 
-func TestExtractDispatchTaskIDs(t *testing.T) {
+func TestSubagentSubmitted(t *testing.T) {
 	write := func(lines ...string) string {
 		t.Helper()
 		path := filepath.Join(t.TempDir(), "agent.jsonl")
-		if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		body := ""
+		for _, l := range lines {
+			body += l + "\n"
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		return path
 	}
-	userStr := func(text string) string {
-		return `{"type":"user","message":{"role":"user","content":` + jsonString(t, text) + `}}`
+	toolUse := func(name string) string {
+		return `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"` + name + `","id":"x"}]}}`
 	}
 
-	// 规程标注行(含非 T<n> 形态的 id)
-	got := ExtractDispatchTaskIDs(write(userStr("task id: fix-42\ntask: do X\nfinish: SubmitTask")))
-	if len(got) != 1 || got[0] != "fix-42" {
-		t.Fatalf("labeled = %#v", got)
+	// 真有一次 SubmitTask 工具调用 → true。
+	if !SubagentSubmitted(write(toolUse("mcp__arbiter-executor__ReviewTask"), toolUse(submitTaskToolName))) {
+		t.Fatal("SubmitTask tool_use not detected")
 	}
-	// 自由转述 + 去重保序("dispatched for task T2"——GLM 实测形态)
-	got = ExtractDispatchTaskIDs(write(userStr("You are an arbiter-executor dispatched for task T2. Cross-check T2 then T10.")))
-	if len(got) != 2 || got[0] != "T2" || got[1] != "T10" {
-		t.Fatalf("freestyle = %#v", got)
+	// 只调用了别的工具 → false(没提交)。
+	if SubagentSubmitted(write(toolUse("mcp__arbiter-executor__ReviewTask"), toolUse("Read"))) {
+		t.Fatal("non-submit transcript reported as submitted")
 	}
-	// content-block 数组形态
-	got = ExtractDispatchTaskIDs(write(`{"type":"user","message":{"role":"user","content":[{"type":"text","text":"task id: T3"}]}}`))
-	if len(got) != 1 || got[0] != "T3" {
-		t.Fatalf("blocks = %#v", got)
+	// 文本里提到 SubmitTask 但没有结构化工具调用 → false(不靠字符匹配)。
+	if SubagentSubmitted(write(`{"type":"assistant","message":{"content":[{"type":"text","text":"I will call SubmitTask now"}]}}`)) {
+		t.Fatal("prose mention of SubmitTask must not count as a call")
 	}
-	// 只看首条用户消息:它没有 id 就不看后面的回显
-	got = ExtractDispatchTaskIDs(write(
-		`{"type":"queue","queue":1}`,
-		userStr("no ids in the dispatch prompt"),
-		userStr("task id: T9"),
-	))
-	if got != nil {
-		t.Fatalf("first-message-only = %#v", got)
+	// 文件缺失 → false。
+	if SubagentSubmitted(filepath.Join(t.TempDir(), "missing.jsonl")) {
+		t.Fatal("missing transcript reported as submitted")
 	}
-	// 文件不存在 → fail-open
-	if got := ExtractDispatchTaskIDs(filepath.Join(t.TempDir(), "missing.jsonl")); got != nil {
-		t.Fatalf("missing file = %#v", got)
+	if SubagentSubmitted("") {
+		t.Fatal("empty path reported as submitted")
 	}
 }
 
@@ -134,7 +126,6 @@ func TestResolveSubagentTranscript(t *testing.T) {
 	if got := ResolveSubagentTranscript(main, "a1b2"); got != derived {
 		t.Fatalf("derived = %q, want %q", got, derived)
 	}
-	// 推导文件不存在 / agent id 缺失 → 原路径
 	if got := ResolveSubagentTranscript(main, "missing"); got != main {
 		t.Fatalf("fallback = %q", got)
 	}
@@ -144,24 +135,4 @@ func TestResolveSubagentTranscript(t *testing.T) {
 	if got := ResolveSubagentTranscript("", "a1b2"); got != "" {
 		t.Fatalf("empty path = %q", got)
 	}
-}
-
-func jsonString(t *testing.T, s string) string {
-	t.Helper()
-	b := strings.Builder{}
-	b.WriteByte('"')
-	for _, r := range s {
-		switch r {
-		case '"':
-			b.WriteString(`\"`)
-		case '\\':
-			b.WriteString(`\\`)
-		case '\n':
-			b.WriteString(`\n`)
-		default:
-			b.WriteRune(r)
-		}
-	}
-	b.WriteByte('"')
-	return b.String()
 }
