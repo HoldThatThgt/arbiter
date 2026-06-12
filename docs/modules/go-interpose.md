@@ -38,6 +38,14 @@ Exit code, stdout, stderr of the real compiler pass through bit-exact. No networ
 dependency, no Python. Startup budget: ≤3ms p95 on darwin/linux dev machines (measured in CI by
 a 1000-invocation benchmark against `true`).
 
+**Build-compiler-agnostic (the two-toolchain contract, engine-facts.md):** `<real-compiler>`
+is the repo's own toolchain — gcc/g++ of any version, clang, icc, a cross compiler — and the
+shim only journals and execs it; it never substitutes another compiler, injects flags, or
+imposes a version requirement. Extraction's own Clang/libclang requirement (LLVM ≥ 16) is a
+*downstream* concern of the journal consumer: a host without it loses facts publication
+(`facts:{published:false}` fails the gear-up predicate closed) while the build itself remains
+untouched and green.
+
 ## Tests (the adversarial matrix is a merge gate — lands BEFORE the happy path)
 Response files; multi-arch flag soup; `-MD/-MF` depfiles passthrough; stacked ccache; self-wrap
 collapse; `make -j16` journal-integrity (no torn lines, no lost records vs a reference strace

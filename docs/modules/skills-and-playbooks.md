@@ -32,22 +32,48 @@ openings, never runtime content.
    src_compile predicate with `facts:{published:true}`), and encourages `[Verify]` named
    predicates + a run-kind or fact-kind `[SetGoal]`.
 
-## Base openings (shipped by intro; committed)
-- **freeplay** — the generic loop: gear-up → orient (fact queries proportional to request
-  scope) → plan (CreateTask per work item, fact_refs attached) → execute/verify → learn.
-  `[SetGoal]` defaults to the repo's primary suite recipe once one is proven.
-- **gold-digger** (rewrite of the legacy playbook) — bug hunt on typed predicates: repro task
-  (`expect:{overall:"failed", test:{name,result:"failed"}}` — proving the bug exists), fix
-  steps with `[Verify] repro-passes` + fact predicates (e.g. `writers:` bounds), goal = suite
-  green. The false-checkmate regression test mirrors this opening.
-- **recipe-derivation** — the capability-gated (`capabilities:[recipes]`) opening intro uses;
-  also runnable later for new targets.
+## Starter openings (ADR-0012; embedded in the binary, written by `arbiter init` write-if-missing)
+Repo-agnostic, referee-native, convention-linted in CI:
+- **fix-reported-bug** — known misbehavior: deterministic repro contract (5x all-fail shell
+  predicate), GDB crash signature, fix accepted only via `git diff --quiet` repro-untouched +
+  5x green + suite green in ONE predicate, triage classifies by signature.
+- **hunt-latent-bugs** — unknown defects: ONE falsifiable hypothesis per round, SYMPTOM-test
+  polarity (test passes iff bug exists ⇒ `<build> && <run>` exit 0 == bug machine-proven),
+  watchpoint strengthening, reachability qualification, anti-loop history discipline.
+- **build-feature** — scenario-first TDD: `build && ! run` proves red-for-the-right-reason,
+  user approval gates, test untouchability as a predicate clause at every later step.
+- **fix-slow-path** — measured perf: expect-clause `perf.measure_command` predicates, double
+  baseline defines the noise band, one bounded change per round, gain must beat the band.
+
+## Intro-authored openings (M7; committed, repo-specific)
+- **freeplay** — the generic loop: gear-up → orient → plan → execute/verify → learn.
+- **gold-digger** (rewrite of the legacy playbook on run/fact predicates) — repro task
+  `expect:{overall:"failed", test:{name,result:"failed"}}`, `[Verify] repro-passes` + fact
+  predicates, goal = suite green. The false-checkmate regression test mirrors this opening.
+- **recipe-derivation** — the capability-gated (`capabilities:[recipes]`) opening intro uses.
 - (M8) **regression-triage** and knowledge/-derived openings.
 
-## Design rules for openings (binding for playbook-create output)
-Steps small and checkable; every step with externally-visible effect declares `[Verify]`;
-checklists are fact- or run-groundable wherever possible; gotchas are one-line, step-scoped,
-append-only; no prose that asks the model to self-assess success — that's the referee's job.
+## Naming & predicate conventions (ADR-0012; binding for every opening and playbook-create output)
+Name = user intent as an imperative phrase (verb-first kebab-case, ≤3 segments, file stem ==
+name). Description leads "Use when …" and cross-points "Do not use … (use <other>)" wherever
+intents are adjacent — dedup at curator-selection time. Steps state the EXACT result predicate
+(shell with explicit polarity, or mcp+`expect`); laws are machine checks inside predicates,
+never prose; checklists mechanically checkable; gotchas one-line, step-scoped, append-only; no
+prose asking the model to self-assess success — that's the referee's job.
+`TestEmbeddedOpeningsParseAndFollowConvention` (go-deploy) lints the shipped set.
+
+## Companion diagnostics in openings (ADR-0010)
+Openings may direct executors to the companion servers — bundled with arbiter-engine and wired
+by deploy whenever the engine resolves:
+**gdb-mcp** for crash/state evidence (run the repro under GDB, `gdb_snapshot` at the stop,
+watchpoints to catch the corrupting write) and **perf-mcp** for performance evidence
+(`perf.scan_c` findings, `perf.measure_command` before/after medians). Two rules hold:
+companion evidence is *diagnostic input* to hypotheses and reports, and whatever a step
+adjudicates on stays typed — mcp-kind predicates with `expect[]` clauses over the companions'
+`structuredContent` fields (e.g. `summary.all_successful`, `state`, `summary.finding_count`),
+never their text summaries. Steps phrase companion use conditionally ("when gdb-mcp is wired")
+so openings stay playable on hosts without the companions; the `arbiter-debugger` agent is the
+preferred dispatch target for these tasks when it exists.
 
 ## Tests
 Skill smoke tests are scenario-level (reviewer-held acceptance suite). In-repo: template lint

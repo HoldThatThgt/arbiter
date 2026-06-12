@@ -21,6 +21,26 @@ corpus. Only the owner-signed deltas below are permitted; everything else is a r
 - Failure policy: explicit failure over degradation; `clang_ast_failed` skip + record;
   `clang_ast_partial` on diagnostics-with-usable-AST; never a lightweight-parser fallback.
 
+## Toolchain — the two-toolchain isolation contract (inherited from cipher-2, restated)
+- **Extraction toolchain:** facts extraction requires an executable Clang **and** a
+  same-toolchain libclang, both passing the typed AST capability probe. Officially supported:
+  **LLVM Clang ≥ 16, Apple Clang ≥ 15**. libclang is located at runtime (clang_executable →
+  llvm-config → platform paths; explicit `libclang_library` is a last-resort escape hatch) and
+  a clang/libclang major-version mismatch is a typed failure (`libclang_version_mismatch`).
+- **Build toolchain: independent and untouched.** The target repo builds with whatever its
+  build system needs — gcc/g++ of any vintage is the *normal* case for the target DBMS class.
+  The AST path never requires GCC; arbiter never replaces, substitutes, or version-gates the
+  repo's compiler (the `arbiter cc` shim execs it bit-exact — go-interpose.md).
+- **The seam between them:** journaled/compile-db per-file argv from the build compiler is
+  **allowlist-cleaned before libclang ever sees it** — response files expanded, plugin/output/
+  link/non-allowlisted (incl. gcc-only) arguments dropped, relative include/sysroot paths
+  normalized against the entry `directory` — so a gcc-built TU set parses under extraction's
+  own Clang. Flag cleaning at this seam serves *parseability*; ADR-0005's codegen-flag
+  stripping serves *cache keying* — same mechanism, two distinct obligations.
+- Clang/libclang unavailable, capability probe failure, or version mismatch **block facts
+  extraction explicitly** (typed errors) and must never degrade the build, the refereed loop's
+  shell/mcp predicates, or the bundled diagnostics — facts become unavailable, never faked.
+
 ## Owner-signed deltas (each one is an ADR or design.md §10 phase-3 line item — nothing else)
 1. Paths: `.cipher/` → `.arbiter/facts/`; config → `config.yml facts:` section.
 2. Chassis: served by engine-core's multi-namespace loop; `_meta` handled outside tool schemas.
