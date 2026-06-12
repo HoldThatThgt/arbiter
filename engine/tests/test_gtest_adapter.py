@@ -102,11 +102,11 @@ targets:
 
             result = gtest.run_target(root, book, "crash", run_id="r4")
 
-            self.assertEqual(result.overall, "failed")
+            self.assertEqual(result.overall, "errored")
             self.assertEqual(result.failure, "missing_result_file")
             self.assertEqual(result.per_test, ())
 
-    def test_test_run_timeout_returns_failed_result_instead_of_raising(self):
+    def test_test_run_timeout_returns_errored_result_instead_of_raising(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             slow = root / "slow_gtest.sh"
@@ -127,7 +127,7 @@ targets:
 
             result = gtest.run_target(root, book, "slow", run_id="r-timeout")
 
-            self.assertEqual(result.overall, "failed")
+            self.assertEqual(result.overall, "errored")
             self.assertEqual(result.failure, "timeout")
             self.assertIn("timeout", result.stderr_tail)
 
@@ -152,10 +152,10 @@ targets:
 
             result = gtest.run_target(root, book, "slow", run_id="r-override", timeout_s=1)
 
-            self.assertEqual(result.overall, "failed")
+            self.assertEqual(result.overall, "errored")
             self.assertEqual(result.failure, "timeout")
 
-    def test_workdir_escape_is_a_failed_result_not_a_crash(self):
+    def test_workdir_escape_is_an_errored_result_not_a_crash(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "repo"
             root.mkdir()
@@ -174,9 +174,42 @@ targets:
 
             result = gtest.run_target(root, book, "unit", run_id="r-escape")
 
-            self.assertEqual(result.overall, "failed")
+            self.assertEqual(result.overall, "errored")
             self.assertEqual(result.failure, "workdir_escape")
             self.assertIn("escapes the repo root", result.stderr_tail)
+
+    def test_compile_failure_is_errored_never_a_red_run(self):
+        # A build that does not compile yields overall="errored", never "failed".
+        # The distinction is load-bearing for the referee: a red gate
+        # (expect overall=failed) certifies that a test RAN and asserted false,
+        # and a broken build never ran - so it must satisfy neither the red gate
+        # nor the green one. Were a compile failure "failed", a non-compiling test
+        # would pass a run-red predicate (e.g. fix-reported-bug's repro gate).
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "src" / "a.c").write_text("not valid C\n", encoding="utf-8")
+            book = recipes.parse(
+                """
+compile_db:
+  path: compile_commands.json
+targets:
+  - id: unit
+    binary: build/unit
+    harness:
+      kind: gtest
+    src_compile:
+      cmd: [/bin/sh, -c, "exit 7"]
+    test_run:
+      cmd: [/bin/false]
+"""
+            )
+
+            result = gtest.run_target(root, book, "unit", run_id="r-compile-fail")
+
+            self.assertEqual(result.overall, "errored")
+            self.assertEqual(result.failure, "src_compile")
+            self.assertEqual(result.per_test, ())
             self.assertFalse((Path(tmp) / "outside").exists())
 
     def test_src_compile_publishes_facts_and_sanitizer_profile_reextracts(self):
