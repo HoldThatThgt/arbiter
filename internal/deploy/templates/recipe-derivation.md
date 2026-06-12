@@ -3,69 +3,48 @@ name: recipe-derivation
 description: Capability-gated opening for deriving and proving committed run recipes.
 capabilities: [recipes]
 max_steps: 48
+verify_policy: named
 ---
+
+[Verify] candidate-proven
+run: src_compile
+tests: ["*"]
+expect: {"overall":{"one_of":["passed","failed"]}}
 
 [Verify] gear-up-published
 run: src_compile
 tests: ["src_compile"]
 expect: {"overall":"passed","facts":{"published":true}}
 
-[Verify] candidate-proven
-run: candidate
-tests: ["*"]
-expect: {"overall":{"one_of":["passed","failed"]}}
-
 [SetGoal]
 verify: gear-up-published
 
-[STEP] gear-up
-[StepJob]
-Inspect the current recipe book and publish facts if a src_compile recipe already exists.
-[CheckList]
-- Submit gear-up-published when a src_compile recipe is already proven
-- If no src_compile recipe exists yet, record that derivation starts from build probes
-[Branch]
-success: derive
-failure: derive
-
 [STEP] derive
 [StepJob]
-Probe the native build system and draft the smallest portable recipe that compiles, launches, and
-emits structured gtest output.
+Probe the native build system and draft the smallest portable src_compile recipe — a gtest
+harness, configure+build commands, and sources globs — with arbiter cc interposed into the
+compile stage (preserve the real compiler and profile overlays, never a synthetic command).
+Register it, then prove it actually builds and emits structured gtest output: a pass or a fail
+both prove the harness works, an errored build does not. The predicate is bound; you cannot
+substitute a file-exists check for a real run.
 [CheckList]
-- Use recipe_search before adding a new target
-- Draft committed YAML with src_compile, test_run, harness.kind=gtest, and sources globs
-[Branch]
-success: prove
-failure: derive
-
-[STEP] prove
-[StepJob]
-Register the candidate recipe and prove it through the referee before treating it as knowledge.
-[CheckList]
-- Call register for the candidate recipe book
-- Submit candidate-proven using structured gtest output only
-[Branch]
-success: install
-failure: derive
-
-[STEP] install
-[StepJob]
-Install arbiter cc interposition into proven src_compile stages and preserve native compiler
-commands.
-[CheckList]
-- src_compile invokes the real compiler through arbiter cc
-- Profiles are represented as overlays instead of separate duplicate recipes
+- recipe_search before adding a target, then register the src_compile recipe book
+- The src_compile compile stage invokes the real compiler through arbiter cc
+- Submit candidate-proven from a real run (structured gtest output only)
+[Submit] candidate-proven
 [Branch]
 success: publish
-failure: prove
+failure: derive
 
 [STEP] publish
 [StepJob]
-Run the proven src_compile recipe once to publish the first facts snapshot for the derived target.
+Run the proven src_compile recipe so arbiter cc journals every translation unit and the engine
+publishes the first facts snapshot. Only a real cc-interposed green build publishes facts; if it
+does not publish, cc is not actually interposed — go back and wire it.
 [CheckList]
 - Submit gear-up-published for the proven recipe
 - Record any instrumentation macro key_flags recommendation for user confirmation
+[Submit] gear-up-published
 [Branch]
 success: END
-failure: install
+failure: derive

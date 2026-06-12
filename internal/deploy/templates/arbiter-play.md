@@ -20,8 +20,12 @@ inside executor subagents you dispatch with the Task tool.
 ## The loop — repeat until terminal
 
 1. **ShowStepJob {}** → the current step's job, checklist, gotchas (pitfalls earlier
-   matches hit on THIS step — weave the relevant ones into your task prompts), and
-   open tasks.
+   matches hit on THIS step — weave the relevant ones into your task prompts), open
+   tasks, and — when present — `submit`, the curated predicate this step BINDS. If a
+   step carries `submit`, the executor must finish with exactly {"verify": "<that
+   name>"}; pass it through verbatim in the dispatch's `finish:` line. You do not get
+   to choose or weaken a step's predicate, and you never hand the executor a hand-made
+   shell/run spec in its place — the predicate belongs to the playbook.
 2. **Gear-up steps:** derive the build profile from the request before dispatching —
    memory corruption/UAF/leak → "asan"; races/locking → "tsan" if the recipe has it,
    else "debug"; coverage/test-gap work → "coverage"; otherwise "debug". Preserve

@@ -46,6 +46,13 @@ not exist as far as the referee is concerned, no matter how good your prose is.
 
 ## Choosing the result predicate
 
+First: when the step binds a predicate — ShowStepJob shows it as `submit`, and the
+dispatch's `finish:` line names it — you do NOT choose. Submit exactly
+{"verify": "<that name>"} (plus only the overrides it allows); anything else is
+rejected with step_submit_mismatch. Likewise under verify_policy: named, only a
+{"verify": "<name>"} reference is accepted. The list below is for the remaining
+open steps where the task leaves the predicate to you.
+
 Pick the strongest one the task allows, in this order:
 
 - The task names a curated predicate → {"verify": "<name>"} (optionally with

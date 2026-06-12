@@ -66,9 +66,9 @@ func TestBaseOpeningTemplatesParse(t *testing.T) {
 		{
 			file:       "recipe-derivation.md",
 			name:       "recipe-derivation",
-			entry:      "gear-up",
+			entry:      "derive",
 			capability: "recipes",
-			policy:     "",
+			policy:     "named",
 			verify:     []string{"gear-up-published", "candidate-proven"},
 		},
 		{
@@ -157,6 +157,12 @@ func TestBaseOpeningTemplatesParse(t *testing.T) {
 	}
 	if string(rd.Goal.Expect) != string(rd.Verify["gear-up-published"].Expect) {
 		t.Fatalf("goal expect %s != gear-up-published expect %s", rd.Goal.Expect, rd.Verify["gear-up-published"].Expect)
+	}
+	// 每个可裁决步骤都用 [Submit] 把谓词钉死,模型既不能自拟也不能改选。
+	for step, want := range map[string]string{"derive": "candidate-proven", "publish": "gear-up-published"} {
+		if got := rd.Steps[step].Submit; got != want {
+			t.Fatalf("recipe-derivation step %q Submit = %q, want %q", step, got, want)
+		}
 	}
 }
 
