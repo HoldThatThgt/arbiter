@@ -14,8 +14,10 @@ func (s *Store) startAsyncRunGoal(ctx context.Context, spec playbook.ResultSpec,
 	// 起跑前的完整性闸:引擎 worker 在仓内"当前字节"上编译并运行冻结测试。若此刻
 	// 测试已被旁路 guard 的 Bash 改写,直接判负、绝不开跑——否则 worker 跑的是被弱化
 	// 的套件。这与 poll/settle 时的复核一道,把"起跑前篡改"挡在引擎之外。
-	// (残余:开跑后趁 worker 异步编译窗口篡改、于下次 poll 前复原的竞态,需引擎上报
-	//  实际编译源的摘要方能根除;见随附 PR。)
+	// (开跑后趁 worker 异步编译窗口篡改、于下次 poll 前复原的竞态,由 worker 上报
+	//  "编译前一刻"实测摘要根除:这里把待核验的冻结测试路径快照交给引擎,worker
+	//  在真正编译前对其逐一取摘要回报,落子前于 pollAsyncRunGoal 与冻结登记表比对。)
+	var frozen []string
 	gate, err := s.withLock(func(m *Match) (*Match, any, error) {
 		if m == nil || m.Status != StatusActive || m.Current == nil || m.RoundSeq != roundSeq {
 			return nil, CheckStepJobOutput{Complete: false, Reason: "state_changed"}, nil
@@ -28,7 +30,8 @@ func (s *Store) startAsyncRunGoal(ctx context.Context, spec playbook.ResultSpec,
 			next, o := s.settle(m, v, false, frozenGoalReport(violated))
 			return next, o, nil
 		}
-		return nil, nil, nil // 闸通过,照常开跑
+		frozen = frozenPaths(m.FrozenTests) // worker 在编译前一刻据此实测、回报摘要
+		return nil, nil, nil                // 闸通过,照常开跑
 	})
 	if err != nil {
 		return CheckStepJobOutput{}, err
@@ -37,7 +40,7 @@ func (s *Store) startAsyncRunGoal(ctx context.Context, spec playbook.ResultSpec,
 		return gate.(CheckStepJobOutput), nil
 	}
 
-	runID, err := s.startRunGoal(ctx, spec)
+	runID, err := s.startRunGoal(ctx, spec, frozen)
 	if err != nil {
 		return CheckStepJobOutput{}, engineUnavailable(err)
 	}
@@ -93,9 +96,15 @@ func (s *Store) pollAsyncRunGoal(ctx context.Context, pending GoalPending) (Chec
 			return nil, CheckStepJobOutput{Complete: false, Reason: "state_changed", RunID: pending.RunID, Goal: report}, nil
 		}
 		m.GoalPending = nil
-		// 冻结测试完整性闸(异步将死路径):run 期间冻结测试可能被旁路 guard 的
-		// Bash 改写。落子前重算哈希,改动即令 goal 判负 —— 与同步路径、SubmitTask 同源。
+		// 冻结测试完整性闸(异步将死路径),两道复核叠加:
+		// (1) 落子前重算磁盘哈希 —— 抓住 run 结束后的篡改,以及 run 期间新冻结的测试
+		//     (与同步路径、SubmitTask 同源)。
+		// (2) 比对 worker 在"编译前一刻"实测上报的摘要 —— 抓住磁盘此刻已复原、但
+		//     worker 实际编译的正是被弱化字节的竞态(通关→弱化→编译→复原→poll)。
+		//     这是 (1) 的磁盘复算结构上看不到的:它只能看见复原后的盘面。
 		if violated := frozenViolation(s.Root, m.FrozenTests); violated != "" {
+			report = frozenGoalReport(violated)
+		} else if violated := frozenDigestViolation(m.FrozenTests, report.frozenDigests); violated != "" {
 			report = frozenGoalReport(violated)
 		}
 		if pending.MemoDigest != "" {
@@ -126,12 +135,12 @@ func (s *Store) pollAsyncRunGoal(ctx context.Context, pending GoalPending) (Chec
 
 // startRunGoal / pollRunGoal 共用 Store 缓存的 exec 引擎(goals_engine.go):
 // GoalPending 存续期间每次 CheckStepJob poll 不再各付一次解释器启动开销。
-func (s *Store) startRunGoal(ctx context.Context, spec playbook.ResultSpec) (string, error) {
+func (s *Store) startRunGoal(ctx context.Context, spec playbook.ResultSpec, frozen []string) (string, error) {
 	engine, err := s.goalExecEngine(ctx)
 	if err != nil {
 		return "", err
 	}
-	started, err := engine.StartRun(ctx, engineRunSpec(spec), nil)
+	started, err := engine.StartRun(ctx, engineRunSpec(spec, frozen), nil)
 	if err != nil {
 		return "", err
 	}
@@ -169,13 +178,18 @@ func resolveRunGoalStatus(pending GoalPending, status engineclient.RunStatus) (*
 	}
 }
 
-func engineRunSpec(spec playbook.ResultSpec) map[string]any {
+func engineRunSpec(spec playbook.ResultSpec, frozen []string) map[string]any {
 	out := map[string]any{"kind": "run"}
 	if spec.Recipe != "" {
 		out["recipe"] = spec.Recipe
 	}
 	if len(spec.Tests) != 0 {
 		out["tests"] = append([]string(nil), spec.Tests...)
+	}
+	// 把待核验的冻结测试路径交给 worker:它在编译前一刻据此实测内容摘要回报,
+	// 让裁决能反映"实际编译的字节"(见 _hash_frozen / frozenDigestViolation)。
+	if len(frozen) != 0 {
+		out["frozen"] = append([]string(nil), frozen...)
 	}
 	if len(spec.Options) != 0 {
 		out["options"] = spec.Options
@@ -210,6 +224,7 @@ func runGoalReport(pending GoalPending, status engineclient.RunStatus) (*GoalRep
 		IsError          *bool                    `json:"isError"`
 		IsErrorSnake     *bool                    `json:"is_error"`
 		Failure          string                   `json:"failure"`
+		FrozenDigests    map[string]string        `json:"frozen_digests"`
 	}{}
 	if len(status.Result) != 0 {
 		if err := json.Unmarshal(status.Result, &payload); err != nil {
@@ -259,11 +274,12 @@ func runGoalReport(pending GoalPending, status engineclient.RunStatus) (*GoalRep
 		verdict = TaskPass
 	}
 	return &GoalReport{
-		Verdict: verdict,
-		RunID:   pending.RunID,
-		IsError: isError,
-		Output:  string(status.Result),
-		Failure: payload.Failure,
+		Verdict:       verdict,
+		RunID:         pending.RunID,
+		IsError:       isError,
+		Output:        string(status.Result),
+		Failure:       payload.Failure,
+		frozenDigests: payload.FrozenDigests,
 	}, nil
 }
 

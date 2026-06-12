@@ -387,6 +387,110 @@ failure: only
 	}
 }
 
+// The async run-goal path must reject a run whose worker COMPILED a weakened
+// frozen test, even when the test is restored byte-for-byte before the verdict
+// is polled. This is the residual TOCTOU the Go-side disk re-hash structurally
+// cannot see: pass the round with the test pristine (the start-time gate is
+// satisfied), weaken the frozen test while the engine worker is compiling, let
+// the worker run the weakened suite to a pass, then restore the original bytes
+// before the settling poll. Both the start-time gate and the settle-time disk
+// re-hash see pristine content. The worker, however, reports the digest it
+// actually hashed at compile time; the settle-time comparison against the frozen
+// registry catches the mismatch and refuses the checkmate.
+func TestAsyncRunGoalRejectsWeakenRunRestoreRace(t *testing.T) {
+	const runGoalBook = `---
+name: run-goal
+description: async run goal
+---
+
+[SetGoal]
+run: unit
+tests: ["Suite.Case"]
+expect: {"overall":"passed"}
+
+[STEP] only
+[StepJob]
+finish
+[CheckList]
+- done
+[Branch]
+success: END
+failure: only
+`
+	root := repoWithBook(t, "run.md", runGoalBook)
+	t.Setenv("PYTHONPATH", checkoutEnginePath(t))
+	testPath := filepath.Join(root, "tests", "repro_test.cc")
+	if err := os.MkdirAll(filepath.Dir(testPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(testPath, []byte("ORIGINAL\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The fake gtest PASSES (would checkmate) and, crucially, restores the frozen
+	// test to its original bytes during test_run — which runs AFTER the worker has
+	// already hashed the (by then weakened) source. So at settle the disk is
+	// pristine and the disk re-hash is satisfied; only the engine-reported
+	// compile-time digest can still reveal the tamper.
+	script := writeFakeGtestRestoring(t, root, testPath, "ORIGINAL")
+	writeRecipes(t, root, "unit", "harness:\n  kind: gtest\ntest_run:\n  cmd: ["+script+"]\n")
+	store := New(root, "test")
+	if _, err := store.LoadPlayBook("run-goal"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RegisterTest([]string{"tests/repro_test.cc"}); err != nil {
+		t.Fatal(err)
+	}
+	task, err := store.CreateTask("pass step")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SubmitTask(context.Background(), task.TaskID, "step done", "done", verify.ResultSpec{Kind: "shell", Command: "exit 0"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Drive the goal: the start-time gate sees the pristine test and launches the
+	// worker. The worker is a freshly exec'd interpreter, so it will not reach its
+	// compile-time hash for many milliseconds — ample room to weaken the test next.
+	started, err := store.CheckStepJob(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started.Reason != "goal_running" || started.RunID == "" {
+		t.Fatalf("expected goal_running launch, got %#v", started)
+	}
+
+	// Weaken the frozen test now, before the worker hashes it: the worker observes
+	// (and "compiles") these bytes, then the fake gtest puts the originals back.
+	if err := os.WriteFile(testPath, []byte("TAMPERED\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var settled CheckStepJobOutput
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
+		settled, err = store.CheckStepJob(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if settled.Reason != "goal_running" {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	if settled.Checkmate || settled.Match == StatusFinishedSuccess {
+		t.Fatalf("weakened-then-restored frozen test won via async goal: %#v", settled)
+	}
+	if settled.Goal == nil || settled.Goal.Failure != playbook.CodeFrozenTestModified {
+		t.Fatalf("goal = %#v, want failure %s", settled.Goal, playbook.CodeFrozenTestModified)
+	}
+	// The fake gtest restored the disk, so the settle-time disk re-hash PASSED;
+	// the verdict was forced by the engine-reported compile-time digest alone —
+	// exactly the gap this change closes.
+	if got := readText(t, testPath); got != "ORIGINAL\n" {
+		t.Fatalf("frozen test not restored on disk (disk re-hash would have caught it): %q", got)
+	}
+}
+
 func checkoutEnginePath(t *testing.T) string {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)
@@ -414,6 +518,28 @@ func writeFakeGtest(t *testing.T, root string, failed bool) string {
 		"printf '%s\\n' '" + xml + "' > \"$out\"\n" +
 		exit + "\n"
 	path := filepath.Join(root, "fake_gtest.sh")
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// writeFakeGtestRestoring 写一个伪 gtest:落一份 PASS 的 gtest XML(若直接采信
+// 会将死),随后把 restorePath 复原为 restoreLine+"\n"。复原发生在 test_run 阶段,
+// 即 worker 已对(被弱化的)源取过摘要之后 —— 用来复现"通关→弱化→编译→复原→poll"
+// 竞态:落子那一刻盘面已复原,磁盘复算 frozenViolation 看不出端倪。
+func writeFakeGtestRestoring(t *testing.T, root, restorePath, restoreLine string) string {
+	t.Helper()
+	xml := `<testsuites tests="1" failures="0"><testsuite name="Suite"><testcase classname="Suite" name="Case" time="0.001"/></testsuite></testsuites>`
+	body := "#!/bin/sh\n" +
+		"for arg in \"$@\"; do\n" +
+		"  case \"$arg\" in --gtest_output=xml:*) out=\"${arg#--gtest_output=xml:}\" ;; esac\n" +
+		"done\n" +
+		"mkdir -p \"$(dirname \"$out\")\"\n" +
+		"printf '%s\\n' '" + xml + "' > \"$out\"\n" +
+		"printf '%s\\n' '" + restoreLine + "' > '" + restorePath + "'\n" +
+		"exit 0\n"
+	path := filepath.Join(root, "fake_gtest_restore.sh")
 	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}

@@ -179,6 +179,12 @@ type GoalReport struct {
 	DurationMS int    `json:"duration_ms"`
 	Failure    string `json:"failure,omitempty"`
 	Memoized   bool   `json:"memoized,omitempty"`
+
+	// frozenDigests 携带异步 run worker 在"编译前一刻"实测的 {仓根相对路径 →
+	// 内容 sha256}。未导出 ⇒ 既不入 state.json/memo,也不回传给模型;它只是把
+	// worker 实际编译的字节捎给 pollAsyncRunGoal,与冻结登记表比对(信任域在
+	// 引擎 worker,不在 player 的仓内改写)。见 frozenDigestViolation。
+	frozenDigests map[string]string
 }
 
 type AddPlayBookOutput struct {

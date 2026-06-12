@@ -147,6 +147,44 @@ func frozenViolation(root string, frozen map[string]string) string {
 	return ""
 }
 
+// frozenPaths 返回冻结表的仓根相对路径(排序)。异步 run 用它把"该核验哪些
+// 测试"交给引擎 worker:worker 在编译前一刻对这些路径实测内容摘要并回报,
+// 供落子时与登记表比对(见 frozenDigestViolation)。
+func frozenPaths(frozen map[string]string) []string {
+	paths := make([]string, 0, len(frozen))
+	for rel := range frozen {
+		paths = append(paths, rel)
+	}
+	sort.Strings(paths)
+	return paths
+}
+
+// frozenDigestViolation 比对引擎 worker 在"真正编译前一刻"实测上报的摘要
+// (observed:仓根相对路径 → 内容 sha256)与冻结登记表(frozen)。返回首个
+// 编译字节与登记不符的路径(无违例返回空串)。worker 经 spawn 摘要校验、处于
+// 信任域内,其上报即"实际编译的字节"——故这能抓住磁盘哈希看不到的竞态:
+// 通关→弱化→让 worker 编译弱化版→poll 前复原。只遍历 worker 实际处理过的
+// 路径(即开跑时快照交付的那批);开跑后新冻结的测试仍由 settle 时的磁盘
+// 复算 frozenViolation 兜底。worker 对读不到的路径回报空串,空串恒不等于
+// 真实摘要,故删除/不可读同样判为违例。
+func frozenDigestViolation(frozen, observed map[string]string) string {
+	rels := make([]string, 0, len(observed))
+	for rel := range observed {
+		rels = append(rels, rel)
+	}
+	sort.Strings(rels) // 违例报告稳定
+	for _, rel := range rels {
+		want, ok := frozen[rel]
+		if !ok {
+			continue // 不在登记表中的路径不归本闸管(冻结只增不删,正常不会出现)
+		}
+		if observed[rel] != want {
+			return rel
+		}
+	}
+	return ""
+}
+
 // copyStringMap 在锁内取冻结表快照,使锁外的磁盘核对不依赖对局状态。
 func copyStringMap(in map[string]string) map[string]string {
 	if len(in) == 0 {
