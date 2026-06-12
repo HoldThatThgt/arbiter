@@ -2,14 +2,16 @@ package deploy
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"testing"
+	"time"
 
-	"github.com/HoldThatThgt/arbiter/internal/playbook"
+	"github.com/HoldThatThgt/arbiter/internal/embeddedengine"
 )
 
 func TestInitMergesAndIsIdempotent(t *testing.T) {
@@ -27,7 +29,7 @@ func TestInitMergesAndIsIdempotent(t *testing.T) {
 		},
 	})
 
-	first, err := Init(root)
+	first, err := InitWithOptions(root, testInitOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +37,7 @@ func TestInitMergesAndIsIdempotent(t *testing.T) {
 		t.Fatalf("guidance = %q", first)
 	}
 	before := snapshot(t, root)
-	second, err := Init(root)
+	second, err := InitWithOptions(root, testInitOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +80,7 @@ func TestInitMergesAndIsIdempotent(t *testing.T) {
 
 func TestSeatKeyRegeneratedWhenMissing(t *testing.T) {
 	root := t.TempDir()
-	if _, err := Init(root); err != nil {
+	if _, err := InitWithOptions(root, testInitOptions()); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(root, fileSeatKey)
@@ -89,7 +91,7 @@ func TestSeatKeyRegeneratedWhenMissing(t *testing.T) {
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Init(root); err != nil {
+	if _, err := InitWithOptions(root, testInitOptions()); err != nil {
 		t.Fatal(err)
 	}
 	second, err := os.ReadFile(path)
@@ -108,7 +110,7 @@ func TestInitReportsMCPReplacement(t *testing.T) {
 			"arbiter": map[string]any{"type": "stdio", "command": "/tmp/old-arbiter"},
 		},
 	})
-	msg, err := Init(root)
+	msg, err := InitWithOptions(root, testInitOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +121,7 @@ func TestInitReportsMCPReplacement(t *testing.T) {
 
 func TestCuratorAgentCanListTasks(t *testing.T) {
 	root := t.TempDir()
-	if _, err := Init(root); err != nil {
+	if _, err := InitWithOptions(root, testInitOptions()); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(filepath.Join(root, fileCurator))
@@ -131,343 +133,340 @@ func TestCuratorAgentCanListTasks(t *testing.T) {
 	}
 }
 
-func TestInitWiresCompanionDiagnostics(t *testing.T) {
+func TestInitWritesUnifiedDeploymentTree(t *testing.T) {
 	root := t.TempDir()
-	bins := t.TempDir()
-	pythonPath := writeFakeBin(t, bins, "python3", 0)
-	t.Setenv("PATH", bins)
-
-	msg, err := Init(root)
+	msg, err := InitWithOptions(root, testInitOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(msg, "arbiter-debugger") {
-		t.Fatalf("guidance is silent about the debugger agent: %q", msg)
+	if !strings.Contains(msg, "arbiter 已部署") {
+		t.Fatalf("guidance = %q", msg)
 	}
 
-	var mcpRoot map[string]any
-	readJSONFile(t, filepath.Join(root, fileMCP), &mcpRoot)
-	servers := mcpRoot["mcpServers"].(map[string]any)
-	wantArgs := map[string][]any{
-		"gdb-mcp":  {"-m", "arbiter_engine.gdbmcp", "serve", "--root", "."},
-		"perf-mcp": {"-m", "arbiter_engine.perfmcp", "serve"},
+	var engines map[string]any
+	readJSONFile(t, filepath.Join(root, ".arbiter", "run", "engines.json"), &engines)
+	if engines["python"] != "/test/python" || engines["engine_version"] != "test-engine" {
+		t.Fatalf("engines.json = %#v", engines)
 	}
-	for name, args := range wantArgs {
-		entry, ok := servers[name].(map[string]any)
-		if !ok {
-			t.Fatalf("missing %s server: %#v", name, servers)
-		}
-		if entry["type"] != "stdio" || entry["command"] != pythonPath {
-			t.Fatalf("%s entry = %#v, want command %q", name, entry, pythonPath)
-		}
-		got, ok := entry["args"].([]any)
-		if !ok || len(got) != len(args) {
-			t.Fatalf("%s args = %#v, want %#v", name, entry["args"], args)
-		}
-		for i := range args {
-			if got[i] != args[i] {
-				t.Fatalf("%s args = %#v, want %#v", name, got, args)
-			}
-		}
-		if _, hasEnv := entry["env"]; hasEnv {
-			t.Fatalf("installed mode must not set env on %s: %#v", name, entry)
-		}
-	}
-	if _, err := os.Stat(filepath.Join(root, dirEmbeddedEngine)); !os.IsNotExist(err) {
-		t.Fatalf("installed mode must not materialize the embedded engine (err=%v)", err)
+	if engines["verified_at"] != "2026-06-11T00:00:00Z" {
+		t.Fatalf("verified_at = %#v", engines["verified_at"])
 	}
 
-	agentPath := filepath.Join(root, fileDebugger)
-	info, err := os.Stat(agentPath)
-	if err != nil {
-		t.Fatal(err)
+	key := strings.TrimSpace(readText(t, filepath.Join(root, ".arbiter", "match", "seat.key")))
+	if len(key) != 32 {
+		t.Fatalf("seat key length = %d", len(key))
 	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("debugger agent mode = %v, want 0600", info.Mode().Perm())
+	assertMode(t, filepath.Join(root, ".arbiter", "match", "seat.key"), 0o600)
+	if _, err := os.Stat(filepath.Join(root, ".arbiter", "match", "run", "seat.key")); !os.IsNotExist(err) {
+		t.Fatalf("legacy run/seat.key exists or stat failed: %v", err)
 	}
-	agent, err := os.ReadFile(agentPath)
-	if err != nil {
-		t.Fatal(err)
+
+	for _, path := range []string{
+		".claude/agents/arbiter-curator.md",
+		".claude/agents/arbiter-executor.md",
+		".claude/agents/arbiter-implementer.md",
+		".claude/agents/arbiter-test-author.md",
+		".claude/agents/arbiter-test-author.md",
+		".claude/agents/arbiter-implementer.md",
+	} {
+		data := readText(t, filepath.Join(root, path))
+		if !strings.Contains(data, key) {
+			t.Fatalf("%s missing seat key", path)
+		}
+		assertMode(t, filepath.Join(root, path), 0o600)
 	}
-	key, err := os.ReadFile(filepath.Join(root, fileSeatKey))
-	if err != nil {
-		t.Fatal(err)
+	for _, path := range []string{
+		".claude/skills/arbiter-play/SKILL.md",
+		".claude/skills/arbiter-intro/SKILL.md",
+		".claude/skills/playbook-create/SKILL.md",
+		".arbiter/config.yml",
+		".arbiter/recipes.yaml",
+	} {
+		if _, err := os.Stat(filepath.Join(root, path)); err != nil {
+			t.Fatalf("missing %s: %v", path, err)
+		}
 	}
+
+	var settings map[string]any
+	readJSONFile(t, filepath.Join(root, fileSettings), &settings)
+	deny := settings["permissions"].(map[string]any)["deny"].([]any)
 	for _, want := range []string{
-		strings.TrimSpace(string(key)),
-		"args: [serve, executor]",
-		"mcp__arbiter-executor__SubmitTask",
-		"mcp__gdb-mcp__gdb_snapshot",
-		"mcp__perf-mcp__perf.scan_c",
-		"command: " + pythonPath,
-		"args: [-m, arbiter_engine.gdbmcp, serve, --root, .]",
-		"args: [-m, arbiter_engine.perfmcp, serve]",
+		"Read(.arbiter/playbook/**)",
+		"Read(.arbiter/match/**)",
+		"Read(.claude/agents/arbiter-*.md)",
 	} {
-		if !strings.Contains(string(agent), want) {
-			t.Fatalf("debugger agent missing %q:\n%s", want, agent)
-		}
-	}
-
-	var settings map[string]any
-	readJSONFile(t, filepath.Join(root, fileSettings), &settings)
-	deny := settings["permissions"].(map[string]any)["deny"].([]any)
-	if !hasLineValue(deny, "Read(.claude/agents/arbiter-debugger.md)") {
-		t.Fatalf("deny rules missing debugger agent: %#v", deny)
-	}
-	gitignore, err := os.ReadFile(filepath.Join(root, fileGitignore))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(gitignore), ".claude/agents/arbiter-debugger.md") {
-		t.Fatalf("gitignore missing debugger agent: %s", gitignore)
-	}
-
-	before := snapshot(t, root)
-	if _, err := Init(root); err != nil {
-		t.Fatal(err)
-	}
-	after := snapshot(t, root)
-	if len(before) != len(after) {
-		t.Fatalf("snapshot size changed: %d -> %d", len(before), len(after))
-	}
-	for path, data := range before {
-		if string(after[path]) != string(data) {
-			t.Fatalf("file changed on second init: %s", path)
+		if !hasLineValue(deny, want) {
+			t.Fatalf("missing deny %q in %#v", want, deny)
 		}
 	}
 }
 
-func TestInitPreservesForeignCompanionEntries(t *testing.T) {
+func TestInitEmbeddedEngineAddsWriteDenyRules(t *testing.T) {
 	root := t.TempDir()
-	bins := t.TempDir()
-	writeFakeBin(t, bins, "python3", 0)
-	t.Setenv("PATH", bins)
-	foreign := map[string]any{
-		"type":    "stdio",
-		"command": "/opt/custom/python",
-		"args":    []any{"-m", "gdb_mcp", "serve"},
+	opts := testInitOptions()
+	opts.EmbeddedEngine = true
+	if _, err := InitWithOptions(root, opts); err != nil {
+		t.Fatal(err)
 	}
+	var settings map[string]any
+	readJSONFile(t, filepath.Join(root, fileSettings), &settings)
+	deny := settings["permissions"].(map[string]any)["deny"].([]any)
+	for _, want := range []string{
+		"Edit(.arbiter/engine/**)",
+		"Write(.arbiter/engine/**)",
+	} {
+		if !hasLineValue(deny, want) {
+			t.Fatalf("missing embedded deny %q in %#v", want, deny)
+		}
+	}
+}
+
+func TestInitNoExecutorSkipsExecutorAgent(t *testing.T) {
+	root := t.TempDir()
+	opts := testInitOptions()
+	opts.NoExecutor = true
+	if _, err := InitWithOptions(root, opts); err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range []string{fileExecutor, fileTestAuthor, fileImplementer} {
+		if _, err := os.Stat(filepath.Join(root, file)); !os.IsNotExist(err) {
+			t.Fatalf("executor-seat agent %s exists or stat failed: %v", file, err)
+		}
+	}
+}
+
+func TestInitRefusesNetworkFilesystem(t *testing.T) {
+	root := t.TempDir()
+	opts := testInitOptions()
+	opts.FSKind = "nfs"
+	_, err := InitWithOptions(root, opts)
+	var deployErr *Error
+	if !errors.As(err, &deployErr) || deployErr.Kind != "network_filesystem" {
+		t.Fatalf("err = %#v, want network_filesystem", err)
+	}
+}
+
+func TestRemoveRoundTripPreservesForeignContent(t *testing.T) {
+	root := t.TempDir()
 	writeJSONFile(t, filepath.Join(root, fileMCP), map[string]any{
-		"mcpServers": map[string]any{"gdb-mcp": foreign},
+		"mcpServers": map[string]any{
+			"foreign": map[string]any{"type": "stdio", "command": "foreign"},
+		},
 	})
-	if _, err := Init(root); err != nil {
+	writeJSONFile(t, filepath.Join(root, fileSettings), map[string]any{
+		"permissions": map[string]any{"deny": []any{"Read(foreign/**)"}},
+		"hooks": map[string]any{
+			"Stop": []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": "foreign stop"}}}},
+		},
+	})
+	if _, err := InitWithOptions(root, testInitOptions()); err != nil {
 		t.Fatal(err)
 	}
-	var mcpRoot map[string]any
-	readJSONFile(t, filepath.Join(root, fileMCP), &mcpRoot)
-	servers := mcpRoot["mcpServers"].(map[string]any)
-	entry := servers["gdb-mcp"].(map[string]any)
-	if entry["command"] != "/opt/custom/python" {
-		t.Fatalf("foreign gdb-mcp entry was clobbered: %#v", entry)
-	}
-	if _, ok := servers["perf-mcp"]; !ok {
-		t.Fatalf("perf-mcp not added alongside preserved entry: %#v", servers)
-	}
-}
-
-func TestInitEmbeddedEngineFallback(t *testing.T) {
-	root := t.TempDir()
-	bins := t.TempDir()
-	writeFakeBin(t, bins, "python3", 1) // 已安装包探针失败 ⇒ 释放内置引擎
-	t.Setenv("PATH", bins)
-	msg, err := Init(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(msg, ".arbiter/engine") {
-		t.Fatalf("guidance silent about embedded engine: %q", msg)
-	}
-
-	for _, rel := range []string{
-		"arbiter_engine/__init__.py",
-		"arbiter_engine/gdbmcp/cli.py",
-		"arbiter_engine/perfmcp/analysis.py",
-	} {
-		if _, err := os.Stat(filepath.Join(root, dirEmbeddedEngine, rel)); err != nil {
-			t.Fatalf("embedded engine missing %s: %v", rel, err)
-		}
-	}
-	digest1, err := os.ReadFile(filepath.Join(root, fileEngineDigest))
-	if err != nil {
+	opts := testInitOptions()
+	opts.Remove = true
+	if _, err := InitWithOptions(root, opts); err != nil {
 		t.Fatal(err)
 	}
 
 	var mcpRoot map[string]any
 	readJSONFile(t, filepath.Join(root, fileMCP), &mcpRoot)
 	servers := mcpRoot["mcpServers"].(map[string]any)
-	for _, name := range []string{"gdb-mcp", "perf-mcp"} {
-		entry, ok := servers[name].(map[string]any)
-		if !ok {
-			t.Fatalf("missing %s server: %#v", name, servers)
-		}
-		env, ok := entry["env"].(map[string]any)
-		if !ok || env["PYTHONPATH"] != dirEmbeddedEngine {
-			t.Fatalf("%s entry env = %#v, want PYTHONPATH=%s", name, entry["env"], dirEmbeddedEngine)
-		}
+	if _, ok := servers["arbiter"]; ok {
+		t.Fatalf("arbiter server was not removed: %#v", servers)
 	}
-
-	agent, err := os.ReadFile(filepath.Join(root, fileDebugger))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(agent), "PYTHONPATH: "+dirEmbeddedEngine) {
-		t.Fatalf("debugger agent missing embedded PYTHONPATH:\n%s", agent)
+	if _, ok := servers["foreign"]; !ok {
+		t.Fatalf("foreign server removed: %#v", servers)
 	}
 
 	var settings map[string]any
 	readJSONFile(t, filepath.Join(root, fileSettings), &settings)
 	deny := settings["permissions"].(map[string]any)["deny"].([]any)
-	for _, rule := range []string{"Edit(.arbiter/engine/**)", "Write(.arbiter/engine/**)"} {
-		if !hasLineValue(deny, rule) {
-			t.Fatalf("deny rules missing %q: %#v", rule, deny)
+	if !hasLineValue(deny, "Read(foreign/**)") || hasLineValue(deny, "Read(.arbiter/match/**)") {
+		t.Fatalf("deny rules = %#v", deny)
+	}
+	if commands := stopCommands(settings); join(commands) != "foreign stop\n" {
+		t.Fatalf("stop commands = %#v", commands)
+	}
+	for _, path := range []string{
+		".arbiter/run/engines.json",
+		".arbiter/match/seat.key",
+		".claude/agents/arbiter-curator.md",
+		".claude/agents/arbiter-executor.md",
+		".claude/agents/arbiter-implementer.md",
+		".claude/agents/arbiter-test-author.md",
+		".claude/agents/arbiter-test-author.md",
+		".claude/agents/arbiter-implementer.md",
+	} {
+		if _, err := os.Stat(filepath.Join(root, path)); !os.IsNotExist(err) {
+			t.Fatalf("%s still exists or stat failed: %v", path, err)
 		}
-	}
-	gitignore, err := os.ReadFile(filepath.Join(root, fileGitignore))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(gitignore), ".arbiter/engine/") {
-		t.Fatalf("gitignore missing engine dir: %s", gitignore)
-	}
-
-	before := snapshot(t, root)
-	if _, err := Init(root); err != nil {
-		t.Fatal(err)
-	}
-	after := snapshot(t, root)
-	if len(before) != len(after) {
-		t.Fatalf("snapshot size changed: %d -> %d", len(before), len(after))
-	}
-	for path, data := range before {
-		if string(after[path]) != string(data) {
-			t.Fatalf("file changed on second init: %s", path)
-		}
-	}
-	digest2, err := os.ReadFile(filepath.Join(root, fileEngineDigest))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(digest1) != string(digest2) {
-		t.Fatal("engine digest changed across idempotent reruns")
 	}
 }
 
-func TestInitWithoutPythonStaysLean(t *testing.T) {
+// TestDefaultRecipesParsesWithEngineParser proves the default recipes file is
+// valid for the engine's strict RecipeBook v2 parser, which rejects the
+// mapping form `targets: {}` with "targets must be a sequence".
+func TestDefaultRecipesParsesWithEngineParser(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	script := `
+import sys
+sys.path.insert(0, sys.argv[1])
+from arbiter_engine.runs import recipes
+recipes.parse(sys.stdin.read())
+`
+	cmd := exec.Command(python, "-c", script, filepath.Join("..", "..", "engine"))
+	cmd.Stdin = strings.NewReader(defaultRecipes())
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("engine parser rejected defaultRecipes(): %v\n%s", err, out)
+	}
+}
+
+// TestDefaultConfigParsesWithEngineParser proves the default config file is
+// valid for the engine's strict config parser, which rejects unknown keys
+// (key_flags must be nested at facts.index_on_build.key_flags).
+func TestDefaultConfigParsesWithEngineParser(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	script := `
+import sys
+sys.path.insert(0, sys.argv[1])
+from arbiter_engine.config import parse_config
+parse_config(sys.stdin.read())
+`
+	cmd := exec.Command(python, "-c", script, filepath.Join("..", "..", "engine"))
+	cmd.Stdin = strings.NewReader(defaultConfig())
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("engine parser rejected defaultConfig(): %v\n%s", err, out)
+	}
+}
+
+// TestVerifyEngineDoesNotWriteBytecodeIntoEmbeddedTree is the deploy half of
+// the embedded-engine digest regression: init's version probe must not write
+// __pycache__/*.pyc into the freshly-unpacked (digest-recorded) engine tree.
+func TestVerifyEngineDoesNotWriteBytecodeIntoEmbeddedTree(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
 	root := t.TempDir()
-	t.Setenv("PATH", t.TempDir()) // 无 python3:唯一的系统前置缺失
-	msg, err := Init(root)
-	if err != nil {
+	if _, err := embeddedengine.Unpack(root); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(root, fileDebugger)); !os.IsNotExist(err) {
-		t.Fatalf("debugger agent written without python (err=%v)", err)
-	}
-	if _, err := os.Stat(filepath.Join(root, dirEmbeddedEngine)); !os.IsNotExist(err) {
-		t.Fatalf("engine materialized without python (err=%v)", err)
-	}
-	var mcpRoot map[string]any
-	readJSONFile(t, filepath.Join(root, fileMCP), &mcpRoot)
-	servers := mcpRoot["mcpServers"].(map[string]any)
-	for _, name := range []string{"gdb-mcp", "perf-mcp"} {
-		if _, ok := servers[name]; ok {
-			t.Fatalf("%s wired without python: %#v", name, servers)
-		}
-	}
-	if !strings.Contains(msg, "python3") {
-		t.Fatalf("guidance missing python3 hint: %q", msg)
-	}
-}
-
-func TestEmbeddedOpeningsParseAndFollowConvention(t *testing.T) {
-	entries, err := templates.ReadDir("templates/openings")
-	if err != nil {
+	if _, err := verifyEngine(python, root); err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) == 0 {
-		t.Fatal("no embedded openings")
-	}
-	for _, entry := range entries {
-		data, err := templates.ReadFile("templates/openings/" + entry.Name())
+	if err := filepath.WalkDir(filepath.Join(root, embeddedengine.RootRel), func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			t.Fatal(err)
+			return err
 		}
-		book, issues := playbook.ParseBytes(entry.Name(), data)
-		if len(issues) > 0 {
-			t.Errorf("%s: %#v", entry.Name(), issues)
-			continue
+		if d.IsDir() && d.Name() == "__pycache__" {
+			t.Fatalf("verifyEngine wrote bytecode: %s", path)
 		}
-		stem := strings.TrimSuffix(entry.Name(), ".md")
-		if book.Name != stem {
-			t.Errorf("%s: playbook name %q must equal the file stem", entry.Name(), book.Name)
-		}
-		// 命名规约:祈使式用户意图短语,kebab-case,≤3 词。
-		if parts := strings.Split(book.Name, "-"); len(parts) > 3 {
-			t.Errorf("%s: name has %d segments, convention allows <=3", entry.Name(), len(parts))
-		}
-		// 描述规约:首句 "Use when ..." + 去重指引 "Do not use ..."。
-		if !strings.HasPrefix(book.Description, "Use when") {
-			t.Errorf("%s: description must lead with 'Use when': %q", entry.Name(), book.Description)
-		}
-		if !strings.Contains(book.Description, "Do not use") {
-			t.Errorf("%s: description must carry a 'Do not use ... (use <other>)' cross-pointer", entry.Name())
-		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 
-func TestInitDeliversOpeningsWriteIfMissing(t *testing.T) {
+func TestGitignoreLifecycleNonEmbedded(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv("PATH", t.TempDir())
-	msg, err := Init(root)
-	if err != nil {
+	// ".arbiter/engine/" is the user's own entry here (non-embedded init
+	// never writes it); ".arbiter/match/status.json" mimics a line appended
+	// by an older arbiter version.
+	writeText(t, filepath.Join(root, fileGitignore), "node_modules/\n.arbiter/engine/\n.arbiter/match/status.json\n")
+	if _, err := InitWithOptions(root, testInitOptions()); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(msg, "起手棋谱已就位") {
-		t.Fatalf("guidance silent about openings: %q", msg)
+	after := readText(t, filepath.Join(root, fileGitignore))
+	if strings.Count(after, ".arbiter/match/status.json") != 1 {
+		t.Fatalf("init duplicated or dropped pre-existing legacy line:\n%s", after)
 	}
-	names := []string{"fix-reported-bug", "hunt-latent-bugs", "build-feature", "fix-slow-path"}
-	for _, name := range names {
-		path := filepath.Join(root, dirPlaybook, name+".md")
-		book, issues := playbook.ParseFile(path)
-		if len(issues) > 0 {
-			t.Fatalf("%s: %#v", name, issues)
-		}
-		if book.Name != name {
-			t.Fatalf("%s: parsed name %q", name, book.Name)
-		}
+	if !strings.Contains(after, ".arbiter/match/\n") {
+		t.Fatalf("init did not append generated lines:\n%s", after)
 	}
-	// 用户内容神圣:改过的文件第二次 init 绝不覆盖。
-	edited := filepath.Join(root, dirPlaybook, "build-feature.md")
-	if err := os.WriteFile(edited, []byte("user owns this\n"), 0o644); err != nil {
+
+	opts := testInitOptions()
+	opts.Remove = true
+	if _, err := InitWithOptions(root, opts); err != nil {
 		t.Fatal(err)
 	}
-	msg, err = Init(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(edited)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != "user owns this\n" {
-		t.Fatalf("user-edited opening was overwritten: %q", data)
-	}
-	if !strings.Contains(msg, "未做改动") {
-		t.Fatalf("second init guidance should report openings untouched: %q", msg)
+	got := readText(t, filepath.Join(root, fileGitignore))
+	// Generated and legacy lines go; the user's ".arbiter/engine/" stays
+	// because the non-embedded deployment never owned it.
+	if got != "node_modules/\n.arbiter/engine/\n" {
+		t.Fatalf("gitignore after remove = %q", got)
 	}
 }
 
-func writeFakeBin(t *testing.T, dir, name string, exitCode int) string {
-	t.Helper()
-	path := filepath.Join(dir, name)
-	script := "#!/bin/sh\nexit " + strconv.Itoa(exitCode) + "\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+func TestGitignoreInitOmitsRedundantStatusLine(t *testing.T) {
+	root := t.TempDir()
+	if _, err := InitWithOptions(root, testInitOptions()); err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := filepath.EvalSymlinks(path)
+	got := readText(t, filepath.Join(root, fileGitignore))
+	if strings.Contains(got, ".arbiter/match/status.json") {
+		t.Fatalf("init wrote redundant status.json line (covered by .arbiter/match/):\n%s", got)
+	}
+}
+
+func TestGitignoreRemoveStripsEmbeddedEngineLine(t *testing.T) {
+	root := t.TempDir()
+	opts := testInitOptions()
+	opts.EmbeddedEngine = true
+	if _, err := InitWithOptions(root, opts); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(readText(t, filepath.Join(root, fileGitignore)), ".arbiter/engine/\n") {
+		t.Fatal("embedded init did not append .arbiter/engine/")
+	}
+	opts.Remove = true
+	if _, err := InitWithOptions(root, opts); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(readText(t, filepath.Join(root, fileGitignore)), ".arbiter/engine/") {
+		t.Fatal("embedded remove kept .arbiter/engine/")
+	}
+}
+
+func testInitOptions() Options {
+	return Options{
+		Python: "/test/python",
+		Now:    func() time.Time { return time.Date(2026, 6, 11, 0, 0, 0, 0, time.UTC) },
+		VerifyEngine: func(string, string) (string, error) {
+			return "test-engine", nil
+		},
+		FSKind: "apfs",
+	}
+}
+
+func readText(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return resolved
+	return string(data)
+}
+
+func assertMode(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Fatalf("%s mode = %03o, want %03o", path, got, want)
+	}
+}
+
+func join(values []string) string {
+	sort.Strings(values)
+	return strings.Join(values, "\n") + "\n"
 }
 
 func writeJSONFile(t *testing.T, path string, value any) {

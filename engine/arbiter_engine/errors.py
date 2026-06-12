@@ -19,6 +19,7 @@ SPEC_ERROR_KINDS = frozenset(
 
 CHASSIS_ERROR_KINDS = frozenset(
     {
+        "internal_error",
         "invalid_args",
         "invalid_json",
         "invalid_jsonrpc",
@@ -101,3 +102,13 @@ def harness_unavailable(harness: str) -> RPCError:
 
 def lock_timeout(lock: str) -> RPCError:
     return rpc_error(-32000, "lock timeout", "lock_timeout", lock=lock)
+
+
+def internal_error(exc: BaseException) -> RPCError:
+    return rpc_error(
+        -32603,
+        "internal error",
+        "internal_error",
+        exception=type(exc).__name__,
+        detail=str(exc),
+    )

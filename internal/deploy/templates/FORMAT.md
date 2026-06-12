@@ -5,10 +5,18 @@
 name: hotfix-verify
 description: 修复构建失败并验证回归的标准流程。适用于 CI 红灯、编译报错场景。
 max_steps: 32
+verify_policy: named
 ---
 
+[Verify] suite-green
+# Full-line comments (first non-space character '#') are allowed here.
+run: unit
+tests: ["*"]
+expect: {"overall":"passed","max_failed":0}
+allow_overrides: ["tests"]
+
 [SetGoal]
-shell: make test
+verify: suite-green
 
 [STEP] diagnose
 [StepJob]
@@ -36,6 +44,8 @@ Naming & dedup (binding for every playbook in this directory):
 - `name` is the USER INTENT as an imperative phrase: verb-first, kebab-case,
   at most 3 segments — `fix-reported-bug`, `hunt-latent-bugs`, `build-feature`,
   `fix-slow-path`. Not the method, not the mechanism, never a codename.
+  (Design-canonical intro openings — freeplay, gold-digger, recipe-derivation,
+  regression-triage — are grandfathered by ADR-0012.)
 - The file name is `<name>.md` — they must match exactly.
 - `description` starts with "Use when …" (the curator's first selection
   signal) and contains a "Do not use … (use <other-playbook>)" cross-pointer
@@ -48,10 +58,11 @@ Naming & dedup (binding for every playbook in this directory):
 
 Predicate discipline (what makes a playbook worth the referee):
 - Every step whose work is checkable tells the executor the EXACT result
-  predicate to submit — a concrete shell command (mind the exit-code polarity)
-  or an mcp call with `expect` clauses on structuredContent fields. A step
-  that only says "verify it works" will be gamed by the first trivially-true
-  predicate an executor invents.
+  predicate to submit — a concrete shell command (mind the exit-code polarity),
+  an mcp call with `expect` clauses on structuredContent fields, a typed
+  run/fact spec, or a curated `[Verify]` name. A step that only says "verify
+  it works" will be gamed by the first trivially-true predicate an executor
+  invents.
 - Encode laws as machine checks inside the predicate, not as prose: test-file
   untouchability is `git diff --quiet -- <paths> && …`, determinism is a 5x
   shell loop, measured improvement is two expect-clause measurements compared
@@ -66,19 +77,59 @@ Rules:
   is the round budget (default 256, max 1024) — the match aborts with
   `steps_exhausted` once spent.
 - Optional `[SetGoal]` (before the first `[STEP]`, at most once) declares the
-  checkmate predicate: `shell: <command>` or `mcp: <server> <tool>` plus
-  optional `arguments: {...json}`, `timeout_s`, `output_lines`. mcp goals may
-  add `expect: [{"path":...,"op":"eq|ne|ge|le|exists","value":...}, ...]`
-  (≤8 clauses, scalar values, dotted paths) — the clauses are compared against
-  the tool's structuredContent typed fields and ALL must hold; without
-  `expect` an mcp goal passes on any non-error response, so prefer `expect`
-  whenever the server reports structured results. After any successful round
-  adjudication the predicate runs; pass = checkmate = the match finishes
-  successfully at once. Reaching `END` on the success branch while the goal
-  still fails finishes the match as a failure.
+  checkmate predicate: `shell: <command>`, `mcp: <server> <tool>` plus
+  optional `arguments: {...json}`, `run: <recipe>` with `tests`/`expect`,
+  or `fact: <query>` with `expect`; all kinds accept `timeout_s`,
+  `output_lines`. After any successful round adjudication the predicate
+  runs; pass = checkmate = the match finishes successfully at once.
+  Reaching `END` on the success branch while the goal still fails finishes
+  the match as a failure.
 - Each step needs `[StepJob]`, `[CheckList]`, and `[Branch]`.
 - Branch keys are exactly `success` and `failure`; targets are a step name or `END`.
 - A step may carry an optional `[Gotcha]` section (`- ` items, may be empty):
   reusable caveats for that step, returned alongside it on every ShowStepJob.
   Usually you do not write these by hand — the player model appends them at
   run time via NotePlaybook as it discovers pitfalls.
+
+Named `[Verify]` predicates:
+- `[Verify] <name>` sections (any number, names are `[A-Za-z0-9_-]+` and
+  unique) declare curated result predicates using the same `key: value`
+  grammar as `[SetGoal]`. On LoadPlayBook they are snapshotted into match
+  state — editing the playbook file mid-match cannot swap a predicate
+  under an open round.
+- The executor invokes one by name: SubmitTask with
+  `{"result": {"verify": "<name>"}}`. The referee resolves the name
+  against the match snapshot, then runs the usual validate → recipe-pin →
+  execute pipeline. Unknown names fail with `verify_not_found`;
+  ShowStepJob lists the available names with their kinds.
+- A `verify` reference is mutually exclusive with every inline spec key —
+  mixing them is rejected.
+- Curated specs are closed by default. A `[Verify]` section may opt
+  specific fields open with `allow_overrides: ["tests", "options"]`
+  (only those two values are legal; expectation, kind, recipe, and command
+  can never be overridden). A submission may then pass `tests`/`options`
+  alongside `verify`; supplying an override the spec does not allow fails
+  with `verify_override`. `allow_overrides` is curator-only: it is illegal
+  in `[SetGoal]` and on submitted specs.
+- Optional frontmatter `verify_policy: open | named` (default `open`).
+  Under `named`, SubmitTask rejects inline specs with `verify_policy` —
+  every task verdict must come from a curated predicate. `named` with zero
+  `[Verify]` sections is a parse error.
+- Goal aliasing: `[SetGoal]` may consist of the single line
+  `verify: <name>`, resolving to a copy of that named predicate at parse
+  time (section order does not matter). No other keys may accompany it,
+  and a `[Verify]` section cannot itself use `verify:`.
+
+Comment grammar (predicate sections):
+- Inside `[SetGoal]` and `[Verify]` sections, a line whose first non-space
+  character is `#` is a comment and is skipped.
+- Inline `#` comments are **not** supported: values run to the end of the
+  line. Fields whose grammar excludes `#` fail loudly at parse with a hint
+  (JSON fields like `expect`/`arguments`/`tests`/`options`, integer fields
+  like `timeout_s`/`output_lines`, `mcp`, `run` recipe ids — which must
+  match `[A-Za-z0-9_-][A-Za-z0-9._-]*` without `..` — and `fact` query
+  terms, which may not start with `#`).
+- `shell:` values are taken verbatim to the end of the line. Note that
+  `/bin/sh` itself treats an unquoted trailing `#` as a comment, so a
+  trailing `# note` in a shell command is dropped by the shell, not by the
+  parser.

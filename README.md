@@ -1,95 +1,122 @@
 # Arbiter
 
-One referee-adjudicated dev loop for gtest-guarded C DBMS codebases — the unification of
-[cipher-2](https://github.com/HoldThatThgt/cipher-2) (libclang FACT engine),
-[chess](https://github.com/HoldThatThgt/chess) (deterministic playbook referee), and
-[crun-mcp](https://github.com/HoldThatThgt/crun-mcp) (proven build/test recipes) into a single product.
+**A deterministic referee for LLM-driven C/C++ development.** Arbiter turns the
+loop an AI coding agent runs inside a large gtest-guarded codebase — plan, build,
+orient, edit, test, verify — into a refereed match: every success claim is
+adjudicated from typed, machine-checkable evidence by a Go referee. The model has
+no "declare success" interface.
 
-The unit of value is the loop an LLM runs when developing C in a large codebase:
-**plan** (playbook) → **gear up** (build with the request's profile — which *is* the index) →
-**orient** (AST facts) → **dispatch** (executor subagents) → **edit** → **build/test** →
-**verify** (machine-checkable typed predicates) → **learn** (gotchas, proven recipes).
-A deterministic Go referee owns every transition; the model has no "declare success" interface.
+```
+plan (playbook) → gear up (build = index) → orient (AST facts) → dispatch
+(executor subagents) → edit → build/test → verify (typed predicates) → learn
+```
+
+## Why
+
+LLM agents are good at writing code and bad at honestly judging whether it works.
+Arbiter removes the judgment from the model entirely:
+
+- **Typed verdicts, never prose.** A task or goal passes only when a typed
+  predicate (`shell` / `mcp` / `run` / `fact`) produces evidence whose fields
+  match the declared `expect` clauses. A failing gtest run cannot checkmate.
+- **Constructive RBAC.** Each agent role (player, curator, executor) talks to its
+  own MCP server exposing only that seat's tools. Capability boundaries are
+  enforced by construction, not by prompt.
+- **Compile done ⇒ index done.** The `arbiter cc` compiler shim journals every
+  translation unit during the build; when the build is green, the typed-AST facts
+  snapshot is already published. There is no separate indexing step to forget.
+- **Anti-false-checkmate machinery.** Recipe pinning, named verification
+  predicates, round-sequence guards, and census-digest memoization make it hard
+  for an adversarial (or merely optimistic) agent to win without doing the work.
 
 ## Quick start
 
+Requirements: Go 1.25+, Python ≥ 3.9 (the engine has zero dependencies), Linux
+or macOS, and [Claude Code](https://claude.com/claude-code) for the agent loop.
+
+The repository is self-contained: Go dependencies are vendored under `vendor/`
+and the Python engine is embedded in the binary, so both the build and the
+deployment work **fully offline**.
+
 ```sh
-# 1. install — one command, one artifact (engine + gdb-mcp + perf-mcp embedded)
+# 1. Install — one command, one artifact (engine + gdb-mcp + perf-mcp embedded)
 git clone https://github.com/HoldThatThgt/arbiter && cd arbiter && make install
 
-# 2. wire your C/C++ repo — one command (idempotent, seconds)
-cd /path/to/your/c/repo && arbiter init
-
-# 3. play
-claude
-#   then inside the session:   /arbiter-play <your request>
-#   capture knowledge:         /playbook-create
+# 2. Wire your C/C++ repository — one command (idempotent, seconds)
+cd /path/to/your/repo && arbiter init
 ```
 
-Everything ships in the one binary; the only system prerequisite is `python3` (≥ 3.9) — if it
-is missing, `arbiter init` says so and that is the only thing you will ever be asked to
-install. `arbiter --help` and `arbiter init --help` state exactly what each command does.
+`arbiter init` resolves the engine automatically: an installed `arbiter-engine`
+package when present, otherwise the copy embedded in the binary (no pip, no
+network); the starter openings and the bundled **gdb-mcp** (structured GDB
+debugging) + **perf-mcp** (C perf triage) diagnostic servers are delivered with
+it. `arbiter --help` and `arbiter init --help` state exactly what each command
+does.
 
-Your repo keeps building with **its own compiler** (gcc/g++ of any version) — arbiter never
-swaps it. Only the facts index needs LLVM Clang ≥ 16 (or Apple Clang ≥ 15) for its own AST
-extraction, isolated from your build toolchain; without it you lose facts, never builds. Live
-debugging additionally wants a working host `gdb` (`python3 -m arbiter_engine.gdbmcp doctor
---root .` tells you).
-
-Details, predicates, playbook grammar, troubleshooting: **[docs/user-guide.md](docs/user-guide.md)**.
-
-## The user contract — four verbs
+Then, inside Claude Code in that repository:
 
 | When | Verb |
 |---|---|
 | once per repo (shell) | `arbiter init` |
-| once per repo (in Claude Code) | `/arbiter-intro` *(lands with M7)* |
-| every request | `/arbiter-play <request>` |
-| capture knowledge | `/playbook-create` (where skill-create used to be) |
+| once per repo (Claude Code) | `/arbiter-intro` — probe the build, prove recipes, first gear-up |
+| every request | `/arbiter-play <request>` — a refereed match against your request |
+| capture knowledge | `/playbook-create` — turn a session into a reusable opening |
 
-Beyond these, the session is stock Claude Code: no recipe ceremony, no index commands, no seat management.
+Everything else is stock Claude Code: no index commands, no seat management, no
+recipe ceremony.
 
-## Architecture in one paragraph
+Your repo keeps building with **its own compiler** (gcc/g++ of any version) —
+arbiter never swaps it. Only the facts index needs LLVM Clang ≥ 16 (or Apple
+Clang ≥ 15) for its own AST extraction, isolated from your build toolchain;
+without it you lose facts, never builds. Live debugging additionally wants a
+working host `gdb` (`python3 -m arbiter_engine.gdbmcp doctor --root .` tells you). See the **[User Guide](docs/user-guide.md)** for the full
+walkthrough.
 
-Two runtimes, one seam, one delivered artifact (ADR-0011). **`arbiter`** (Go, single static binary, vendored deps): referee, seats
-(constructive RBAC via per-seat MCP servers), Stop-hook gate, deploy, and the `arbiter cc` per-TU
-compiler shim. **`arbiter-engine`** (Python ≥3.9, stdlib-only, pip-installed): the `facts/` namespace
-(cipher-2 absorbed verbatim — typed-AST extraction, snapshots, `search`/`detail`), the `runs/`
-namespace (recipes, gtest-first harness adapters, census-validated build cache), and `shared/`
-(work-tree census, lock inventory, build-driven indexing pipeline). They speak line-delimited
-JSON-RPC over stdio, contract-tested by golden transcripts. All state lives in repo-local
-`.arbiter/`; committed knowledge is `playbook/*.md` + `recipes.yaml` + `config.yml`.
+## How it works
 
-The keystone mechanism: chess's 1-bit predicates (exit code / `isError`) become **typed evidence
-claims** — `{kind:"run", expect:{overall:"passed"}}`, `{kind:"fact", expect:{complete:true,
-max_results:1}}` — evaluated by the two native engines and compared field-by-field by the referee.
-A failing gtest run can no longer checkmate. The facts index has **no standalone lifecycle**: the
-`arbiter cc` shim journals every compiler invocation and extraction overlaps the build, so when the
-gear-up build is green the snapshot is published. Compile done ⇒ index done.
+Two artifacts, one seam:
 
-## Bundled diagnostics — gdb-mcp & perf-mcp
+- **`arbiter`** (Go, single static binary, vendored deps): the deterministic
+  referee and match store, per-seat MCP servers, the deploy/adopt installers, the
+  Stop-hook gate, and the `arbiter cc` per-TU compiler shim.
+- **`arbiter-engine`** (Python ≥ 3.9, stdlib-only): typed-AST fact extraction and
+  search (`facts/`), proven build/test recipes with a gtest-first harness adapter
+  (`runs/`), and the build-driven indexing pipeline (`shared/`).
 
-`arbiter-engine` ships two diagnostic MCP servers (ADR-0010): **gdb-mcp** (structured GDB
-debugging — sessions, watchpoints, stack/locals snapshots) and **perf-mcp** (C perf triage —
-ranked findings, argv-only before/after measurement). `arbiter init` wires both into
-`.mcp.json` and writes the `arbiter-debugger` executor agent whenever it can resolve the
-engine; predicates adjudicate their structured fields, never text. Live debugging additionally
-needs a working host `gdb` (`doctor` tells you). Full detail:
-[user-guide §6–7](docs/user-guide.md#6-bundled-diagnostics-in-depth).
+They speak line-delimited JSON-RPC over stdio, contract-tested by golden
+transcripts replayed from both runtimes. All state is repo-local under
+`.arbiter/`; the only committed knowledge is `playbook/*.md`, `recipes.yaml`,
+and `config.yml`. No daemons, no network.
 
-## Repository map
+## CLI
 
 ```
-docs/user-guide.md      the user manual: setup, playbooks, predicates, diagnostics, troubleshooting
-docs/design.md          master design document (the spec of record)
-docs/modules/           per-module elaborated designs (binding specs for implementation)
-docs/decisions.md       ADR log — owner-signed decisions; specs change ONLY through this file
-docs/migration.md       milestone plan (M0–M8), each independently green
-PROCESS.md              how this repo is built: GPT implements, Claude reviews, owner adjudicates
-prompts/gpt-implementer.md   the standing prompt for the implementer agent
+arbiter init [--no-executor] [--remove] [--embedded-engine]
+arbiter adopt                 # migrate a legacy chess/crun/cipher deployment
+arbiter status [--json]       # compose-on-read deployment & match status
+arbiter report [--json] [id]  # journal + run evidence for a match
+arbiter serve <seat>          # player | curator | executor MCP server (stdio)
+arbiter hook stop             # Claude Code Stop-hook gate
+arbiter cc -- <compiler> ...  # compile interposer (installed automatically)
 ```
 
-## Status
+## Documentation
 
-Pre-implementation. The design is complete (`docs/design.md`); implementation proceeds
-issue-by-issue per `docs/migration.md` under the process in `PROCESS.md`.
+- **[User Guide](docs/user-guide.md)** — installation, the four verbs, recipes,
+  playbooks, predicates, configuration, troubleshooting.
+- [`docs/design.md`](docs/design.md) — the design document of record.
+- [`docs/modules/`](docs/modules/) — per-module specifications.
+- [`docs/decisions.md`](docs/decisions.md) — the ADR log.
+
+## Development
+
+```sh
+make build        # go build ./cmd/arbiter (uses vendor/ automatically)
+make test         # go vet + go test -race ./... + Python engine suite
+make fmt-check    # gofmt gate
+make transcripts  # regenerate the golden JSON-RPC transcript corpus
+```
+
+The wire contract between the Go referee and the Python engine is pinned by the
+transcripts under `testdata/transcripts/`; any change to a tool schema or
+JSON-RPC shape must regenerate them in the same change.

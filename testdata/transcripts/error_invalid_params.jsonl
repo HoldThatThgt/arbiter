@@ -1,0 +1,2 @@
+{"type":"request","message":{"jsonrpc":"2.0","id":1,"method":"arbiter/refresh","params":{"scope":"bad"}}}
+{"type":"response","message":{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"invalid params","data":{"kind":"invalid_params","field":"scope"}}},"allow_volatile":[]}

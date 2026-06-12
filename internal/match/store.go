@@ -1,6 +1,7 @@
 package match
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -8,16 +9,27 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"syscall"
+	"sync"
 	"time"
 
 	"github.com/HoldThatThgt/arbiter/internal/journal"
 	"github.com/HoldThatThgt/arbiter/internal/playbook"
+	"github.com/HoldThatThgt/arbiter/internal/shared"
 )
 
 type Store struct {
 	Root string
 	Seat string
+
+	// engineMu guards the exec engine cached across the async run-goal
+	// lifecycle (goals_engine.go). It is independent of the match file
+	// lock and the two are never held together: engine spawn/calls stay
+	// outside withLock, exactly like the previous per-call Spawn.
+	engineMu   sync.Mutex
+	goalEngine execEngine
+	// spawnExec is the engine factory; tests substitute a counting fake.
+	// nil means engineclient.Spawn with RoleExec.
+	spawnExec func(ctx context.Context, root string) (execEngine, error)
 }
 
 func New(root, seat string) *Store {
@@ -33,11 +45,11 @@ func (s *Store) statusPath() string {
 }
 
 func (s *Store) lockPath() string {
-	return filepath.Join(s.Root, ".arbiter", "match", "run", "lock")
+	return shared.Path(s.Root, shared.MatchLock)
 }
 
 func (s *Store) playbookDir() string {
-	return filepath.Join(s.Root, ".arbiter", "match", "playbook")
+	return filepath.Join(s.Root, ".arbiter", "playbook")
 }
 
 func (s *Store) withLock(fn func(*Match) (*Match, any, error)) (any, error) {
@@ -64,28 +76,19 @@ func (s *Store) withLock(fn func(*Match) (*Match, any, error)) (any, error) {
 }
 
 func (s *Store) lock() (func(), error) {
-	if err := os.MkdirAll(filepath.Dir(s.lockPath()), 0o755); err != nil {
-		return nil, err
-	}
-	f, err := os.OpenFile(s.lockPath(), os.O_CREATE|os.O_RDWR, 0o600)
+	held, err := shared.Acquire(s.Root, []shared.LockSpec{shared.MatchLock}, time.Duration(playbook.LockTimeoutS)*time.Second)
 	if err != nil {
+		var timeout *shared.TimeoutError
+		if shared.AsTimeout(err, &timeout) {
+			return nil, &ToolError{
+				Code:    playbook.CodeLockTimeout,
+				Message: "lock timeout",
+				Data:    map[string]any{"lock": timeout.Lock},
+			}
+		}
 		return nil, err
 	}
-	deadline := time.Now().Add(time.Duration(playbook.LockTimeoutS) * time.Second)
-	for {
-		err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-		if err == nil {
-			return func() {
-				_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-				_ = f.Close()
-			}, nil
-		}
-		if time.Now().After(deadline) {
-			_ = f.Close()
-			return nil, &ToolError{Code: playbook.CodeStateBusy, Message: "state lock busy"}
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
+	return held.Release, nil
 }
 
 func (s *Store) readState() (*Match, error) {

@@ -34,8 +34,9 @@ Writes/merges, all idempotent and atomic (temp+rename), merge-preserving for for
   writer, plus the add-if-missing companion entries above.
 - `.claude/settings.json`: deny rules — `Read(.arbiter/playbook/**)`, `Read(.arbiter/match/**)`,
   `Read(.claude/agents/arbiter-*.md)`; Edit/Write deny on `.arbiter/engine/**` when
-  `--embedded-engine`. Stop hook claimed by **exact command match** (never the trailing-words
-  heuristic — it can hijack foreign hooks).
+  `--embedded-engine`. Stop hook claimed by **exact command match**, plus reclamation of provably
+  dead entries (first-token basename `arbiter` + ` hook stop` suffix + the binary no longer
+  exists on disk) — a live foreign hook is never hijacked.
 - `.gitignore`: `.arbiter/` derived-state entries.
 - `.arbiter/config.yml` + empty `playbook/`/`recipes.yaml` scaffolds with commented schema headers.
 - Filesystem probe: refuse network mounts with a typed error (flock/WAL need a local FS,

@@ -1,0 +1,2 @@
+{"type":"request","message":{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":{"query":"q"},"_meta":"bad"}}}
+{"type":"response","message":{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"invalid params","data":{"kind":"invalid_meta"}}},"allow_volatile":[]}

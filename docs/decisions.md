@@ -38,11 +38,18 @@ user path; gear-up is a templated convention in every opening playbook.
 ## ADR-0005 — Two caches, two keys (2026-06-11, accepted)
 Build cache keys on full flags + profile. Extraction cache keys on (TU content, include-closure
 content, allowlist-cleaned semantic flags, toolchain id) — the allowlist strips codegen-only
-flags (`-O*`, `-g*`, `-fsanitize=*`, `--coverage`, `-fprofile-*`), so profile switches re-extract
-nothing and feature-flag changes re-extract only their include-closure cone. Known blind spot:
-compiler-injected instrumentation macros (`__SANITIZE_*`, `__has_feature(*_sanitizer)`);
-`/arbiter-intro` runs a whole-token scan and recommends `facts.key_flags` — user-confirmed,
-never silently written into committed config. **Consequences:** memoization/cache digests fold
+flags (`-O*`, `-g*`, `--coverage`, `-fprofile-*`), so profile switches re-extract nothing.
+`-fsanitize=*` is always kept in the key: sanitizers inject preprocessor state (`__SANITIZE_*`,
+`__has_feature(*_sanitizer)`), so a sanitizer build never silently reuses plain-build facts.
+`facts.key_flags` remains the user-confirmed opt-in for restoring sensitivity to the remaining
+stripped dimensions (`-O*`/`-g*`); `/arbiter-intro` recommends it, never silently written into
+committed config. Known blind spot: per-TU include closures are not yet wired — the publish
+pipeline over-approximates with a single repo-wide headers digest (census walk of
+`*.h/*.hh/*.hpp/*.hxx/*.inl` under root, excluding `.git`/`.arbiter`) folded into every unit's
+include closure as `__repo_headers__`, so ANY header edit invalidates ALL cached units and
+changes the snapshot id. That is correct but coarse: feature-flag header changes re-extract
+everything rather than only their include-closure cone, until real per-TU closures land.
+**Consequences:** memoization/cache digests fold
 in toolchain hash, goal-spec hash, recipe-book hash; goal memoization ships default-off.
 
 ## ADR-0006 — Typed ResultSpec kinds run/fact; deny-self mcp guard (2026-06-11, accepted)
@@ -125,8 +132,10 @@ recipe-derivation — those need facts/runs).
 imperative phrase: verb-first, kebab-case, ≤3 segments, file stem == name; the description
 leads with "Use when …" and carries "Do not use … (use <other>)" cross-pointers so dedup
 happens at curator-selection time. The four: `fix-reported-bug`, `hunt-latent-bugs`,
-`build-feature`, `fix-slow-path`; the old names (debug-repro-fix, review-bug-hunt,
-feature-tdd, perf-triage-fix) are retired.
+`build-feature`, `fix-slow-path`; the prior names from both parallel efforts (debug-repro-fix,
+review-bug-hunt, feature-tdd, perf-triage-fix; debug, feature, review) are retired. The
+design-canonical intro openings (freeplay, gold-digger, recipe-derivation, regression-triage)
+are grandfathered and ship alongside.
 (3) **Predicate discipline** — steps state the EXACT result predicate the executor must
 submit (shell with explicit exit-code polarity, or mcp + `expect` clauses), and laws are
 machine checks inside predicates (`git diff --quiet` untouchability, 5x determinism loops,

@@ -11,6 +11,7 @@ PY39_STDLIB_FALLBACK = {
     "argparse",
     "ast",
     "dataclasses",
+    "fcntl",
     "os",
     "pathlib",
     "subprocess",
@@ -110,9 +111,22 @@ class _ImportVisitor(ast.NodeVisitor):
             self._check(node.lineno, node.module.split(".", 1)[0])
 
     def visit_Call(self, node: ast.Call) -> None:
-        root = _dynamic_import_root(node)
-        if root is not None:
-            self._check(node.lineno, root)
+        if _is_dynamic_import_call(node.func):
+            root = _dynamic_import_root(node)
+            if root is None:
+                # Fail closed: a module name built at runtime cannot be
+                # checked against the stdlib allowlist, so it is a violation
+                # outright rather than an escape hatch.
+                self.violations.append(
+                    ImportViolation(
+                        self.path,
+                        node.lineno,
+                        "<dynamic>",
+                        "dynamic import with a non-literal module name",
+                    )
+                )
+            else:
+                self._check(node.lineno, root)
         self.generic_visit(node)
 
     def visit_Try(self, node: ast.Try) -> None:
@@ -165,9 +179,6 @@ def _handler_catches(node: Optional[ast.expr]) -> bool:
 def _dynamic_import_root(node: ast.Call) -> Optional[str]:
     if not node.args:
         return None
-    if not _is_dynamic_import_call(node.func):
-        return None
-
     module = node.args[0]
     if not isinstance(module, ast.Constant) or not isinstance(module.value, str):
         return None
@@ -179,7 +190,7 @@ def _is_dynamic_import_call(node: ast.expr) -> bool:
         return node.id == "__import__"
     return (
         isinstance(node, ast.Attribute)
-        and node.attr == "import_module"
+        and node.attr in {"import_module", "__import__"}
         and isinstance(node.value, ast.Name)
         and node.value.id == "importlib"
     )

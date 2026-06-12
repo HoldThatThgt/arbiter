@@ -1,0 +1,2 @@
+{"type":"request","message":{"jsonrpc":"2.0","id":1,"method":"arbiter/handshake","params":{"expected_version":"old"}}}
+{"type":"response","message":{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"engine stale","data":{"kind":"engine_stale","expected":"old","found":"dev"}}},"allow_volatile":[]}

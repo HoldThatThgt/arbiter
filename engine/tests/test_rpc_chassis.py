@@ -50,7 +50,10 @@ class RPCChassisTest(unittest.TestCase):
             ["detail", "import_recipes", "recipe_search", "register", "run", "scan", "search"],
         )
         for tool in tools:
-            self.assertEqual(sorted(tool), ["description", "inputSchema", "name"])
+            if tool["name"] in {"search", "detail"}:
+                self.assertEqual(sorted(tool), ["description", "inputSchema", "name", "outputSchema", "title"])
+            else:
+                self.assertEqual(sorted(tool), ["description", "inputSchema", "name"])
             self.assertFalse(tool["inputSchema"].get("additionalProperties", True))
 
     def test_tools_call_routes_to_registered_tool(self):
@@ -60,8 +63,8 @@ class RPCChassisTest(unittest.TestCase):
 
         self.assertEqual(response["id"], 1)
         self.assertFalse(response["result"]["isError"])
-        self.assertEqual(response["result"]["namespace"], "facts")
-        self.assertEqual(response["result"]["tool"], "search")
+        self.assertEqual(response["result"]["structuredContent"]["query"], "callers:main")
+        self.assertEqual(response["result"]["structuredContent"]["query_kind"], "relation")
 
     def test_meta_is_context_not_tool_argument(self):
         seen = {}
@@ -123,6 +126,62 @@ class RPCChassisTest(unittest.TestCase):
         oversized = response_for(" " * (rpc.MAX_LINE_BYTES + 1) + "\n")
         self.assertEqual(oversized["error"]["code"], -32600)
         self.assertEqual(oversized["error"]["data"]["kind"], "line_too_large")
+
+    def test_unexpected_handler_exception_maps_to_internal_error_and_loop_survives(self):
+        def explode(context, arguments):
+            raise KeyError("missing-thing")
+
+        router = rpc.Router()
+        schema = {"type": "object", "properties": {}, "additionalProperties": False}
+        router.register(rpc.Tool("test", "explode", "explode", schema, explode))
+        router.register(rpc.Tool("test", "ok", "ok", schema, lambda c, a: {"ok": True}))
+
+        stdin = io.StringIO(
+            request("tools/call", {"name": "explode", "arguments": {}}, request_id=1)
+            + request("tools/call", {"name": "ok", "arguments": {}}, request_id=2)
+        )
+        stdout = io.StringIO()
+        rpc.serve(stdin, stdout, router=router)
+
+        lines = stdout.getvalue().splitlines()
+        self.assertEqual(len(lines), 2)
+        failed = json.loads(lines[0])
+        self.assertEqual(failed["id"], 1)
+        self.assertEqual(failed["error"]["code"], -32603)
+        self.assertEqual(failed["error"]["data"]["kind"], "internal_error")
+        self.assertEqual(failed["error"]["data"]["exception"], "KeyError")
+        self.assertIn("missing-thing", failed["error"]["data"]["detail"])
+        survived = json.loads(lines[1])
+        self.assertEqual(survived["id"], 2)
+        self.assertEqual(survived["result"], {"ok": True})
+
+    def test_notifications_receive_no_response_even_on_error(self):
+        notification_ok = json.dumps(
+            {"jsonrpc": "2.0", "method": "tools/list"}, separators=(",", ":")
+        )
+        notification_error = json.dumps(
+            {"jsonrpc": "2.0", "method": "arbiter/nope"}, separators=(",", ":")
+        )
+        stdin = io.StringIO(
+            notification_ok + "\n" + notification_error + "\n" + request("initialize", request_id=7)
+        )
+        stdout = io.StringIO()
+        rpc.serve(stdin, stdout)
+
+        lines = stdout.getvalue().splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(json.loads(lines[0])["id"], 7)
+
+    def test_descriptor_includes_title_only_when_set(self):
+        schema = {"type": "object", "properties": {}, "additionalProperties": False}
+        plain = rpc.Tool("test", "plain", "plain tool", schema, lambda c, a: {})
+        titled = rpc.Tool("test", "titled", "titled tool", schema, lambda c, a: {}, title="Titled")
+
+        self.assertNotIn("title", plain.descriptor())
+        self.assertEqual(titled.descriptor()["title"], "Titled")
+        self.assertEqual(
+            sorted(titled.descriptor()), ["description", "inputSchema", "name", "title"]
+        )
 
     def test_requests_are_processed_one_at_a_time(self):
         events = []

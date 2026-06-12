@@ -4,13 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	stderrors "errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
+
+	"github.com/HoldThatThgt/arbiter/internal/embeddedengine"
 )
 
 type transcriptEntry struct {
@@ -38,8 +42,54 @@ func TestReplayTranscriptsAgainstPythonStub(t *testing.T) {
 
 	for _, path := range paths {
 		t.Run(filepath.Base(path), func(t *testing.T) {
-			replayTranscript(t, repo, path)
+			workdir := transcriptWorkdir(t, repo)
+			replayTranscript(t, workdir, path)
 		})
+	}
+}
+
+func TestSpawnEmbeddedEngineVerifiesDigestAndJournals(t *testing.T) {
+	repo := t.TempDir()
+	manifest, err := embeddedengine.Unpack(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeJSONFile(t, filepath.Join(repo, ".arbiter", "run", "engines.json"), map[string]any{
+		"mode":          "embedded",
+		"engine_root":   ".arbiter/engine",
+		"engine_digest": manifest.Digest,
+	})
+	engine, err := Spawn(context.Background(), RoleQuery, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine.Close()
+	data, err := os.ReadFile(filepath.Join(repo, ".arbiter", "match", "log", "journal.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "embedded_engine_verified") {
+		t.Fatalf("journal = %s", data)
+	}
+
+	// Verification results are memoized per (root, digest) for the process
+	// lifetime, so tampering must be exercised in a fresh repo that has not
+	// yet verified successfully.
+	tampered := t.TempDir()
+	tamperedManifest, err := embeddedengine.Unpack(tampered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeJSONFile(t, filepath.Join(tampered, ".arbiter", "run", "engines.json"), map[string]any{
+		"mode":          "embedded",
+		"engine_root":   ".arbiter/engine",
+		"engine_digest": tamperedManifest.Digest,
+	})
+	if err := os.WriteFile(filepath.Join(tampered, ".arbiter", "engine", "arbiter_engine", "__init__.py"), []byte("tampered = True\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Spawn(context.Background(), RoleQuery, tampered); err == nil || !strings.Contains(err.Error(), "embedded engine digest mismatch") {
+		t.Fatalf("err = %v, want digest mismatch", err)
 	}
 }
 
@@ -80,6 +130,366 @@ func TestValidateResponseRejectsUnknownEngineErrorKind(t *testing.T) {
 	}
 }
 
+func TestStartRunAndRunStatusCallCustomMethods(t *testing.T) {
+	repo := repoRoot(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	client, err := Spawn(ctx, RoleExec, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	started, err := client.StartRun(ctx, map[string]any{
+		"kind":      "stub",
+		"sleep_ms":  10,
+		"timeout_s": 1,
+		"result": map[string]any{
+			"overall": "passed",
+		},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started.RunID == "" {
+		t.Fatal("startRun returned empty run_id")
+	}
+	if started.State != "running" {
+		t.Fatalf("startRun state = %q, want running", started.State)
+	}
+
+	var status RunStatus
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		status, err = client.RunStatus(ctx, started.RunID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status.State != "running" {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if status.State != "completed" {
+		t.Fatalf("runStatus state = %q, want completed", status.State)
+	}
+	if !strings.Contains(string(status.Result), `"overall":"passed"`) {
+		t.Fatalf("runStatus result = %s", status.Result)
+	}
+}
+
+func TestToolsListAndCallToolWithMeta(t *testing.T) {
+	repo := repoRoot(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	client, err := Spawn(ctx, RoleQuery, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	tools, err := client.ToolsList(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tools) == 0 || tools[0].Name == "" {
+		t.Fatalf("tools = %#v", tools)
+	}
+
+	result, err := client.CallTool(ctx, "search", map[string]any{"query": "callers:main"}, map[string]any{"match_id": "m1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("CallTool returned error result: %#v", result)
+	}
+	if result.StructuredContent["query"] != "callers:main" || result.StructuredContent["query_kind"] != "relation" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestTimeoutPoisonsKillsProcessGroupAndRespawnWorks(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "respond")
+	childFile := filepath.Join(dir, "child.pid")
+	script := writeFakeEngine(t, `
+import json, os, subprocess, sys, time
+marker = sys.argv[1]
+child_file = sys.argv[2]
+if not os.path.exists(marker):
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    open(child_file, "w", encoding="utf-8").write(str(child.pid))
+    sys.stdout.flush()
+    for _line in sys.stdin:
+        time.sleep(30)
+else:
+    for line in sys.stdin:
+        req = json.loads(line)
+        sys.stdout.write(json.dumps({"jsonrpc":"2.0","id":req["id"],"result":{"ok":True}}, separators=(",", ":")) + "\n")
+        sys.stdout.flush()
+`)
+
+	ctx := context.Background()
+	client, err := spawnCommand(ctx, RoleExec, dir, []string{pythonBin(), script, marker, childFile})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	callCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	_, err = client.Call(callCtx, "probe", nil)
+	cancel()
+	if err == nil {
+		t.Fatal("expected timeout")
+	}
+	if !client.Poisoned() {
+		t.Fatal("client not poisoned after timeout")
+	}
+
+	childPID := readPID(t, childFile)
+	waitNoProcess(t, childPID)
+
+	if err := os.WriteFile(marker, []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Respawn(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if client.Poisoned() {
+		t.Fatal("client still poisoned after respawn")
+	}
+	raw, err := client.Call(ctx, "probe", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"ok":true`) {
+		t.Fatalf("response = %s", raw)
+	}
+}
+
+func TestStdinWriteFailurePoisonsChild(t *testing.T) {
+	dir := t.TempDir()
+	ready := filepath.Join(dir, "ready")
+	script := writeFakeEngine(t, `
+import os, sys, time
+os.close(0)
+open(sys.argv[1], "w", encoding="utf-8").write("ready")
+time.sleep(30)
+`)
+
+	client, err := spawnCommand(context.Background(), RoleExec, dir, []string{pythonBin(), script, ready})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	waitForFile(t, ready)
+	pid := client.cmd.Process.Pid
+
+	_, err = client.Call(context.Background(), "probe", nil)
+	if err == nil {
+		t.Fatal("expected stdin write failure")
+	}
+	if !client.Poisoned() {
+		t.Fatal("client not poisoned after stdin write failure")
+	}
+	waitNoProcess(t, pid)
+	if _, err := client.Call(context.Background(), "probe", nil); !stderrors.Is(err, ErrPoisoned) {
+		t.Fatalf("err = %v, want ErrPoisoned", err)
+	}
+}
+
+func TestSpawnSetsArbiterBinEnv(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "env.txt")
+	script := writeFakeEngine(t, `
+import json, os, sys
+env = {
+    "ARBITER_BIN": os.environ.get("ARBITER_BIN", ""),
+    "PYTHONDONTWRITEBYTECODE": os.environ.get("PYTHONDONTWRITEBYTECODE", ""),
+}
+open(sys.argv[1], "w", encoding="utf-8").write(json.dumps(env))
+for line in sys.stdin:
+    req = json.loads(line)
+    sys.stdout.write(json.dumps({"jsonrpc":"2.0","id":req["id"],"result":{"ok":True}}, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+`)
+
+	client, err := spawnCommand(context.Background(), RoleExec, dir, []string{pythonBin(), script, out})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if _, err := client.Call(context.Background(), "probe", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env map[string]string
+	if err := json.Unmarshal(data, &env); err != nil {
+		t.Fatal(err)
+	}
+	got := env["ARBITER_BIN"]
+	want, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if abs, err := filepath.Abs(want); err == nil {
+		want = abs
+	}
+	if got != want {
+		t.Fatalf("ARBITER_BIN = %q, want %q", got, want)
+	}
+	if !filepath.IsAbs(got) {
+		t.Fatalf("ARBITER_BIN = %q is not absolute", got)
+	}
+	// Bytecode generation is suppressed so the child never writes
+	// __pycache__/*.pyc into the (digest-verified) engine tree.
+	if env["PYTHONDONTWRITEBYTECODE"] != "1" {
+		t.Fatalf("PYTHONDONTWRITEBYTECODE = %q, want \"1\"", env["PYTHONDONTWRITEBYTECODE"])
+	}
+}
+
+// TestEngineInternalErrorIsTypedAndDoesNotPoison proves the catch-all
+// engine error kind "internal_error" surfaces as a typed EngineError on a
+// still-usable channel instead of poisoning the child.
+func TestEngineInternalErrorIsTypedAndDoesNotPoison(t *testing.T) {
+	dir := t.TempDir()
+	script := writeFakeEngine(t, `
+import json, sys
+first = True
+for line in sys.stdin:
+    req = json.loads(line)
+    if first:
+        first = False
+        resp = {"jsonrpc": "2.0", "id": req["id"], "error": {"code": -32000, "message": "boom", "data": {"kind": "internal_error"}}}
+    else:
+        resp = {"jsonrpc": "2.0", "id": req["id"], "result": {"ok": True}}
+    sys.stdout.write(json.dumps(resp, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+`)
+
+	client, err := spawnCommand(context.Background(), RoleExec, dir, []string{pythonBin(), script})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	_, err = client.Call(context.Background(), "probe", nil)
+	var engineErr *EngineError
+	if !stderrors.As(err, &engineErr) {
+		t.Fatalf("error = %T %[1]v, want *EngineError", err)
+	}
+	if engineErr.Kind != "internal_error" {
+		t.Fatalf("kind = %q, want internal_error", engineErr.Kind)
+	}
+	if client.Poisoned() {
+		t.Fatal("client poisoned by typed internal_error")
+	}
+
+	raw, err := client.Call(context.Background(), "probe", nil)
+	if err != nil {
+		t.Fatalf("call after internal_error: %v", err)
+	}
+	if !strings.Contains(string(raw), `"ok":true`) {
+		t.Fatalf("response = %s", raw)
+	}
+}
+
+func TestCallTimeoutEnvOverride(t *testing.T) {
+	cases := []struct {
+		value string
+		want  time.Duration
+	}{
+		{"", defaultCallTimeout},
+		{"abc", defaultCallTimeout},
+		{"0", defaultCallTimeout},
+		{"-3", defaultCallTimeout},
+		{"42", 42 * time.Second},
+	}
+	for _, tc := range cases {
+		t.Setenv(callTimeoutEnv, tc.value)
+		if got := callTimeout(); got != tc.want {
+			t.Fatalf("callTimeout with %s=%q is %v, want %v", callTimeoutEnv, tc.value, got, tc.want)
+		}
+	}
+}
+
+func TestCallTimeoutEnvBoundsCallWithoutParentDeadline(t *testing.T) {
+	t.Setenv(callTimeoutEnv, "1")
+	dir := t.TempDir()
+	script := writeFakeEngine(t, `
+import sys, time
+sys.stdin.readline()
+time.sleep(30)
+`)
+
+	client, err := spawnCommand(context.Background(), RoleExec, dir, []string{pythonBin(), script})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	start := time.Now()
+	_, err = client.Call(context.Background(), "probe", nil)
+	if !stderrors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want deadline exceeded", err)
+	}
+	if elapsed := time.Since(start); elapsed >= 10*time.Second {
+		t.Fatalf("call took %v, want roughly the 1s override", elapsed)
+	}
+	if !client.Poisoned() {
+		t.Fatal("client not poisoned after timeout")
+	}
+}
+
+func TestProtocolFaultsPoisonChild(t *testing.T) {
+	cases := []struct {
+		name   string
+		source string
+	}{
+		{
+			name: "garbage",
+			source: `
+import sys
+sys.stdin.readline()
+sys.stdout.write("not-json\n")
+sys.stdout.flush()
+`,
+		},
+		{
+			name: "death",
+			source: `
+import sys
+sys.stdin.readline()
+sys.exit(0)
+`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			script := writeFakeEngine(t, tc.source)
+			client, err := spawnCommand(context.Background(), RoleExec, dir, []string{pythonBin(), script})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+
+			_, err = client.Call(context.Background(), "probe", nil)
+			if err == nil {
+				t.Fatal("expected protocol fault")
+			}
+			if !client.Poisoned() {
+				t.Fatal("client not poisoned after protocol fault")
+			}
+		})
+	}
+}
+
 func replayTranscript(t *testing.T, repo, path string) {
 	t.Helper()
 
@@ -107,6 +517,9 @@ func replayTranscript(t *testing.T, repo, path string) {
 		if decoded.ID != int64(i/2+1) {
 			t.Fatalf("request id = %d, want sequential id %d", decoded.ID, i/2+1)
 		}
+		if decoded.Method == "arbiter/runStatus" {
+			time.Sleep(50 * time.Millisecond)
+		}
 		actual, err := client.Call(ctx, decoded.Method, decoded.Params)
 		if transcriptHasError(t, response.Message) {
 			var engineErr *EngineError
@@ -120,6 +533,9 @@ func replayTranscript(t *testing.T, repo, path string) {
 			t.Fatal(err)
 		}
 		assertJSONEqual(t, response.Message, actual, response.AllowVolatile)
+		if decoded.Method == "arbiter/startRun" {
+			time.Sleep(100 * time.Millisecond)
+		}
 	}
 }
 
@@ -196,6 +612,30 @@ func repoRoot(t *testing.T) string {
 	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
 }
 
+func transcriptWorkdir(t *testing.T, repo string) string {
+	t.Helper()
+
+	workdir := t.TempDir()
+	if err := os.Symlink(filepath.Join(repo, "engine"), filepath.Join(workdir, "engine")); err != nil {
+		t.Fatalf("link engine into transcript workdir: %v", err)
+	}
+	return workdir
+}
+
+func writeJSONFile(t *testing.T, path string, value any) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func bytesLines(data []byte) [][]byte {
 	var lines [][]byte
 	for _, line := range strings.Split(string(data), "\n") {
@@ -245,4 +685,66 @@ func jsonValuesEqual(left, right any) bool {
 	leftJSON, _ := json.Marshal(left)
 	rightJSON, _ := json.Marshal(right)
 	return string(leftJSON) == string(rightJSON)
+}
+
+func writeFakeEngine(t *testing.T, source string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "fake_engine.py")
+	if err := os.WriteFile(path, []byte(strings.TrimLeft(source, "\n")), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func pythonBin() string {
+	if python := os.Getenv("PYTHON"); python != "" {
+		return python
+	}
+	return "python3"
+}
+
+func waitForFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("file was not created: %s", path)
+}
+
+func readPID(t *testing.T, path string) int {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			pid, convErr := strconv.Atoi(strings.TrimSpace(string(data)))
+			if convErr != nil {
+				t.Fatal(convErr)
+			}
+			return pid
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("pid file was not written: %s", path)
+	return 0
+}
+
+func waitNoProcess(t *testing.T, pid int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		err := syscall.Kill(pid, 0)
+		if err == syscall.ESRCH {
+			return
+		}
+		if err != nil && !stderrors.Is(err, syscall.EPERM) {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatal(fmt.Sprintf("process %d still exists", pid))
 }

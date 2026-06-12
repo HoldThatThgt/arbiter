@@ -221,6 +221,54 @@ func TestMCPPreflightErrors(t *testing.T) {
 	}
 }
 
+func TestMCPReservedServerAdversarialMatrix(t *testing.T) {
+	root := t.TempDir()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(root, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	symlink := filepath.Join(bin, "arbiter-self-symlink")
+	if err := os.Symlink(self, symlink); err != nil {
+		t.Fatal(err)
+	}
+	hardlink := filepath.Join(bin, "arbiter-self-hardlink")
+	if err := os.Link(self, hardlink); err != nil {
+		t.Skipf("hardlink unsupported on this filesystem: %v", err)
+	}
+	pathName := "arbiter-self-path"
+	if err := os.Symlink(self, filepath.Join(bin, pathName)); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	writeMCP(t, root, map[string]any{
+		"direct":      map[string]any{"type": "stdio", "command": self},
+		"symlink":     map[string]any{"type": "stdio", "command": symlink},
+		"path_lookup": map[string]any{"type": "stdio", "command": pathName},
+		"hardlink":    map[string]any{"type": "stdio", "command": hardlink},
+		"argv":        map[string]any{"type": "stdio", "command": self, "args": []any{"--not-a-bypass"}},
+		"foreign_arg": map[string]any{"type": "stdio", "command": "/bin/echo", "args": []any{self}},
+	})
+
+	for _, name := range []string{"direct", "symlink", "path_lookup", "hardlink", "argv"} {
+		t.Run(name, func(t *testing.T) {
+			_, err := readServerConfig(root, name)
+			if code := specCode(err); code != playbook.CodeReservedServer {
+				t.Fatalf("code = %q, want %q (err=%v)", code, playbook.CodeReservedServer, err)
+			}
+		})
+	}
+	t.Run("foreign command with self argument is not self", func(t *testing.T) {
+		if _, err := readServerConfig(root, "foreign_arg"); err != nil {
+			t.Fatalf("foreign arg rejected: %v", err)
+		}
+	})
+}
+
 func runStub() {
 	server := mcp.NewServer(&mcp.Implementation{Name: "stub", Version: "v1"}, nil)
 	server.AddTool(&mcp.Tool{Name: "probe", InputSchema: map[string]any{"type": "object"}}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {

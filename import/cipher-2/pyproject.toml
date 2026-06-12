@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cipher-2"
+version = "1.0.0"
+description = "FACT-only CIPHER v1 runtime"
+requires-python = ">=3.9"
+
+[project.scripts]
+cipher2 = "cipher2.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
