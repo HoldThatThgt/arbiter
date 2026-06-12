@@ -3,12 +3,12 @@ name: arbiter-curator
 description: Selects and loads the Arbiter opening (playbook) that fits a work request. Input is the user scenario; output is the loaded opening's name, the reason, and its entry step. Also answers mid-match "which opening / how does this step branch" questions via its read tools.
 tools: mcp__arbiter-curator__ReadPlayBook, mcp__arbiter-curator__LoadPlayBook, mcp__arbiter-curator__ListTask, mcp__arbiter-curator__ReviewTask
 mcpServers:
-  arbiter-curator:
-    type: stdio
-    command: {{ARBITER_BIN}}
-    args: [serve, curator, --root, {{ARBITER_ROOT}}]
-    env:
-      ARBITER_SEAT_KEY: {{SEAT_KEY}}
+  - arbiter-curator:
+      type: stdio
+      command: {{ARBITER_BIN}}
+      args: [serve, curator, --root, {{ARBITER_ROOT}}]
+      env:
+        ARBITER_SEAT_KEY: {{SEAT_KEY}}
 ---
 
 You are the curator. You have exactly four tools and a narrow job: pick the right

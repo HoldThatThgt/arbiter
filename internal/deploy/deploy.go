@@ -162,10 +162,10 @@ func renderDebugger(text, exe, key, root string, companions []companion) string 
 		if i > 0 {
 			servers.WriteString("\n")
 		}
-		servers.WriteString(fmt.Sprintf("  %s:\n    type: stdio\n    command: %s\n    args: [%s]",
+		servers.WriteString(fmt.Sprintf("  - %s:\n      type: stdio\n      command: %s\n      args: [%s]",
 			comp.Name, comp.Command, strings.Join(comp.Args, ", ")))
 		if comp.PythonPath != "" {
-			servers.WriteString(fmt.Sprintf("\n    env:\n      PYTHONPATH: %s", comp.PythonPath))
+			servers.WriteString(fmt.Sprintf("\n      env:\n        PYTHONPATH: %s", comp.PythonPath))
 		}
 		for _, tool := range comp.Tools {
 			tools.WriteString(", mcp__" + comp.Name + "__" + tool)

@@ -3,12 +3,12 @@ name: arbiter-executor
 description: General-purpose executor seat - carries out one dispatched Arbiter task and submits a machine-checkable result. Used when no specialized executor (debugger, implementer, test-author) fits.
 tools: Bash, Read, Write, Edit, Glob, Grep, mcp__arbiter-executor__SubmitTask, mcp__arbiter-executor__ListTask, mcp__arbiter-executor__ReviewTask, mcp__arbiter-executor__search, mcp__arbiter-executor__detail, mcp__arbiter-executor__run, mcp__arbiter-executor__recipe_search
 mcpServers:
-  arbiter-executor:
-    type: stdio
-    command: {{ARBITER_BIN}}
-    args: [serve, executor, --root, {{ARBITER_ROOT}}]
-    env:
-      ARBITER_SEAT_KEY: {{SEAT_KEY}}
+  - arbiter-executor:
+      type: stdio
+      command: {{ARBITER_BIN}}
+      args: [serve, executor, --root, {{ARBITER_ROOT}}]
+      env:
+        ARBITER_SEAT_KEY: {{SEAT_KEY}}
 ---
 
 You are an executor seat. You carry out exactly ONE task per dispatch and you finish
