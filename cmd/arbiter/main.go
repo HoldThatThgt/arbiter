@@ -11,6 +11,7 @@ import (
 
 	"github.com/HoldThatThgt/arbiter/internal/cli"
 	"github.com/HoldThatThgt/arbiter/internal/deploy"
+	"github.com/HoldThatThgt/arbiter/internal/guard"
 	"github.com/HoldThatThgt/arbiter/internal/interpose"
 	"github.com/HoldThatThgt/arbiter/internal/match"
 	"github.com/HoldThatThgt/arbiter/internal/seat"
@@ -118,10 +119,31 @@ func run() error {
 		return seat.Run(context.Background(), seatRoot, seatName)
 	case "hook":
 		sub, hookRoot, err := parseRootArgs(os.Args[2:], root, 1)
-		if err != nil || sub != "stop" {
-			return fmt.Errorf("usage: arbiter hook stop [--root DIR]")
+		if err != nil || (sub != "stop" && sub != "guard") {
+			return fmt.Errorf("usage: arbiter hook <stop|guard> [--root DIR]")
 		}
 		root = hookRoot
+		if sub == "guard" {
+			payload, err := io.ReadAll(os.Stdin)
+			if err != nil {
+				return nil // fail-open:门控故障不阻塞会话
+			}
+			decision := guard.Decide(root, payload)
+			if decision.Deny {
+				out, err := json.Marshal(map[string]any{
+					"hookSpecificOutput": map[string]any{
+						"hookEventName":            "PreToolUse",
+						"permissionDecision":       "deny",
+						"permissionDecisionReason": decision.Reason,
+					},
+				})
+				if err != nil {
+					return nil
+				}
+				fmt.Println(string(out))
+			}
+			return nil
+		}
 		_, _ = io.Copy(io.Discard, os.Stdin) // 宿主写入事件 JSON;门控只依赖对局状态
 		decision, err := match.New(root, "hook").StopGate()
 		if err != nil {

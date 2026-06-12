@@ -67,7 +67,7 @@ func (s *Store) ActiveCapabilities() ([]string, error) {
 func (s *Store) RequireActiveCapability(capability string) error {
 	_, err := s.withLock(func(m *Match) (*Match, any, error) {
 		if m == nil || m.Status != StatusActive || !hasCapability(m.Playbook.Capabilities, capability) {
-			return nil, nil, &ToolError{Code: playbook.CodeCapabilityRevoked, Message: "capability revoked"}
+			return nil, nil, &ToolError{Code: playbook.CodeCapabilityRevoked, Message: "capability revoked: the match that granted this tool changed or ended — stop this task and report back to the player"}
 		}
 		return nil, nil, nil
 	})
@@ -100,20 +100,20 @@ func (s *Store) LoadPlayBook(name string) (LoadPlayBookOutput, error) {
 	cat := playbook.ScanDir(s.playbookDir())
 	entry, code := cat.Find(name)
 	if code == playbook.CodePlaybookNotFound {
-		return LoadPlayBookOutput{}, &ToolError{Code: code, Message: "playbook not found", Data: map[string]any{"available": cat.LoadableNames()}}
+		return LoadPlayBookOutput{}, &ToolError{Code: code, Message: "playbook not found — choose one of data.available, or freeplay as the generic fallback", Data: map[string]any{"available": cat.LoadableNames()}}
 	}
 	if code == playbook.CodeNameConflict {
-		return LoadPlayBookOutput{}, &ToolError{Code: code, Message: "playbook name conflict", Data: map[string]any{"name": name}}
+		return LoadPlayBookOutput{}, &ToolError{Code: code, Message: "playbook name conflict — that intent already has a book; extend it or register under a genuinely different intent name", Data: map[string]any{"name": name}}
 	}
 	if code == playbook.CodePlaybookInvalid {
-		return LoadPlayBookOutput{}, &ToolError{Code: code, Message: "playbook invalid", Data: map[string]any{"issues": entry.Problems}}
+		return LoadPlayBookOutput{}, &ToolError{Code: code, Message: "playbook invalid — fix exactly what data.issues lists, then retry", Data: map[string]any{"issues": entry.Problems}}
 	}
 	if len(entry.Problems) > 0 {
-		return LoadPlayBookOutput{}, &ToolError{Code: playbook.CodePlaybookInvalid, Message: "playbook invalid", Data: map[string]any{"issues": entry.Problems}}
+		return LoadPlayBookOutput{}, &ToolError{Code: playbook.CodePlaybookInvalid, Message: "playbook invalid — fix exactly what data.issues lists, then retry", Data: map[string]any{"issues": entry.Problems}}
 	}
 	recipesPin, err := s.currentRecipesPin()
 	if err != nil {
-		return LoadPlayBookOutput{}, &ToolError{Code: playbook.CodeRecipePinMismatch, Message: "recipe pin mismatch", Data: map[string]any{"error": err.Error()}}
+		return LoadPlayBookOutput{}, &ToolError{Code: playbook.CodeRecipePinMismatch, Message: "recipe pin mismatch — recipes.yaml changed after LoadPlayBook pinned it; finish or reload the match before editing recipes", Data: map[string]any{"error": err.Error()}}
 	}
 
 	out, err := s.withLock(func(current *Match) (*Match, any, error) {
@@ -188,7 +188,7 @@ func (s *Store) CreateTask(request string) (CreateTaskOutput, error) {
 func (s *Store) CreateTaskWithFacts(request string, factRefs []string) (CreateTaskOutput, error) {
 	request = strings.TrimSpace(request)
 	if request == "" {
-		return CreateTaskOutput{}, &ToolError{Code: playbook.CodeEmptyRequest, Message: "request is empty"}
+		return CreateTaskOutput{}, &ToolError{Code: playbook.CodeEmptyRequest, Message: "request is empty — write a self-contained instruction: goal, scope, and the exact result predicate the executor must submit"}
 	}
 	briefing, err := s.resolveBriefing(factRefs)
 	if err != nil {
@@ -196,7 +196,7 @@ func (s *Store) CreateTaskWithFacts(request string, factRefs []string) (CreateTa
 	}
 	out, err := s.withLock(func(m *Match) (*Match, any, error) {
 		if m == nil || m.Status != StatusActive || m.Current == nil {
-			return nil, nil, &ToolError{Code: playbook.CodeNoActiveMatch, Message: "no active match"}
+			return nil, nil, &ToolError{Code: playbook.CodeNoActiveMatch, Message: "no active match — the curator must LoadPlayBook first; match tools only work inside a loaded match"}
 		}
 		m.TaskSeq++
 		task := Task{ID: fmt.Sprintf("T%d", m.TaskSeq), Request: request, Status: TaskOpen, Briefing: briefing}
@@ -219,11 +219,11 @@ func (s *Store) resolveBriefing(factRefs []string) ([]BriefingCard, error) {
 		return nil, nil
 	}
 	if len(factRefs) > maxFactRefs {
-		return nil, &ToolError{Code: playbook.CodeBriefingUnresolved, Message: "briefing unresolved", Data: map[string]any{"bad_refs": factRefs}}
+		return nil, &ToolError{Code: playbook.CodeBriefingUnresolved, Message: "briefing unresolved — the listed fact_refs did not resolve; use object ids returned by search, fix or drop data.bad_refs", Data: map[string]any{"bad_refs": factRefs}}
 	}
 	for _, ref := range factRefs {
 		if strings.TrimSpace(ref) == "" {
-			return nil, &ToolError{Code: playbook.CodeBriefingUnresolved, Message: "briefing unresolved", Data: map[string]any{"bad_refs": []string{ref}}}
+			return nil, &ToolError{Code: playbook.CodeBriefingUnresolved, Message: "briefing unresolved — the listed fact_refs did not resolve; use object ids returned by search, fix or drop data.bad_refs", Data: map[string]any{"bad_refs": []string{ref}}}
 		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(playbook.DefaultTimeoutS)*time.Second)
@@ -237,7 +237,7 @@ func (s *Store) resolveBriefing(factRefs []string) ([]BriefingCard, error) {
 	if err != nil {
 		var engineErr *engineclient.EngineError
 		if errors.As(err, &engineErr) && engineErr.Kind == playbook.CodeBriefingUnresolved {
-			return nil, &ToolError{Code: playbook.CodeBriefingUnresolved, Message: "briefing unresolved", Data: jsonRawObject(engineErr.Data)}
+			return nil, &ToolError{Code: playbook.CodeBriefingUnresolved, Message: "briefing unresolved — the listed fact_refs did not resolve; use object ids returned by search, fix or drop data.bad_refs", Data: jsonRawObject(engineErr.Data)}
 		}
 		return nil, &ToolError{Code: playbook.CodeEngineUnavailable, Message: "engine unavailable: " + err.Error()}
 	}
@@ -250,7 +250,7 @@ func (s *Store) resolveBriefing(factRefs []string) ([]BriefingCard, error) {
 		return nil, err
 	}
 	if len(data) > maxBriefingBytes {
-		return nil, &ToolError{Code: playbook.CodeBriefingUnresolved, Message: "briefing unresolved", Data: map[string]any{"reason": "briefing_too_large"}}
+		return nil, &ToolError{Code: playbook.CodeBriefingUnresolved, Message: "briefing unresolved — the listed fact_refs did not resolve; use object ids returned by search, fix or drop data.bad_refs", Data: map[string]any{"reason": "briefing_too_large"}}
 	}
 	return briefing, nil
 }
@@ -266,7 +266,7 @@ func jsonRawObject(raw json.RawMessage) map[string]any {
 func (s *Store) SubmitTask(ctx context.Context, taskID, summary, report string, spec verify.ResultSpec) (SubmitTaskOutput, error) {
 	summary = strings.TrimSpace(summary)
 	if summary == "" {
-		return SubmitTaskOutput{}, &ToolError{Code: playbook.CodeBadSummary, Message: "summary is empty"}
+		return SubmitTaskOutput{}, &ToolError{Code: playbook.CodeBadSummary, Message: "summary is empty — one line for the global task ledger (what the outcome was, not what you did)"}
 	}
 	if len(summary) > playbook.MaxSummaryBytes {
 		return SubmitTaskOutput{}, &ToolError{Code: playbook.CodeBadSummary, Message: fmt.Sprintf("summary exceeds %d bytes", playbook.MaxSummaryBytes)}
@@ -276,7 +276,7 @@ func (s *Store) SubmitTask(ctx context.Context, taskID, summary, report string, 
 	var verifyName string
 	out, err := s.withLock(func(m *Match) (*Match, any, error) {
 		if m == nil || m.Status != StatusActive || m.Current == nil {
-			return nil, nil, &ToolError{Code: playbook.CodeNoActiveMatch, Message: "no active match"}
+			return nil, nil, &ToolError{Code: playbook.CodeNoActiveMatch, Message: "no active match — the curator must LoadPlayBook first; match tools only work inside a loaded match"}
 		}
 		// verify 引用在锁内对照对局快照解析成 curated spec(绝不读棋谱文件),
 		// 解析结果照常流经 Validate → recipe pin → ExecuteWithMeta。
@@ -300,9 +300,9 @@ func (s *Store) SubmitTask(ctx context.Context, taskID, summary, report string, 
 			return nil, nil, nil
 		}
 		if findHistoryTask(m, taskID) != nil {
-			return nil, nil, &ToolError{Code: playbook.CodeTaskStale, Message: "task belongs to archived round"}
+			return nil, nil, &ToolError{Code: playbook.CodeTaskStale, Message: "task belongs to an archived round — the match moved on; call ListTask for the live ledger before acting"}
 		}
-		return nil, nil, &ToolError{Code: playbook.CodeTaskNotFound, Message: "task not found"}
+		return nil, nil, &ToolError{Code: playbook.CodeTaskNotFound, Message: "task not found — verify the id against ListTask; ids are match-scoped and case-sensitive"}
 	})
 	if err != nil {
 		return SubmitTaskOutput{}, err
@@ -320,15 +320,15 @@ func (s *Store) SubmitTask(ctx context.Context, taskID, summary, report string, 
 
 	out, err = s.withLock(func(m *Match) (*Match, any, error) {
 		if m == nil || m.Status != StatusActive || m.Current == nil {
-			return nil, nil, &ToolError{Code: playbook.CodeTaskStale, Message: "task belongs to archived round"}
+			return nil, nil, &ToolError{Code: playbook.CodeTaskStale, Message: "task belongs to an archived round — the match moved on; call ListTask for the live ledger before acting"}
 		}
 		if m.RoundSeq != roundSeq {
 			s.append("task_submitted", map[string]any{"match_id": m.ID, "task": taskID, "verdict": "stale"})
-			return nil, nil, &ToolError{Code: playbook.CodeTaskStale, Message: "task belongs to archived round"}
+			return nil, nil, &ToolError{Code: playbook.CodeTaskStale, Message: "task belongs to an archived round — the match moved on; call ListTask for the live ledger before acting"}
 		}
 		idx, ok := findCurrentTask(m, taskID)
 		if !ok {
-			return nil, nil, &ToolError{Code: playbook.CodeTaskStale, Message: "task belongs to archived round"}
+			return nil, nil, &ToolError{Code: playbook.CodeTaskStale, Message: "task belongs to an archived round — the match moved on; call ListTask for the live ledger before acting"}
 		}
 		m.Current.Tasks[idx].Summary = summary
 		m.Current.Tasks[idx].Report = report
@@ -467,7 +467,7 @@ func (s *Store) CheckStepJob(ctx context.Context) (CheckStepJobOutput, error) {
 	var discardedPending bool
 	out, err := s.withLock(func(m *Match) (*Match, any, error) {
 		if m == nil || m.Status != StatusActive || m.Current == nil {
-			return nil, nil, &ToolError{Code: playbook.CodeNoActiveMatch, Message: "no active match"}
+			return nil, nil, &ToolError{Code: playbook.CodeNoActiveMatch, Message: "no active match — the curator must LoadPlayBook first; match tools only work inside a loaded match"}
 		}
 		if m.GoalPending != nil {
 			pending := *m.GoalPending
@@ -578,11 +578,11 @@ func (s *Store) CheckStepJob(ctx context.Context) (CheckStepJobOutput, error) {
 func (s *Store) AddPlayBook(content string) (AddPlayBookOutput, error) {
 	book, issues := playbook.ParseBytes("(submitted)", []byte(content))
 	if len(issues) > 0 {
-		return AddPlayBookOutput{}, &ToolError{Code: playbook.CodePlaybookInvalid, Message: "playbook invalid", Data: map[string]any{"issues": issues}}
+		return AddPlayBookOutput{}, &ToolError{Code: playbook.CodePlaybookInvalid, Message: "playbook invalid — fix exactly what data.issues lists, then retry", Data: map[string]any{"issues": issues}}
 	}
 	name := book.Name
 	if name != filepath.Base(name) || name == "." || name == ".." {
-		return AddPlayBookOutput{}, &ToolError{Code: playbook.CodePlaybookInvalid, Message: "playbook invalid", Data: map[string]any{"issues": []playbook.Issue{{Code: playbook.IssueBadFrontmatter, Detail: "name is not a safe file name"}}}}
+		return AddPlayBookOutput{}, &ToolError{Code: playbook.CodePlaybookInvalid, Message: "playbook invalid — fix exactly what data.issues lists, then retry", Data: map[string]any{"issues": []playbook.Issue{{Code: playbook.IssueBadFrontmatter, Detail: "name is not a safe file name"}}}}
 	}
 	out, err := s.withLock(func(m *Match) (*Match, any, error) {
 		cat := playbook.ScanDir(s.playbookDir())
@@ -661,7 +661,7 @@ func (s *Store) ReviewTask(taskID string) (ReviewTaskOutput, error) {
 				}
 			}
 		}
-		return nil, nil, &ToolError{Code: playbook.CodeTaskNotFound, Message: "task not found"}
+		return nil, nil, &ToolError{Code: playbook.CodeTaskNotFound, Message: "task not found — verify the id against ListTask; ids are match-scoped and case-sensitive"}
 	})
 	if err != nil {
 		return ReviewTaskOutput{}, err
@@ -723,10 +723,10 @@ func (s *Store) NotePlaybook(stepID, note string) (NotePlaybookOutput, error) {
 			return nil, nil, &ToolError{Code: code, Message: "playbook file missing"}
 		}
 		if code == playbook.CodeNameConflict {
-			return nil, nil, &ToolError{Code: code, Message: "playbook name conflict"}
+			return nil, nil, &ToolError{Code: code, Message: "playbook name conflict — that intent already has a book; extend it or register under a genuinely different intent name"}
 		}
 		if code == playbook.CodePlaybookInvalid || len(entry.Problems) > 0 {
-			return nil, nil, &ToolError{Code: playbook.CodePlaybookInvalid, Message: "playbook invalid", Data: map[string]any{"issues": entry.Problems}}
+			return nil, nil, &ToolError{Code: playbook.CodePlaybookInvalid, Message: "playbook invalid — fix exactly what data.issues lists, then retry", Data: map[string]any{"issues": entry.Problems}}
 		}
 		path := filepath.Join(s.playbookDir(), entry.File)
 		raw, err := os.ReadFile(path)
@@ -735,7 +735,7 @@ func (s *Store) NotePlaybook(stepID, note string) (NotePlaybookOutput, error) {
 		}
 		book, issues := playbook.ParseBytes(entry.File, raw)
 		if len(issues) > 0 {
-			return nil, nil, &ToolError{Code: playbook.CodePlaybookInvalid, Message: "playbook invalid", Data: map[string]any{"issues": issues}}
+			return nil, nil, &ToolError{Code: playbook.CodePlaybookInvalid, Message: "playbook invalid — fix exactly what data.issues lists, then retry", Data: map[string]any{"issues": issues}}
 		}
 		step, ok := book.Steps[stepID]
 		if !ok {

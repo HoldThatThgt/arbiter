@@ -606,6 +606,77 @@ func mergeStopHook(root map[string]any, exe, repoRoot string) {
 		})
 	}
 	hooks["Stop"] = keptStops
+	mergeGuardHook(hooks, exe, repoRoot)
+}
+
+// mergeGuardHook 注册 PreToolUse 门控(幂等):识别本工具的既有条目
+// (含 legacy 无根形态)就刷新命令与 matcher,否则追加;外来 PreToolUse
+// 条目原样保留。门控本体见 internal/guard 与 `arbiter hook guard`。
+func mergeGuardHook(hooks map[string]any, exe, repoRoot string) {
+	pres, _ := hooks["PreToolUse"].([]any)
+	cmd := exe + " hook guard --root " + repoRoot
+	matcher := "Bash|Read|Edit|Write|NotebookEdit|Glob|Grep"
+	claimed := false
+	var kept []any
+	for _, entry := range pres {
+		em, ok := entry.(map[string]any)
+		if !ok {
+			kept = append(kept, entry)
+			continue
+		}
+		inner, _ := em["hooks"].([]any)
+		var keptHooks []any
+		for _, h := range inner {
+			hm, ok := h.(map[string]any)
+			if !ok {
+				keptHooks = append(keptHooks, h)
+				continue
+			}
+			c, _ := hm["command"].(string)
+			if !isArbiterGuardHook(c, exe) {
+				keptHooks = append(keptHooks, h)
+				continue
+			}
+			if claimed {
+				continue
+			}
+			hm["command"] = cmd
+			em["matcher"] = matcher
+			claimed = true
+			keptHooks = append(keptHooks, hm)
+		}
+		if len(inner) > 0 && len(keptHooks) == 0 {
+			continue
+		}
+		if len(inner) > 0 {
+			em["hooks"] = keptHooks
+		}
+		kept = append(kept, em)
+	}
+	if !claimed {
+		kept = append(kept, map[string]any{
+			"matcher": matcher,
+			"hooks":   []any{map[string]any{"type": "command", "command": cmd, "timeout": 10}},
+		})
+	}
+	hooks["PreToolUse"] = kept
+}
+
+func isArbiterGuardHook(command, exe string) bool {
+	fields := strings.Fields(command)
+	if len(fields) >= 4 && fields[len(fields)-2] == "--root" {
+		fields = fields[:len(fields)-2]
+	}
+	if len(fields) < 3 || fields[len(fields)-2] != "hook" || fields[len(fields)-1] != "guard" {
+		return false
+	}
+	if fields[0] == exe {
+		return true
+	}
+	if filepath.Base(fields[0]) != "arbiter" {
+		return false
+	}
+	return !binaryExists(fields[0])
 }
 
 func appendGitignore(path string, embedded bool) error {
@@ -694,6 +765,7 @@ func removeSettings(path, exe string) error {
 		}
 	}
 	removeStopHook(root, exe)
+	removeGuardHook(root, exe)
 	return writeJSON(path, root, 0o644)
 }
 
@@ -1032,6 +1104,14 @@ func generatedDenyRules(embedded bool) []string {
 		"Read(.arbiter/playbook/**)",
 		"Read(.arbiter/match/**)",
 		"Read(.claude/agents/arbiter-*.md)",
+		// Read(...) 只约束 Read 工具;Edit/Write 也要拒(Bash/Grep/Glob 的
+		// 兜底由 PreToolUse 门控 `arbiter hook guard` 负责)。
+		"Edit(.arbiter/playbook/**)",
+		"Write(.arbiter/playbook/**)",
+		"Edit(.arbiter/match/**)",
+		"Write(.arbiter/match/**)",
+		"Edit(.claude/agents/arbiter-*.md)",
+		"Write(.claude/agents/arbiter-*.md)",
 	}
 	if embedded {
 		rules = append(rules,
@@ -1067,4 +1147,47 @@ func generatedGitignoreLines(embedded bool) []string {
 // not keep dead generated entries behind.
 func legacyGitignoreLines() []string {
 	return []string{".arbiter/match/status.json"}
+}
+
+// removeGuardHook 撤除本工具的 PreToolUse 门控条目;外来条目保留。
+func removeGuardHook(root map[string]any, exe string) {
+	hooks, _ := root["hooks"].(map[string]any)
+	if hooks == nil {
+		return
+	}
+	pres, _ := hooks["PreToolUse"].([]any)
+	var kept []any
+	for _, entry := range pres {
+		em, ok := entry.(map[string]any)
+		if !ok {
+			kept = append(kept, entry)
+			continue
+		}
+		inner, _ := em["hooks"].([]any)
+		var keptHooks []any
+		for _, h := range inner {
+			hm, ok := h.(map[string]any)
+			if !ok {
+				keptHooks = append(keptHooks, h)
+				continue
+			}
+			c, _ := hm["command"].(string)
+			if isArbiterGuardHook(c, exe) {
+				continue
+			}
+			keptHooks = append(keptHooks, hm)
+		}
+		if len(inner) > 0 && len(keptHooks) == 0 {
+			continue
+		}
+		if len(inner) > 0 {
+			em["hooks"] = keptHooks
+		}
+		kept = append(kept, em)
+	}
+	if len(kept) == 0 {
+		delete(hooks, "PreToolUse")
+	} else {
+		hooks["PreToolUse"] = kept
+	}
 }

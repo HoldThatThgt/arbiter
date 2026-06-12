@@ -416,6 +416,12 @@ this normally means `python3` itself is missing or broken — install python3
 install it (`pip install ./engine` from the Arbiter repo, offline-capable), and
 ensure the right interpreter wins via `ARBITER_ENGINE_PYTHON`.
 
+**Why can't the model read `.arbiter/playbook/` or match state?** By design (ADR-0015):
+playbooks would reveal future steps and match files are the referee's. A PreToolUse guard
+denies Bash/Read/Grep/Glob/Edit/Write access to those paths with a message naming the right
+tool (ShowStepJob, ListTask, ReviewTask, AddPlayBook, NotePlaybook). You, the human, are not
+gated — edit playbooks freely in your editor; the guard fires on model tool calls only.
+
 **"no active match" in the main session after the curator loaded a playbook** — match
 state is shared through repo-local files, so this means the two seat processes disagree about
 the repo root. Since ADR-0014 every entry init writes carries an explicit absolute `--root`;
