@@ -22,3 +22,10 @@ __pycache__/
 .DS_Store
 .idea/
 .vscode/
+
+# local agent-process files (not part of the product)
+CLAUDE.md
+AGENTS.md
+PROCESS.md
+PROGRESS.md
+prompts/
