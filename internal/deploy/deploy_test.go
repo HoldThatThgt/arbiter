@@ -440,7 +440,8 @@ func testInitOptions() Options {
 		VerifyEngine: func(string, string) (string, error) {
 			return "test-engine", nil
 		},
-		FSKind: "apfs",
+		VerifyCompanions: func(string) error { return nil },
+		FSKind:           "apfs",
 	}
 }
 

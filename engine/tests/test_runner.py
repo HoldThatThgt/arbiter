@@ -1,5 +1,8 @@
 import os
+import subprocess
+import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -7,7 +10,6 @@ from unittest import mock
 from arbiter_engine import errors
 from arbiter_engine.runs import recipes
 from arbiter_engine.runs import runner
-from arbiter_engine.shared import locks
 
 
 RUNNER_RECIPE = """
@@ -72,7 +74,33 @@ class RunnerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             book = recipes.parse(RUNNER_RECIPE)
-            with locks.acquire(root, [locks.build_lock(root)], timeout_s=0.2):
+            # The lock must be held by another process: BSD/darwin flock does
+            # not conflict between fds of the same process. The holder resolves
+            # the root like resolve_workdir() so the build-lock keys match.
+            holder_src = textwrap.dedent(
+                """\
+                import sys
+                from pathlib import Path
+
+                from arbiter_engine.shared import locks
+
+                root = Path(sys.argv[1]).resolve()
+                with locks.acquire(root, [locks.build_lock(root)], timeout_s=5):
+                    print("ready", flush=True)
+                    sys.stdin.read()
+                """
+            )
+            env = dict(os.environ)
+            env["PYTHONPATH"] = os.pathsep.join(
+                filter(None, [str(Path(__file__).resolve().parents[1]), env.get("PYTHONPATH")])
+            )
+            with subprocess.Popen(
+                [sys.executable, "-c", holder_src, os.fspath(root)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                env=env,
+            ) as holder:
+                self.assertEqual(holder.stdout.readline(), b"ready\n")
                 with self.assertRaises(errors.RPCError) as ctx:
                     runner.run_stage(root, book, "unit", "test_run", lock_timeout_s=0.05)
 

@@ -58,7 +58,7 @@ var companionSpecs = []companion{
 	{
 		Name:   "gdb-mcp",
 		Module: "arbiter_engine.gdbmcp",
-		Serve:  []string{"serve", "--root", "."},
+		Serve:  []string{"serve"},
 		Tools: []string{
 			"gdb_start", "gdb_exec", "gdb_breakpoint", "gdb_select", "gdb_stack",
 			"gdb_snapshot", "gdb_eval", "gdb_memory", "gdb_command", "gdb_sessions",
@@ -69,29 +69,34 @@ var companionSpecs = []companion{
 		Name:   "perf-mcp",
 		Module: "arbiter_engine.perfmcp",
 		Serve:  []string{"serve"},
+		// perfmcp serve 同样接受 --root(吸收版新增),把项目根钉死。
 		Tools: []string{
 			"perf.scan_c", "perf.explain_finding", "perf.measure_command", "perf.toolchain_probe",
 		},
 	},
 }
 
-// companionsFor 按解析到的引擎运行时实例化伙伴条目:embedded 模式附
-// PYTHONPATH(指向释放出的引擎树),installed 模式直接 import。
-func companionsFor(python string, embedded bool) []companion {
+// companionsFor 按解析到的引擎运行时实例化伙伴条目。所有路径一律绝对:
+// Claude Code 拉起 stdio 服务器的 cwd 不可假设,相对 PYTHONPATH/--root 会
+// 让服务器瞬退(用户侧表现为 reconnect -32000)。条目因此与 arbiter 二进制
+// 同一姿态——机器本地,换机/搬仓后重跑 init 刷新。
+func companionsFor(root, python string, embedded bool) []companion {
 	out := make([]companion, 0, len(companionSpecs))
 	for _, spec := range companionSpecs {
 		spec.Command = python
 		spec.Args = append([]string{"-m", spec.Module}, spec.Serve...)
+		spec.Args = append(spec.Args, "--root", root)
 		if embedded {
-			spec.PythonPath = embeddedengine.RootRel
+			spec.PythonPath = embeddedengine.PythonPath(root)
 		}
 		out = append(out, spec)
 	}
 	return out
 }
 
-// mergeCompanions 把伙伴服务器并入 .mcp.json,add-if-missing:既有同名条目
-// 是外来内容,原样保留。
+// mergeCompanions 把伙伴服务器并入 .mcp.json。本工具生成的既有条目
+// (python -m arbiter_engine.* —— 包括旧版写出的相对路径形态)随 init 刷新;
+// 用户手写的外来同名条目原样保留。
 func mergeCompanions(path string, companions []companion) error {
 	if len(companions) == 0 {
 		return nil
@@ -107,7 +112,7 @@ func mergeCompanions(path string, companions []companion) error {
 	}
 	changed := false
 	for _, comp := range companions {
-		if _, exists := servers[comp.Name]; exists {
+		if existing, exists := servers[comp.Name]; exists && !isEngineCompanionEntry(existing) {
 			continue
 		}
 		args := make([]any, 0, len(comp.Args))
@@ -129,6 +134,23 @@ func mergeCompanions(path string, companions []companion) error {
 		return nil
 	}
 	return writeJSON(path, root, 0o644)
+}
+
+// isEngineCompanionEntry 识别本工具生成的伙伴条目:经引擎解释器以
+// `-m arbiter_engine.<ns>` 拉起。识别为真 ⇒ init 可刷新(修复旧版相对路径
+// 等缺陷);识别为假 ⇒ 外来内容,永不触碰。
+func isEngineCompanionEntry(value any) bool {
+	entry, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	args, ok := entry["args"].([]any)
+	if !ok || len(args) < 2 {
+		return false
+	}
+	first, _ := args[0].(string)
+	second, _ := args[1].(string)
+	return first == "-m" && strings.HasPrefix(second, "arbiter_engine.")
 }
 
 // renderDebugger 渲染诊断执行席 agent:席位凭证注入 + 伙伴服务器进
@@ -154,6 +176,64 @@ func renderDebugger(text, exe, key string, companions []companion) string {
 	return strings.ReplaceAll(text, "{{COMPANION_TOOLS}}", tools.String())
 }
 
+// verifyCompanions 在 init 期以 Claude Code 同款方式(cwd=root + 条目 env
+// 覆盖继承环境)逐个拉起伙伴服务器并完成 initialize 握手:坏条目在 init
+// 当场报 typed 错误,而不是会话里一个不可解释的 reconnect -32000。
+func verifyCompanions(root string, companions []companion) error {
+	for _, comp := range companions {
+		if err := verifyCompanion(root, comp); err != nil {
+			return &Error{
+				Kind:    "companion_verify_failed",
+				Message: comp.Name + " failed its initialize handshake (the .mcp.json entry would not connect): " + err.Error(),
+				Err:     err,
+			}
+		}
+	}
+	return nil
+}
+
+func verifyCompanion(root string, comp companion) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, comp.Command, comp.Args...)
+	cmd.Dir = root
+	env := make([]string, 0, len(os.Environ())+2)
+	for _, kv := range os.Environ() {
+		if comp.PythonPath != "" && strings.HasPrefix(kv, "PYTHONPATH=") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	// 释放出的引擎树受摘要校验,字节码写入会让后续 Verify 失败。
+	env = append(env, "PYTHONDONTWRITEBYTECODE=1")
+	if comp.PythonPath != "" {
+		env = append(env, "PYTHONPATH="+comp.PythonPath)
+	}
+	cmd.Env = env
+	cmd.Stdin = strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}` + "\n")
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		detail := strings.TrimSpace(stderr.String())
+		if detail == "" {
+			detail = err.Error()
+		}
+		return fmt.Errorf("%s", tail(detail, 300))
+	}
+	if !strings.Contains(string(out), `"name":"`+comp.Name+`"`) {
+		return fmt.Errorf("unexpected handshake response: %s", tail(strings.TrimSpace(string(out)), 200))
+	}
+	return nil
+}
+
+func tail(text string, max int) string {
+	if len(text) <= max {
+		return text
+	}
+	return "…" + text[len(text)-max:]
+}
+
 //go:embed templates/*
 var templates embed.FS
 
@@ -165,6 +245,8 @@ type Options struct {
 	FSKind         string
 	Now            func() time.Time
 	VerifyEngine   func(python, root string) (string, error)
+	// VerifyCompanions 测试钩子:nil = 真实握手校验(见 verifyCompanions)。
+	VerifyCompanions func(root string) error
 }
 
 type Error struct {
@@ -278,8 +360,15 @@ func InitWithOptions(root string, opts Options) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	companions := companionsFor(python, embedded)
+	companions := companionsFor(root, python, embedded)
 	if err := mergeCompanions(filepath.Join(root, fileMCP), companions); err != nil {
+		return "", err
+	}
+	if opts.VerifyCompanions != nil {
+		if err := opts.VerifyCompanions(root); err != nil {
+			return "", err
+		}
+	} else if err := verifyCompanions(root, companions); err != nil {
 		return "", err
 	}
 	curator := render(mustTemplate("templates/arbiter-curator.md"), exe, key)

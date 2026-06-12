@@ -1,7 +1,8 @@
 # Go dependencies must be vendored when introduced. This scaffold has no external deps.
 
 PYTHON ?= python3
-PREFIX ?= $(HOME)/.local
+# root installs land on the system PATH; everyone else stays in $HOME.
+PREFIX ?= $(shell if [ "$$(id -u)" = "0" ]; then echo /usr/local; else echo "$$HOME/.local"; fi)
 
 .PHONY: build install test test-go test-py fmt-check transcripts
 
