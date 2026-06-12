@@ -7,6 +7,7 @@ package guard
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -108,8 +109,10 @@ func filePath(fields map[string]any) string {
 	return path
 }
 
-// decideFrozen 判定改写类工具是否触碰某个冻结测试文件(按解析后绝对路径
-// 精确比对)。命中即拒。
+// decideFrozen 判定改写类工具是否触碰某个冻结测试文件。先按解析后绝对路径
+// 词法精确比对(覆盖文件尚不存在的 Write);再按文件身份(os.SameFile,即
+// inode/设备)比对,挡住词法漏掉的同一文件改写——大小写不敏感卷上的大小写
+// 变体、以及指向冻结测试的符号链接别名。命中任一即拒。
 func decideFrozen(root string, frozen []string, path string) Decision {
 	if path == "" || len(frozen) == 0 {
 		return Decision{}
@@ -119,9 +122,16 @@ func decideFrozen(root string, frozen []string, path string) Decision {
 		resolved = filepath.Join(root, resolved)
 	}
 	resolved = filepath.Clean(resolved)
+	candInfo, candErr := os.Stat(resolved) // 跟随符号链接;文件不存在时 candErr != nil
 	for _, rel := range frozen {
-		if resolved == filepath.Clean(filepath.Join(root, filepath.FromSlash(rel))) {
+		frozenAbs := filepath.Clean(filepath.Join(root, filepath.FromSlash(rel)))
+		if resolved == frozenAbs {
 			return Decision{Deny: true, Reason: frozenReason}
+		}
+		if candErr == nil {
+			if frozenInfo, err := os.Stat(frozenAbs); err == nil && os.SameFile(candInfo, frozenInfo) {
+				return Decision{Deny: true, Reason: frozenReason}
+			}
 		}
 	}
 	return Decision{}

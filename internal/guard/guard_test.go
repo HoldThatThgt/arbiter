@@ -2,6 +2,8 @@ package guard
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -95,5 +97,54 @@ func TestGuardFreezesRegisteredTests(t *testing.T) {
 				t.Fatalf("frozen denial reason missing 'immutable': %q", decision.Reason)
 			}
 		})
+	}
+}
+
+// 冻结判定不止于词法精确比对:指向冻结测试的符号链接别名、以及大小写不敏感卷
+// 上的大小写变体,都解析到同一物理文件(os.SameFile),必须一并拒写。
+func TestGuardFreezesCaseAndSymlinkVariants(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "tests"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	real := filepath.Join(root, "tests", "repro_test.cc")
+	if err := os.WriteFile(real, []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	frozen := []string{"tests/repro_test.cc"}
+
+	// Exact path is denied even with no file on disk yet (lexical fast path).
+	if d := Decide(root, frozen, event(t, "Edit", map[string]any{"file_path": "tests/repro_test.cc"})); !d.Deny {
+		t.Fatal("exact frozen path not denied")
+	}
+	// An unrelated file stays writable.
+	if d := Decide(root, frozen, event(t, "Edit", map[string]any{"file_path": "src/bloom.cc"})); d.Deny {
+		t.Fatal("unrelated file denied")
+	}
+
+	// Symlink alias pointing at the frozen file → same inode → denied (cross-platform).
+	alias := filepath.Join(root, "alias.cc")
+	if err := os.Symlink(real, alias); err != nil {
+		t.Skipf("symlink unsupported on this platform: %v", err)
+	}
+	if d := Decide(root, frozen, event(t, "Write", map[string]any{"file_path": "alias.cc"})); !d.Deny {
+		t.Fatal("symlink alias to frozen test not denied")
+	}
+
+	// Case variant: denied only where the filesystem is case-insensitive
+	// (macOS/Windows default). Detect via SameFile and assert accordingly.
+	variant := filepath.Join(root, "tests", "Repro_Test.cc")
+	caseInsensitive := false
+	if a, err1 := os.Stat(real); err1 == nil {
+		if b, err2 := os.Stat(variant); err2 == nil && os.SameFile(a, b) {
+			caseInsensitive = true
+		}
+	}
+	d := Decide(root, frozen, event(t, "Edit", map[string]any{"file_path": "tests/Repro_Test.cc"}))
+	switch {
+	case caseInsensitive && !d.Deny:
+		t.Fatal("case-variant of frozen test not denied on case-insensitive FS")
+	case !caseInsensitive && d.Deny:
+		t.Fatal("case-variant denied on case-sensitive FS (it is a distinct file)")
 	}
 }
