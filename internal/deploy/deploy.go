@@ -304,16 +304,27 @@ func InitWithOptions(root string, opts Options) (string, error) {
 	if verify == nil {
 		verify = verifyEngine
 	}
-	// ADR-0011 解析阶梯:已安装包优先;不可用即自动释放内置引擎(零额外安装);
+	// ADR-0011 解析阶梯:已安装包优先,但必须与本二进制内置引擎同版本——
+	// 旧的 pip 安装包缺新接口(如 perfmcp --root),会在会话里以 -32000
+	// 之类的形态炸开;版本不符即视为未安装,自动回退内置引擎。
 	// 仅当 python3 本身缺席/不可用时才失败 —— 这是唯一的系统前置条件。
+	expectedVersion, err := embeddedengine.Version()
+	if err != nil {
+		return "", err
+	}
 	embedded := opts.EmbeddedEngine || isEmbeddedDeployment(root)
 	var embeddedDigest string
 	var engineVersion string
+	var staleInstalled string
 	if !embedded {
-		if version, probeErr := verify(python, root); probeErr == nil {
-			engineVersion = version
-		} else {
+		switch version, probeErr := verify(python, root); {
+		case probeErr != nil:
 			embedded = true
+		case version != expectedVersion:
+			staleInstalled = version
+			embedded = true
+		default:
+			engineVersion = version
 		}
 	}
 	if embedded {
@@ -403,7 +414,7 @@ func InitWithOptions(root string, opts Options) (string, error) {
 	if err := appendGitignore(filepath.Join(root, fileGitignore), embedded); err != nil {
 		return "", err
 	}
-	return guidance(replacedMCP, opts.NoExecutor, embedded), nil
+	return guidance(replacedMCP, opts.NoExecutor, embedded, staleInstalled, expectedVersion), nil
 }
 
 // baseOpenings:ADR-0012 起手棋谱(templates/openings/,命名规约 CI 校验)
@@ -876,8 +887,11 @@ func hasString(values []string, target string) bool {
 	return false
 }
 
-func guidance(replacedMCP, noExecutor, embedded bool) string {
+func guidance(replacedMCP, noExecutor, embedded bool, staleInstalled, expectedVersion string) string {
 	msg := "arbiter 已部署。已写入引擎校验、席位凭证、Claude agents、skills、MCP 与 Stop hook 配置。\n"
+	if staleInstalled != "" {
+		msg += "提示:检测到已安装的 arbiter-engine v" + staleInstalled + " 与本二进制 (v" + expectedVersion + ") 不匹配,已忽略并改用内置引擎;可 pip uninstall arbiter-engine 消除此提示。\n"
+	}
 	if embedded {
 		msg += "引擎:已从二进制释放到 .arbiter/engine(零额外安装;Edit/Write 拒绝规则 + 摘要校验已就位;升级 arbiter 后重跑 init 自动刷新)。\n"
 	} else {

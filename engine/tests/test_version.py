@@ -22,7 +22,9 @@ class VersionCommandTest(unittest.TestCase):
         )
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertEqual(completed.stdout, "arbiter-engine dev\n")
+        from arbiter_engine import __version__
+
+        self.assertEqual(completed.stdout, f"arbiter-engine {__version__}\n")
         self.assertEqual(completed.stderr, "")
 
 

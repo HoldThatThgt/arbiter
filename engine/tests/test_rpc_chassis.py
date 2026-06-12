@@ -1,5 +1,7 @@
 import io
 import json
+import tempfile
+import os
 import unittest
 
 from arbiter_engine import __version__
@@ -57,9 +59,17 @@ class RPCChassisTest(unittest.TestCase):
             self.assertFalse(tool["inputSchema"].get("additionalProperties", True))
 
     def test_tools_call_routes_to_registered_tool(self):
-        response = response_for(
-            request("tools/call", {"name": "search", "arguments": {"query": "callers:main"}})
-        )
+        # search 经默认路由触达 facts 视图,而引擎以 cwd 为仓根(席位约定):
+        # 必须沙箱化 cwd,否则测试会把 .arbiter/ 残留写进源码树。
+        with tempfile.TemporaryDirectory() as tmp:
+            previous = os.getcwd()
+            os.chdir(tmp)
+            try:
+                response = response_for(
+                    request("tools/call", {"name": "search", "arguments": {"query": "callers:main"}})
+                )
+            finally:
+                os.chdir(previous)
 
         self.assertEqual(response["id"], 1)
         self.assertFalse(response["result"]["isError"])

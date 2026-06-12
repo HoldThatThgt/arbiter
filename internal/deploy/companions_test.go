@@ -153,6 +153,35 @@ func TestInitRefreshesStaleEngineCompanionEntries(t *testing.T) {
 	}
 }
 
+// 旧 pip 安装包(版本与二进制不符)必须被阶梯拒绝并回退内置引擎 ——
+// 这正是用户实测里 perfmcp 不认 --root 的根因(installed 模式选中了
+// 过旧的 arbiter-engine)。
+func TestInitRejectsStaleInstalledEngine(t *testing.T) {
+	root := t.TempDir()
+	opts := testInitOptions()
+	opts.VerifyEngine = func(python, repo string) (string, error) {
+		return "0.0.1", nil // 安装包可导入,但版本过旧
+	}
+	msg, err := InitWithOptions(root, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(msg, "不匹配") {
+		t.Fatalf("guidance silent about stale installed engine: %q", msg)
+	}
+	// 回退到 embedded:引擎树就位,条目带绝对 PYTHONPATH。
+	if _, err := os.Stat(filepath.Join(root, ".arbiter", "engine", "arbiter_engine", "perfmcp", "cli.py")); err != nil {
+		t.Fatalf("embedded engine not materialized: %v", err)
+	}
+	var mcpRoot map[string]any
+	readJSONFile(t, filepath.Join(root, fileMCP), &mcpRoot)
+	entry := mcpRoot["mcpServers"].(map[string]any)["perf-mcp"].(map[string]any)
+	env, ok := entry["env"].(map[string]any)
+	if !ok || env["PYTHONPATH"] != filepath.Join(root, ".arbiter", "engine") {
+		t.Fatalf("perf-mcp env = %#v", entry["env"])
+	}
+}
+
 // TestInitVerifiesCompanionHandshakesForReal 是用户实测回归:Linux 裸机
 // make install → init → Claude 里 gdb-mcp/perf-mcp reconnect -32000。
 // 根因是相对 PYTHONPATH/--root 依赖宿主 cwd;现在条目全绝对路径,且 init

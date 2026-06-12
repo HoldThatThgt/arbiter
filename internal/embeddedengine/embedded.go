@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sync"
 
 	enginebundle "github.com/HoldThatThgt/arbiter/engine"
@@ -172,3 +173,30 @@ func writeFile(path string, data []byte) error {
 	ok = true
 	return nil
 }
+
+// Version 返回二进制内置引擎的版本(arbiter_engine/__init__.py 的
+// __version__)。这是本二进制的引擎契约:init 的解析阶梯用它把"已安装
+// 但过旧"的 arbiter-engine 包判为不匹配并回退内置引擎(ADR-0011)。
+func Version() (string, error) {
+	versionOnce.Do(func() {
+		data, err := enginebundle.FS.ReadFile("arbiter_engine/__init__.py")
+		if err != nil {
+			versionErr = err
+			return
+		}
+		match := versionPattern.FindSubmatch(data)
+		if match == nil {
+			versionErr = fmt.Errorf("embedded engine __init__.py has no __version__")
+			return
+		}
+		versionValue = string(match[1])
+	})
+	return versionValue, versionErr
+}
+
+var (
+	versionOnce    sync.Once
+	versionValue   string
+	versionErr     error
+	versionPattern = regexp.MustCompile(`__version__\s*=\s*"([^"]+)"`)
+)

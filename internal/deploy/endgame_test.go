@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/HoldThatThgt/arbiter/internal/deploy"
+	"github.com/HoldThatThgt/arbiter/internal/embeddedengine"
 	"github.com/HoldThatThgt/arbiter/internal/match"
 	"github.com/HoldThatThgt/arbiter/internal/verify"
 )
@@ -80,7 +81,11 @@ func runEndgameDemoFixture(t *testing.T) endgameDemoResult {
 		Python: "python3",
 		Now:    func() time.Time { return time.Date(2026, 6, 11, 0, 0, 0, 0, time.UTC) },
 		VerifyEngine: func(string, string) (string, error) {
-			return "test-engine", nil
+			version, err := embeddedengine.Version()
+			if err != nil {
+				return "", err
+			}
+			return version, nil
 		},
 		VerifyCompanions: func(string) error { return nil },
 		FSKind:           "apfs",
