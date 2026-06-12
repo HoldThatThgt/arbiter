@@ -16,23 +16,25 @@ import (
 )
 
 const (
-	tokenStep      = "[STEP]"
-	tokenStepJob   = "[StepJob]"
-	tokenCheckList = "[CheckList]"
-	tokenBranch    = "[Branch]"
-	tokenSetGoal   = "[SetGoal]"
-	tokenVerify    = "[Verify]"
-	tokenSubmit    = "[Submit]"
-	tokenGotcha    = "[Gotcha]"
-	tokenListItem  = "-"
+	tokenStep       = "[STEP]"
+	tokenStepJob    = "[StepJob]"
+	tokenCheckList  = "[CheckList]"
+	tokenBranch     = "[Branch]"
+	tokenSetGoal    = "[SetGoal]"
+	tokenVerify     = "[Verify]"
+	tokenSubmit     = "[Submit]"
+	tokenCheckpoint = "[Checkpoint]"
+	tokenGotcha     = "[Gotcha]"
+	tokenListItem   = "-"
 
-	sectionNone   = ""
-	sectionJob    = "job"
-	sectionList   = "checklist"
-	sectionJump   = "branch"
-	sectionGoal   = "goal"
-	sectionVerify = "verify"
-	sectionGotcha = "gotcha"
+	sectionNone       = ""
+	sectionJob        = "job"
+	sectionList       = "checklist"
+	sectionJump       = "branch"
+	sectionGoal       = "goal"
+	sectionVerify     = "verify"
+	sectionGotcha     = "gotcha"
+	sectionCheckpoint = "checkpoint"
 )
 
 type frontmatter struct {
@@ -44,13 +46,15 @@ type frontmatter struct {
 }
 
 type stepBuilder struct {
-	step       Step
-	line       int
-	seenJob    bool
-	seenList   bool
-	seenBranch bool
-	jobLines   []string
-	branchSeen map[string]int
+	step            Step
+	line            int
+	seenJob         bool
+	seenList        bool
+	seenBranch      bool
+	seenCheckpoint  bool
+	jobLines        []string
+	checkpointLines []string
+	branchSeen      map[string]int
 }
 
 func ParseFile(path string) (Playbook, []Issue) {
@@ -109,13 +113,24 @@ func ParseBytes(file string, data []byte) (Playbook, []Issue) {
 		if !current.seenJob {
 			parseIssues = append(parseIssues, Issue{File: file, Line: current.line, Code: IssueMissingSection, Detail: tokenStepJob})
 		}
-		if !current.seenList {
+		// 每个步骤恰好一种裁决面:[CheckList](执行任务)或 [Checkpoint](人工
+		// 确认关卡)。两者皆缺或并存都是错误。
+		switch {
+		case current.seenList && current.seenCheckpoint:
+			parseIssues = append(parseIssues, Issue{File: file, Line: current.line, Code: IssueBadCheckpoint, Detail: "step has both [CheckList] and [Checkpoint]; use exactly one"})
+		case !current.seenList && !current.seenCheckpoint:
 			parseIssues = append(parseIssues, Issue{File: file, Line: current.line, Code: IssueMissingSection, Detail: tokenCheckList})
 		}
 		if !current.seenBranch {
 			parseIssues = append(parseIssues, Issue{File: file, Line: current.line, Code: IssueMissingSection, Detail: tokenBranch})
 		}
 		current.step.Job = strings.Join(current.jobLines, "\n")
+		if current.seenCheckpoint {
+			current.step.Checkpoint = strings.TrimSpace(strings.Join(current.checkpointLines, "\n"))
+			if current.step.Checkpoint == "" {
+				parseIssues = append(parseIssues, Issue{File: file, Line: current.line, Code: IssueBadCheckpoint, Detail: "[Checkpoint] question is empty"})
+			}
+		}
 		book.Steps[current.step.ID] = current.step
 		book.order = append(book.order, current.step.ID)
 		if book.Entry == "" {
@@ -213,7 +228,7 @@ func ParseBytes(file string, data []byte) (Playbook, []Issue) {
 				current.step.Submit = name
 				section = sectionNone
 				continue
-			case tokenStepJob, tokenCheckList, tokenBranch, tokenGotcha:
+			case tokenStepJob, tokenCheckList, tokenBranch, tokenGotcha, tokenCheckpoint:
 				if current == nil || strings.TrimSpace(rest) != "" {
 					parseIssues = append(parseIssues, Issue{File: file, Line: lineNo, Code: IssueStrayContent, Detail: token})
 					continue
@@ -230,6 +245,9 @@ func ParseBytes(file string, data []byte) (Playbook, []Issue) {
 					section = sectionJump
 				case tokenGotcha:
 					section = sectionGotcha // 可选节,不参与 missing_section 校验
+				case tokenCheckpoint:
+					current.seenCheckpoint = true
+					section = sectionCheckpoint
 				}
 				continue
 			}
@@ -267,6 +285,8 @@ func ParseBytes(file string, data []byte) (Playbook, []Issue) {
 		switch section {
 		case sectionJob:
 			current.jobLines = append(current.jobLines, line)
+		case sectionCheckpoint:
+			current.checkpointLines = append(current.checkpointLines, line)
 		case sectionList, sectionGotcha:
 			if token != tokenListItem {
 				parseIssues = append(parseIssues, Issue{File: file, Line: lineNo, Code: IssueStrayContent})
@@ -663,8 +683,13 @@ func validate(file string, book Playbook) []Issue {
 		if strings.TrimSpace(step.Job) == "" {
 			issues = append(issues, Issue{File: file, Code: IssueEmptyJob, Detail: id})
 		}
-		if len(step.Checklist) == 0 {
+		// 关卡步骤无清单(由 [Checkpoint] 裁决);任务步骤必须有非空清单。
+		if step.Checkpoint == "" && len(step.Checklist) == 0 {
 			issues = append(issues, Issue{File: file, Code: IssueEmptyChecklist, Detail: id})
+		}
+		// 关卡步骤没有可执行谓词,绑定 [Submit] 无意义。
+		if step.Checkpoint != "" && step.Submit != "" {
+			issues = append(issues, Issue{File: file, Code: IssueBadCheckpoint, Detail: "checkpoint step " + id + " cannot also bind [Submit]"})
 		}
 		if step.Branch.Success == "" || step.Branch.Failure == "" {
 			issues = append(issues, Issue{File: file, Code: IssueBadBranch, Detail: id})

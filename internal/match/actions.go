@@ -170,7 +170,7 @@ func (s *Store) ShowStepJob() (ShowStepJobOutput, error) {
 			Status:   StatusActive,
 			Playbook: m.Playbook.Name,
 			Round:    m.Current.Seq,
-			Step:     &StepOutput{ID: step.ID, Job: step.Job, Checklist: step.Checklist, Gotchas: step.Gotchas, Submit: step.Submit},
+			Step:     &StepOutput{ID: step.ID, Job: step.Job, Checklist: step.Checklist, Gotchas: step.Gotchas, Submit: step.Submit, Checkpoint: step.Checkpoint},
 			Tasks:    tasks,
 			Verify:   verifyDecls(m.VerifySpecs),
 		}, nil
@@ -197,6 +197,9 @@ func (s *Store) CreateTaskWithFacts(request string, factRefs []string) (CreateTa
 	out, err := s.withLock(func(m *Match) (*Match, any, error) {
 		if m == nil || m.Status != StatusActive || m.Current == nil {
 			return nil, nil, &ToolError{Code: playbook.CodeNoActiveMatch, Message: "no active match — the curator must LoadPlayBook first; match tools only work inside a loaded match"}
+		}
+		if m.Playbook.Steps[m.Current.StepID].Checkpoint != "" {
+			return nil, nil, &ToolError{Code: playbook.CodeCheckpoint, Message: "this step is a [Checkpoint], not a task step — ask the user its question with AskUserQuestion, then SubmitCheckpoint their pass/fail; do not CreateTask here"}
 		}
 		m.TaskSeq++
 		task := Task{ID: fmt.Sprintf("T%d", m.TaskSeq), Request: request, Status: TaskOpen, Briefing: briefing}
@@ -425,6 +428,18 @@ type roundVerdict struct {
 }
 
 func evaluateRound(m *Match) roundVerdict {
+	step := m.Playbook.Steps[m.Current.StepID]
+	// 人工确认关卡:不看任务,只看用户 pass/fail 决定(SubmitCheckpoint 写入)。
+	if step.Checkpoint != "" {
+		switch m.Current.Checkpoint {
+		case TaskPass:
+			return roundVerdict{complete: true, outcome: OutcomeSuccess, target: step.Branch.Success}
+		case TaskFail:
+			return roundVerdict{complete: true, outcome: OutcomeFailure, target: step.Branch.Failure}
+		default:
+			return roundVerdict{reason: "awaiting_checkpoint"}
+		}
+	}
 	if len(m.Current.Tasks) == 0 {
 		return roundVerdict{reason: "no_tasks"}
 	}
@@ -441,7 +456,6 @@ func evaluateRound(m *Match) roundVerdict {
 	if len(open) > 0 {
 		return roundVerdict{reason: "open_tasks", open: open}
 	}
-	step := m.Playbook.Steps[m.Current.StepID]
 	if hasFail {
 		return roundVerdict{complete: true, outcome: OutcomeFailure, target: step.Branch.Failure}
 	}

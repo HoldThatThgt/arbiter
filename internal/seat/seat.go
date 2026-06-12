@@ -53,6 +53,10 @@ type RegisterTestInput struct {
 	Paths []string `json:"paths"`
 }
 
+type SubmitCheckpointInput struct {
+	Decision string `json:"decision"`
+}
+
 type NotePlaybookInput struct {
 	StepID string `json:"step_id"`
 	Note   string `json:"note"`
@@ -170,6 +174,7 @@ func buildServerWithRuntime(ctx context.Context, root, seatName string) (*mcp.Se
 		addShowStepJob(server, root, store)
 		addCreateTask(server, root, store)
 		addCheckStepJob(server, root, store)
+		addSubmitCheckpoint(server, root, store)
 		addListTask(server, root, store)
 		addReviewTask(server, root, store)
 		addNotePlaybook(server, root, store)
@@ -420,6 +425,16 @@ func addRegisterTest(server *mcp.Server, root string, store *match.Store) {
 			return nil, err
 		}
 		return store.RegisterTest(in.Paths)
+	})
+}
+
+func addSubmitCheckpoint(server *mcp.Server, root string, store *match.Store) {
+	add(server, root, store.Seat, "SubmitCheckpoint", "Resolve a [Checkpoint] step. ShowStepJob marks such a step with a `checkpoint` question; you MUST put that exact question to the user with AskUserQuestion (pass / fail options) and relay their choice here — decision is \"pass\" (user approved → success branch) or \"fail\" (user rejected → failure branch). Never decide on the user's behalf; only valid while the current step is a checkpoint.", objectSchema(map[string]any{"decision": stringSchema()}, []string{"decision"}), func(ctx context.Context, raw json.RawMessage) (any, error) {
+		var in SubmitCheckpointInput
+		if err := decode(raw, &in); err != nil {
+			return nil, err
+		}
+		return store.SubmitCheckpoint(in.Decision)
 	})
 }
 

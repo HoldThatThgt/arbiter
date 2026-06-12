@@ -431,6 +431,41 @@ func TestParseStepSubmit(t *testing.T) {
 	}
 }
 
+func TestParseCheckpoint(t *testing.T) {
+	head := "---\nname: n\ndescription: d\n---\n\n"
+	step := func(mid string) string {
+		return head + "[STEP] a\n[StepJob]\njob\n" + mid + "[Branch]\nsuccess: END\nfailure: a\n"
+	}
+
+	// Valid checkpoint step: question captured, no [CheckList] needed.
+	book, issues := ParseBytes("p.md", []byte(step("[Checkpoint]\nApprove the draft?\n")))
+	if len(issues) != 0 {
+		t.Fatalf("valid checkpoint issues = %#v", issues)
+	}
+	if book.Steps["a"].Checkpoint != "Approve the draft?" {
+		t.Fatalf("Checkpoint = %q", book.Steps["a"].Checkpoint)
+	}
+
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"both list and checkpoint", step("[CheckList]\n- x\n[Checkpoint]\nq?\n"), IssueBadCheckpoint},
+		{"neither", step(""), IssueMissingSection},
+		{"empty question", step("[Checkpoint]\n"), IssueBadCheckpoint},
+		{"checkpoint cannot bind submit", "---\nname: n\ndescription: d\n---\n\n[Verify] v\nshell: exit 0\n\n[STEP] a\n[StepJob]\nj\n[Checkpoint]\nq?\n[Submit] v\n[Branch]\nsuccess: END\nfailure: a\n", IssueBadCheckpoint},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, issues := ParseBytes("p.md", []byte(tc.body))
+			if !hasIssue(issues, tc.want) {
+				t.Fatalf("issues = %#v, want %s", issues, tc.want)
+			}
+		})
+	}
+}
+
 func TestParseAllowOverrides(t *testing.T) {
 	body := "---\nname: n\ndescription: d\n---\n\n" +
 		"[Verify] suite\nrun: unit\ntests: [\"*\"]\nexpect: {\"overall\":\"passed\"}\nallow_overrides: [\"tests\", \"options\"]\n\n" +

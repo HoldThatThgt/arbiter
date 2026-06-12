@@ -51,7 +51,7 @@ func TestSeatToolSurfaceForwardsEngineTools(t *testing.T) {
 		seat string
 		want []string
 	}{
-		{Player, []string{"AddPlayBook", "CheckStepJob", "CreateTask", "ListTask", "NotePlaybook", "ReviewTask", "ShowStepJob", "detail", "search"}},
+		{Player, []string{"AddPlayBook", "CheckStepJob", "CreateTask", "ListTask", "NotePlaybook", "ReviewTask", "ShowStepJob", "SubmitCheckpoint", "detail", "search"}},
 		{Curator, []string{"ListTask", "LoadPlayBook", "ReadPlayBook", "ReviewTask"}},
 		{Executor, []string{"ListTask", "RegisterTest", "ReviewTask", "SubmitTask", "detail", "recipe_search", "run", "search"}},
 	}
