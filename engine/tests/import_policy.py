@@ -73,13 +73,22 @@ def _stdlib_roots() -> set[str]:
 
 
 def _top_level_modules(path: Path) -> Iterable[str]:
-    for child in path.iterdir():
-        if child.name.startswith("_"):
-            continue
-        if child.suffix == ".py":
-            yield child.stem
-        elif (child / "__init__.py").exists():
-            yield child.name
+    # CPython keeps C-extension stdlib modules (resource, termios, ...) in
+    # lib-dynload/ on POSIX; the 3.9 fallback must scan them too.
+    directories = [path]
+    dynload = path / "lib-dynload"
+    if dynload.is_dir():
+        directories.append(dynload)
+    for directory in directories:
+        for child in directory.iterdir():
+            if child.name.startswith("_"):
+                continue
+            if child.suffix == ".py":
+                yield child.stem
+            elif child.suffix in {".so", ".pyd"}:
+                yield child.name.split(".", 1)[0]
+            elif (child / "__init__.py").exists():
+                yield child.name
 
 
 class _ImportVisitor(ast.NodeVisitor):

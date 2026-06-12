@@ -96,6 +96,18 @@ class ImportPolicySelfTest(unittest.TestCase):
         self.assertIn("bad.py:1", str(violations[0]))
         self.assertIn("requests", str(violations[0]))
 
+    def test_allows_c_extension_stdlib_modules(self):
+        # resource lives in lib-dynload/ as a C extension on POSIX; the 3.9
+        # fallback stdlib scan must still recognize it (perfmcp imports it).
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            module = root / "ok.py"
+            module.write_text("import resource\n", encoding="utf-8")
+
+            violations = find_import_violations(root)
+
+        self.assertEqual(violations, [])
+
     def test_allows_stdlib_dynamic_imports(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
