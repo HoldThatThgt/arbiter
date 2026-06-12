@@ -40,6 +40,7 @@ const (
 
 	DefaultTimeoutS    = 600
 	MaxTimeoutS        = 3600
+	MaxExpectClauses   = 8
 	DefaultOutputLines = 256
 	MaxOutputLines     = 10000
 	MaxOutputBytes     = 1024 * 1024

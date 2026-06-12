@@ -233,6 +233,9 @@ func ParseBytes(file string, data []byte) (Playbook, []Issue) {
 		if goal.Arguments != nil && goal.Kind != "mcp" {
 			parseIssues = append(parseIssues, Issue{File: file, Code: IssueBadGoal, Detail: "arguments without mcp"})
 		}
+		if len(goal.Expect) != 0 && goal.Kind != "mcp" {
+			parseIssues = append(parseIssues, Issue{File: file, Code: IssueBadGoal, Detail: "expect without mcp"})
+		}
 		book.Goal = goal
 	}
 	parseIssues = append(parseIssues, validate(file, book)...)
@@ -281,6 +284,14 @@ func parseGoalLine(goal *ResultSpec, seen map[string]bool, line string) string {
 			return "arguments is not a JSON object"
 		}
 		goal.Arguments = args
+	case "expect":
+		// 形状校验仅到"JSON 数组"为止;子句语义(封闭操作集、标量、≤8 条)
+		// 由 verify 在执行边界严格解析(本包是依赖底层,不可反向引用)。
+		var clauses []any
+		if err := json.Unmarshal([]byte(value), &clauses); err != nil {
+			return "expect is not a JSON array"
+		}
+		goal.Expect = json.RawMessage(value)
 	case "timeout_s":
 		n, err := strconv.Atoi(value)
 		if err != nil || n < 1 || n > MaxTimeoutS {

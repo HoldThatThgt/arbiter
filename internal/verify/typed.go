@@ -339,15 +339,13 @@ func rejectForeign(spec ResultSpec, kind string, checks ...foreignFields) error 
 }
 
 // typedFieldsForLegacy 供 shell/mcp 校验拒绝 run/fact 专属字段(键集合封闭)。
+// expect 不在此列:mcp kind 自 ADR-0006 起携带 expect[] 子句,由 Validate 按 kind 处理。
 func typedFieldsForLegacy(spec ResultSpec) string {
 	if field := foreignRun(spec); field != "" {
 		return field
 	}
 	if field := foreignFact(spec); field != "" {
 		return field
-	}
-	if len(spec.Expect) != 0 {
-		return "expect"
 	}
 	return ""
 }

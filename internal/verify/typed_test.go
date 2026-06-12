@@ -57,7 +57,8 @@ func TestValidateClosedSets(t *testing.T) {
 		{"shell with recipe", ResultSpec{Kind: "shell", Command: "true", Recipe: "r"}},
 		{"shell with query", ResultSpec{Kind: "shell", Command: "true", Query: "q"}},
 		{"mcp with tests", ResultSpec{Kind: "mcp", Server: "s", Tool: "t", Tests: []string{"x"}}},
-		{"mcp with expect", ResultSpec{Kind: "mcp", Server: "s", Tool: "t", Expect: mustRaw(t, `{"min_results":1}`)}},
+		{"mcp with object expect", ResultSpec{Kind: "mcp", Server: "s", Tool: "t", Expect: mustRaw(t, `{"min_results":1}`)}},
+		{"shell with expect", ResultSpec{Kind: "shell", Command: "true", Expect: mustRaw(t, `[{"path":"a","op":"exists"}]`)}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

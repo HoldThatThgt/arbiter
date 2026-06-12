@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -81,6 +82,15 @@ func Validate(spec ResultSpec) error {
 		// 键集合封闭:legacy kind 不得携带 run/fact 专属字段。
 		if field := typedFieldsForLegacy(spec); field != "" {
 			return &SpecError{Code: playbook.CodeBadResult, Message: spec.Kind + " spec must not set " + field}
+		}
+		// expect 子句仅属 mcp kind(ADR-0006);shell 维持纯退出码语义。
+		if spec.Kind == "shell" && len(spec.Expect) != 0 {
+			return &SpecError{Code: playbook.CodeBadResult, Message: "shell spec must not set expect"}
+		}
+		if spec.Kind == "mcp" {
+			if _, err := ParseMCPExpect(spec.Expect); err != nil {
+				return err
+			}
 		}
 	default:
 		return &SpecError{Code: playbook.CodeBadResult, Message: "unknown result kind"}
@@ -184,6 +194,10 @@ func runShell(parent context.Context, root string, spec ResultSpec) Result {
 
 func runTool(parent context.Context, root string, spec ResultSpec) (Result, error) {
 	start := time.Now()
+	clauses, err := ParseMCPExpect(spec.Expect)
+	if err != nil {
+		return Result{}, err
+	}
 	cfg, err := readServerConfig(root, spec.Server)
 	if err != nil {
 		return Result{}, err
@@ -193,7 +207,7 @@ func runTool(parent context.Context, root string, spec ResultSpec) (Result, erro
 
 	cmd := exec.CommandContext(ctx, cfg.Command, cfg.Args...)
 	cmd.Dir = root
-	cmd.Env = append(os.Environ(), cfg.envList()...)
+	cmd.Env = mergeEnv(os.Environ(), cfg.Env)
 	client := mcp.NewClient(&mcp.Implementation{Name: "arbiter-verify", Version: "v1"}, nil)
 	session, err := client.Connect(ctx, &mcp.CommandTransport{Command: cmd}, nil)
 	result := Result{Spec: spec}
@@ -214,6 +228,13 @@ func runTool(parent context.Context, root string, spec ResultSpec) (Result, erro
 	}
 	isErr := call.IsError
 	result.IsError = &isErr
+	// expect[] 子句存在时产出类型化判定(ADR-0006):对照 structuredContent,
+	// verdict = !isError AND 全子句成立;无 expect 维持 legacy isError 语义。
+	if len(clauses) > 0 {
+		verdict, report := CompareMCP(clauses, call.StructuredContent, call.IsError)
+		result.Verdict = &verdict
+		result.ExpectReport = report
+	}
 	result.Output = tailLines(contentText(call), spec.OutputLines)
 	result.DurationMS = int(time.Since(start).Milliseconds())
 	return result, nil
@@ -230,10 +251,29 @@ type serverConfig struct {
 	Env     map[string]string `json:"env"`
 }
 
-func (s serverConfig) envList() []string {
-	out := make([]string, 0, len(s.Env))
-	for k, v := range s.Env {
-		out = append(out, k+"="+v)
+// mergeEnv 以条目 env 覆盖继承环境:glibc getenv 取首个匹配,简单 append
+// 会让继承值遮蔽条目值(如 embedded 引擎条目的 PYTHONPATH)。
+func mergeEnv(base []string, override map[string]string) []string {
+	if len(override) == 0 {
+		return base
+	}
+	out := make([]string, 0, len(base)+len(override))
+	for _, kv := range base {
+		key, _, ok := strings.Cut(kv, "=")
+		if ok {
+			if _, shadowed := override[key]; shadowed {
+				continue
+			}
+		}
+		out = append(out, kv)
+	}
+	keys := make([]string, 0, len(override))
+	for k := range override {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		out = append(out, k+"="+override[k])
 	}
 	return out
 }

@@ -94,6 +94,102 @@ func TestMCP(t *testing.T) {
 	}
 }
 
+func TestMCPExpectEndToEnd(t *testing.T) {
+	root := t.TempDir()
+	stub := copiedSelf(t)
+	writeMCP(t, root, map[string]any{
+		"structured": map[string]any{
+			"type":    "stdio",
+			"command": stub,
+			"env":     map[string]any{"ARBITER_TEST_STUB": "1", "ARBITER_TEST_MODE": "structured"},
+		},
+		"bad-structured": map[string]any{
+			"type":    "stdio",
+			"command": stub,
+			"env":     map[string]any{"ARBITER_TEST_STUB": "1", "ARBITER_TEST_MODE": "bad-structured"},
+		},
+	})
+
+	pass, err := Execute(context.Background(), root, ResultSpec{
+		Kind: "mcp", Server: "structured", Tool: "probe",
+		Expect: mustRaw(t, `[
+			{"path":"ok","op":"eq","value":true},
+			{"path":"summary.finding_count","op":"le","value":5},
+			{"path":"checks.0.ok","op":"eq","value":true},
+			{"path":"state","op":"exists"}
+		]`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !Pass(pass) || pass.Verdict == nil || !*pass.Verdict {
+		t.Fatalf("pass = %#v", pass)
+	}
+	if len(pass.ExpectReport) != 4 {
+		t.Fatalf("expect_report len = %d, want 4", len(pass.ExpectReport))
+	}
+
+	// 假checkmate 同形回归:isError=false 而 overall=failed 不可满足 eq passed。
+	checkmate, err := Execute(context.Background(), root, ResultSpec{
+		Kind: "mcp", Server: "structured", Tool: "probe",
+		Expect: mustRaw(t, `[{"path":"overall","op":"eq","value":"passed"}]`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if Pass(checkmate) || checkmate.Verdict == nil || *checkmate.Verdict {
+		t.Fatalf("checkmate = %#v", checkmate)
+	}
+	if len(checkmate.ExpectReport) != 1 || checkmate.ExpectReport[0].Actual != "failed" {
+		t.Fatalf("expect_report = %+v", checkmate.ExpectReport)
+	}
+
+	// isError=true 即整体失败,纵使子句全部成立。
+	gated, err := Execute(context.Background(), root, ResultSpec{
+		Kind: "mcp", Server: "bad-structured", Tool: "probe",
+		Expect: mustRaw(t, `[{"path":"ok","op":"eq","value":true}]`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if Pass(gated) || gated.Verdict == nil || *gated.Verdict {
+		t.Fatalf("gated = %#v", gated)
+	}
+
+	// 无 expect 时维持 legacy isError 语义,绝不产生类型化判定。
+	legacy, err := Execute(context.Background(), root, ResultSpec{
+		Kind: "mcp", Server: "structured", Tool: "probe",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !Pass(legacy) || legacy.Verdict != nil {
+		t.Fatalf("legacy = %#v", legacy)
+	}
+}
+
+func TestMCPEntryEnvOverridesInherited(t *testing.T) {
+	// embedded 引擎条目靠 env 携带 PYTHONPATH;条目值必须压过继承环境
+	// (glibc getenv 取首个匹配,简单 append 会让继承值遮蔽条目值)。
+	root := t.TempDir()
+	stub := copiedSelf(t)
+	t.Setenv("ARBITER_TEST_MODE", "bad")
+	writeMCP(t, root, map[string]any{
+		"ok": map[string]any{
+			"type":    "stdio",
+			"command": stub,
+			"env":     map[string]any{"ARBITER_TEST_STUB": "1", "ARBITER_TEST_MODE": "ok"},
+		},
+	})
+	result, err := Execute(context.Background(), root, ResultSpec{Kind: "mcp", Server: "ok", Tool: "probe"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !Pass(result) {
+		t.Fatalf("entry env did not override inherited env: %#v", result)
+	}
+}
+
 func TestMCPPreflightErrors(t *testing.T) {
 	root := t.TempDir()
 	self, err := os.Executable()
@@ -133,6 +229,17 @@ func runStub() {
 			return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: "bad"}}}, nil
 		case "slow":
 			time.Sleep(3 * time.Second)
+		case "structured":
+			return &mcp.CallToolResult{
+				Content:           []mcp.Content{&mcp.TextContent{Text: "structured"}},
+				StructuredContent: stubStructured(),
+			}, nil
+		case "bad-structured":
+			return &mcp.CallToolResult{
+				IsError:           true,
+				Content:           []mcp.Content{&mcp.TextContent{Text: "bad structured"}},
+				StructuredContent: stubStructured(),
+			}, nil
 		}
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "ok"}}}, nil
 	})
@@ -140,6 +247,17 @@ func runStub() {
 		os.Exit(2)
 	}
 	os.Exit(0)
+}
+
+// stubStructured 模拟伙伴诊断服务器(gdb-mcp/perf-mcp)的 structuredContent 形状。
+func stubStructured() map[string]any {
+	return map[string]any{
+		"ok":      true,
+		"state":   "stopped",
+		"overall": "failed",
+		"summary": map[string]any{"finding_count": 2, "all_successful": true},
+		"checks":  []any{map[string]any{"name": "gdb", "ok": true}},
+	}
 }
 
 func writeMCP(t *testing.T, root string, servers map[string]any) {
