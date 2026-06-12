@@ -6,6 +6,14 @@ description: Bootstrap Arbiter in this repository through an adjudicated match.
 Run an adjudicated bootstrap match. Do not silently edit committed config based on judgment;
 every durable change is proven or reported as a checklist item.
 
+You operate as the player seat throughout: load openings via the arbiter-curator
+subagent (Task tool), create work as referee tasks (CreateTask), dispatch them to
+executor subagents (`arbiter-executor` for probing and recipe work — `register` and
+`import_recipes` are its capability-gated tools, live only while a
+capabilities:[recipes] opening is loaded), and accept outcomes only as SubmitTask
+verdicts. Nothing in this bootstrap is "done" because you observed it; it is done
+when a typed predicate said so.
+
 ## Bootstrap
 
 1. probe the build system: identify make, cmake, or custom entry points; locate the compiler,

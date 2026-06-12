@@ -5,8 +5,20 @@ description: Interview the user and register a new Arbiter opening.
 
 Create a playbook by interviewing first, then drafting, then calling AddPlayBook.
 
-Ask for missing information in one pass: intended request class, steps, failure branches,
-machine-checkable predicates, primary recipe or fact goal, and any required capabilities.
+## Protocol
+
+1. Interview in ONE pass — ask for everything missing at once: intended request
+   class, steps, failure branches, machine-checkable predicates per step, primary
+   recipe or fact goal, required capabilities, round budget (max_steps).
+2. Draft the full playbook text against the contract below and the scaffold.
+3. Call AddPlayBook {"content": "<the full markdown>"} and handle its errors:
+   - playbook_invalid → fix exactly what data.issues lists, resubmit;
+   - name_conflict → the intent already has an opening: re-read the existing names,
+     either extend that opening (tell the user) or pick a genuinely different intent
+     phrase — never overwrite.
+4. After success, report: the name, the step graph (step → success/failure targets),
+   each step's predicate, the goal, max_steps — and that the user can run it now
+   with /arbiter-play.
 
 Every generated playbook must follow this contract:
 
