@@ -193,6 +193,24 @@ def run_target(
             stdout_tail=proc.stdout_tail,
             stderr_tail=proc.stderr_tail,
         )
+    if result.passed + result.failed + result.skipped == 0:
+        # The filter matched no tests, so the recipe obtained no verdict at all -
+        # gtest exits 0 on an empty run, which would otherwise read as "passed".
+        # A green gate (expect overall=passed) must never be satisfied by zero
+        # tests: a `tests` override naming a case that is a typo, or that was
+        # never compiled into the recipe's binary, is no proof. "errored" keeps
+        # it out of both gates, exactly like a build failure.
+        return RunResult(
+            run_id=run_id,
+            overall="errored",
+            passed=0,
+            failed=0,
+            skipped=0,
+            facts=facts.get("facts"),
+            failure="no_tests_ran",
+            stdout_tail=proc.stdout_tail,
+            stderr_tail=proc.stderr_tail,
+        )
     if facts.get("facts") is not None:
         result = _with_facts(result, facts["facts"])
     if result.overall == "failed":

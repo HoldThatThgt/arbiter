@@ -210,6 +210,44 @@ targets:
             self.assertEqual(result.overall, "errored")
             self.assertEqual(result.failure, "src_compile")
             self.assertEqual(result.per_test, ())
+
+    def test_zero_tests_matched_is_errored_not_passed(self):
+        # A `tests` filter that matches nothing makes gtest exit 0 with an empty
+        # result file, which parse_xml reads as "passed". run_target overrides
+        # that to "errored": the recipe obtained no verdict, so a green gate
+        # (expect overall=passed) cannot be satisfied by a tests override that
+        # names a case the binary does not contain - a typo, or a symptom test
+        # never compiled into the suite.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake = root / "empty_gtest.sh"
+            fake.write_text(
+                "#!/bin/sh\n"
+                'for arg in "$@"; do\n'
+                '  case "$arg" in --gtest_output=xml:*) out="${arg#--gtest_output=xml:}" ;; esac\n'
+                "done\n"
+                'mkdir -p "$(dirname "$out")"\n'
+                'printf \'<testsuites tests="0" failures="0" skipped="0"/>\' > "$out"\n',
+                encoding="utf-8",
+            )
+            fake.chmod(0o755)
+            book = recipes.parse(
+                f"""
+targets:
+  - id: unit
+    binary: empty_gtest.sh
+    harness:
+      kind: gtest
+    test_run:
+      cmd: [{str(fake)}]
+"""
+            )
+
+            result = gtest.run_target(root, book, "unit", run_id="r-zero")
+
+            self.assertEqual(result.overall, "errored")
+            self.assertEqual(result.failure, "no_tests_ran")
+            self.assertEqual((result.passed, result.failed, result.skipped), (0, 0, 0))
             self.assertFalse((Path(tmp) / "outside").exists())
 
     def test_src_compile_publishes_facts_and_sanitizer_profile_reextracts(self):

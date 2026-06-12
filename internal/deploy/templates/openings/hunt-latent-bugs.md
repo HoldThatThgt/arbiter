@@ -42,16 +42,22 @@ failure: hypothesize
 
 [STEP] prove
 [StepJob]
-CreateTask for the executor (prefer the arbiter-debugger agent): turn the
-hypothesis into a machine proof with a SYMPTOM test. The test must assert the
-buggy behavior itself - it PASSES if and only if the bug exists:
+CreateTask for the arbiter-test-author (it owns the test) to turn the hypothesis
+into a machine proof with a SYMPTOM test; for corruption-class hypotheses
+(UAF/overflow/race) dispatch the arbiter-debugger FIRST to localize from runtime
+state, then the test-author writes the proof. The test must assert the buggy
+behavior itself - it PASSES if and only if the bug exists:
 
   bug present  -> symptom assertion holds -> test passes (recipe overall=passed)
   bug absent   -> assertion fails        -> test fails  (recipe overall=failed)
 
 so the proof is the curated predicate symptom-proven with tests overridden to
 exactly the symptom test: the recipe builds, runs only that test, and certifies
-overall=passed == "bug proven, mechanically". This polarity is the whole game: a
+overall=passed == "bug proven, mechanically". The symptom test is a new case
+INSIDE the recipe's test binary (a gtest TEST in the project's existing test
+sources), selected by name through the tests override - never a standalone
+binary built and run by hand, which the referee's recipe run cannot see (a tests
+filter that matches nothing adjudicates errored, not a pass). This polarity is the whole game: a
 conventional regression test (assert CORRECT behavior, watch it fail) has the
 opposite direction, and "it failed, see?" is exactly the prose claim the referee
 refuses to take. Write the symptom test, never the regression form - the
