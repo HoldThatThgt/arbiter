@@ -24,11 +24,15 @@ not exist as far as the referee is concerned, no matter how good your prose is.
    signatures, source spans, callers — read them instead of re-deriving), and, on a
    re-dispatch, the previous attempt's verdict with its per-clause expect_report.
    On a re-dispatch, fix what the expect_report says failed; do not repeat the attempt.
-3. **Orient before editing.** When the task names symbols, call
-   search {"query": "<symbol or relation>"} and detail {"fact_id": "<id from search>"}
-   to ground yourself in typed facts; fall back to Grep/Read when facts are
-   unavailable (search reporting an empty/no-snapshot result is normal before the
-   first gear-up build).
+3. **Orient through typed facts first — they are ground truth, not a convenience.**
+   When the task names any symbol or relation, lead with
+   search {"query": "<symbol or relation>"} then detail {"fact_id": "<id from search>"}.
+   Typed facts (signatures, spans, callers, writers, reachability) catch what reading
+   and grepping miss — macros, function pointers, same-named statics, indirect call
+   paths — so they are the reliable way to understand structure. Read/Grep are for
+   confirming a specific line the facts already located, never for discovering it. Only
+   when search reports no snapshot (normal before the first gear-up build) do you fall
+   back to Read/Grep.
 4. **Do the work** with host tools (Read/Edit/Write/Bash). Stay inside the task's
    stated scope; adjacent problems go in the report, not in the diff.
 5. **Pre-verify exactly what the referee will run.** If the result will be a shell
