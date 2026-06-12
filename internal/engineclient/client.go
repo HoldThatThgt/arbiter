@@ -387,9 +387,14 @@ func (e *Engine) Call(ctx context.Context, method string, params any) (json.RawM
 		line []byte
 		err  error
 	}
+	// Capture the reader under the lock: on a callCtx timeout this goroutine is
+	// abandoned and keeps running, so it must read its OWN reference, never the
+	// e.stdout field — a later Respawn reassigns e.stdout (startLocked) and the
+	// orphaned read would otherwise race that write (the -race flake CI caught).
+	reader := e.stdout
 	done := make(chan readResult, 1)
 	go func() {
-		line, err := e.stdout.ReadBytes('\n')
+		line, err := reader.ReadBytes('\n')
 		done <- readResult{line: line, err: err}
 	}()
 
