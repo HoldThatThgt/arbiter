@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/HoldThatThgt/arbiter/internal/embeddedengine"
 )
 
 func TestInitMergesAndIsIdempotent(t *testing.T) {
@@ -309,6 +311,55 @@ recipes.parse(sys.stdin.read())
 	cmd.Stdin = strings.NewReader(defaultRecipes())
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("engine parser rejected defaultRecipes(): %v\n%s", err, out)
+	}
+}
+
+// TestDefaultConfigParsesWithEngineParser proves the default config file is
+// valid for the engine's strict config parser, which rejects unknown keys
+// (key_flags must be nested at facts.index_on_build.key_flags).
+func TestDefaultConfigParsesWithEngineParser(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	script := `
+import sys
+sys.path.insert(0, sys.argv[1])
+from arbiter_engine.config import parse_config
+parse_config(sys.stdin.read())
+`
+	cmd := exec.Command(python, "-c", script, filepath.Join("..", "..", "engine"))
+	cmd.Stdin = strings.NewReader(defaultConfig())
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("engine parser rejected defaultConfig(): %v\n%s", err, out)
+	}
+}
+
+// TestVerifyEngineDoesNotWriteBytecodeIntoEmbeddedTree is the deploy half of
+// the embedded-engine digest regression: init's version probe must not write
+// __pycache__/*.pyc into the freshly-unpacked (digest-recorded) engine tree.
+func TestVerifyEngineDoesNotWriteBytecodeIntoEmbeddedTree(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	root := t.TempDir()
+	if _, err := embeddedengine.Unpack(root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := verifyEngine(python, root); err != nil {
+		t.Fatal(err)
+	}
+	if err := filepath.WalkDir(filepath.Join(root, embeddedengine.RootRel), func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() && d.Name() == "__pycache__" {
+			t.Fatalf("verifyEngine wrote bytecode: %s", path)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 

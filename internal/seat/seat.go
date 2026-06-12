@@ -1,6 +1,7 @@
 package seat
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -61,6 +62,7 @@ type callFunc func(context.Context, json.RawMessage) (any, error)
 type seatRuntime struct {
 	root  string
 	query *engineclient.Engine
+	store *match.Store
 
 	mu   sync.Mutex
 	exec *engineclient.Engine
@@ -76,6 +78,9 @@ func (r *seatRuntime) Close() {
 	}
 	if r.query != nil {
 		_ = r.query.Close()
+	}
+	if r.store != nil {
+		r.store.CloseEngines()
 	}
 }
 
@@ -478,11 +483,16 @@ func add(server *mcp.Server, root, seatName, name, description string, schema ma
 	})
 }
 
+// decode 在席位边界严格解码工具入参:未知顶层键(含嵌套结构体如
+// verify.ResultSpec 内的未知键)即 bad_result,绝不静默丢弃。
+// map[string]any 字段(mcp arguments / run options)按设计仍是开放载荷。
 func decode(raw json.RawMessage, out any) error {
 	if len(raw) == 0 {
 		raw = json.RawMessage("{}")
 	}
-	if err := json.Unmarshal(raw, out); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(out); err != nil {
 		return &match.ToolError{Code: playbook.CodeBadResult, Message: err.Error()}
 	}
 	return nil

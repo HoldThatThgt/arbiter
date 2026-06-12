@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, TextIO
 
 from arbiter_engine import __version__
-from arbiter_engine.errors import RPCError, briefing_unresolved, engine_stale
+from arbiter_engine.errors import RPCError, briefing_unresolved, engine_stale, internal_error
 from arbiter_engine.facts import descriptors as facts_descriptors
 from arbiter_engine.facts import view as facts_view
 from arbiter_engine.runs import async_runs
@@ -136,16 +136,10 @@ def _dispatch_line(line: str, router: Router) -> Optional[dict[str, Any]]:
         response = _error(request_id, exc.code, exc.message, exc.data)
     except Exception as exc:  # noqa: BLE001 - the serve loop must never die on a request
         request_id = request.get("id") if isinstance(request, dict) else None
-        response = _error(
-            request_id,
-            -32603,
-            "internal error",
-            {
-                "kind": "internal_error",
-                "exception": type(exc).__name__,
-                "detail": str(exc),
-            },
-        )
+        # Route through the validated constructor so an unknown error kind can
+        # never be emitted on the wire without a taxonomy (errors.py) entry.
+        wrapped = internal_error(exc)
+        response = _error(request_id, wrapped.code, wrapped.message, wrapped.data)
     return None if is_notification else response
 
 

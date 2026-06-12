@@ -96,6 +96,31 @@ class ImportPolicySelfTest(unittest.TestCase):
         self.assertIn("bad.py:1", str(violations[0]))
         self.assertIn("requests", str(violations[0]))
 
+    def test_non_literal_dynamic_import_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            module = root / "bad.py"
+            module.write_text(
+                textwrap.dedent(
+                    """\
+                    import importlib
+
+                    name = "requ" + "ests"
+                    importlib.import_module(name)
+                    __import__(name)
+                    importlib.__import__(name)
+                    """
+                ),
+                encoding="utf-8",
+            )
+
+            violations = find_import_violations(root)
+
+        self.assertEqual(len(violations), 3)
+        for line, violation in zip((4, 5, 6), violations):
+            self.assertIn(f"bad.py:{line}", str(violation))
+            self.assertIn("non-literal module name", str(violation))
+
     def test_allows_stdlib_dynamic_imports(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

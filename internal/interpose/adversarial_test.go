@@ -206,11 +206,20 @@ func requireArbiterCC(t *testing.T) string {
 	return bin
 }
 
+// buildArbiter builds the non-race arbiter binary once per test process. The
+// binary lives in its own MkdirTemp directory (not t.TempDir, which is torn
+// down when the first calling test finishes) so every test in the package can
+// share the cached path.
 func buildArbiter(t *testing.T) string {
 	t.Helper()
 	arbiterOnce.Do(func() {
 		root := repoRoot()
-		bin := filepath.Join(t.TempDir(), "arbiter")
+		dir, err := os.MkdirTemp("", "arbiter-interpose-")
+		if err != nil {
+			arbiterErr = err
+			return
+		}
+		bin := filepath.Join(dir, "arbiter")
 		cmd := exec.Command("go", "build", "-o", bin, "./cmd/arbiter")
 		cmd.Dir = root
 		out, err := cmd.CombinedOutput()

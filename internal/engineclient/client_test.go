@@ -304,7 +304,11 @@ func TestSpawnSetsArbiterBinEnv(t *testing.T) {
 	out := filepath.Join(dir, "env.txt")
 	script := writeFakeEngine(t, `
 import json, os, sys
-open(sys.argv[1], "w", encoding="utf-8").write(os.environ.get("ARBITER_BIN", ""))
+env = {
+    "ARBITER_BIN": os.environ.get("ARBITER_BIN", ""),
+    "PYTHONDONTWRITEBYTECODE": os.environ.get("PYTHONDONTWRITEBYTECODE", ""),
+}
+open(sys.argv[1], "w", encoding="utf-8").write(json.dumps(env))
 for line in sys.stdin:
     req = json.loads(line)
     sys.stdout.write(json.dumps({"jsonrpc":"2.0","id":req["id"],"result":{"ok":True}}, separators=(",", ":")) + "\n")
@@ -324,7 +328,11 @@ for line in sys.stdin:
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := strings.TrimSpace(string(data))
+	var env map[string]string
+	if err := json.Unmarshal(data, &env); err != nil {
+		t.Fatal(err)
+	}
+	got := env["ARBITER_BIN"]
 	want, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -337,6 +345,57 @@ for line in sys.stdin:
 	}
 	if !filepath.IsAbs(got) {
 		t.Fatalf("ARBITER_BIN = %q is not absolute", got)
+	}
+	// Bytecode generation is suppressed so the child never writes
+	// __pycache__/*.pyc into the (digest-verified) engine tree.
+	if env["PYTHONDONTWRITEBYTECODE"] != "1" {
+		t.Fatalf("PYTHONDONTWRITEBYTECODE = %q, want \"1\"", env["PYTHONDONTWRITEBYTECODE"])
+	}
+}
+
+// TestEngineInternalErrorIsTypedAndDoesNotPoison proves the catch-all
+// engine error kind "internal_error" surfaces as a typed EngineError on a
+// still-usable channel instead of poisoning the child.
+func TestEngineInternalErrorIsTypedAndDoesNotPoison(t *testing.T) {
+	dir := t.TempDir()
+	script := writeFakeEngine(t, `
+import json, sys
+first = True
+for line in sys.stdin:
+    req = json.loads(line)
+    if first:
+        first = False
+        resp = {"jsonrpc": "2.0", "id": req["id"], "error": {"code": -32000, "message": "boom", "data": {"kind": "internal_error"}}}
+    else:
+        resp = {"jsonrpc": "2.0", "id": req["id"], "result": {"ok": True}}
+    sys.stdout.write(json.dumps(resp, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+`)
+
+	client, err := spawnCommand(context.Background(), RoleExec, dir, []string{pythonBin(), script})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	_, err = client.Call(context.Background(), "probe", nil)
+	var engineErr *EngineError
+	if !stderrors.As(err, &engineErr) {
+		t.Fatalf("error = %T %[1]v, want *EngineError", err)
+	}
+	if engineErr.Kind != "internal_error" {
+		t.Fatalf("kind = %q, want internal_error", engineErr.Kind)
+	}
+	if client.Poisoned() {
+		t.Fatal("client poisoned by typed internal_error")
+	}
+
+	raw, err := client.Call(context.Background(), "probe", nil)
+	if err != nil {
+		t.Fatalf("call after internal_error: %v", err)
+	}
+	if !strings.Contains(string(raw), `"ok":true`) {
+		t.Fatalf("response = %s", raw)
 	}
 }
 

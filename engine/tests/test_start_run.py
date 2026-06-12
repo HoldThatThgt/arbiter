@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -56,6 +57,15 @@ class StartRunTest(unittest.TestCase):
                     request("arbiter/runStatus", {"run_id": run_id}, request_id=2)
                 )
                 self.assertEqual(persisted["result"]["state"], "completed")
+
+                # The double-forked worker is a bounded job, not a daemon:
+                # once the run is terminal its process must be gone (it is
+                # reparented to init, so pid-gone is the assertion — no
+                # zombie can linger in our process tree).
+                db = Path(tmp) / ".arbiter" / "runs" / "state.sqlite"
+                worker_pid = read_worker_pid(db, run_id)
+                self.assertIsNotNone(worker_pid)
+                wait_for_pid_gone(worker_pid)
 
     def test_timeout_is_recorded_as_a_failed_run(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -191,6 +201,27 @@ targets:
                     request("arbiter/runStatus", {"run_id": "r-alive"})
                 )["result"]
                 self.assertEqual(status["state"], "running")
+
+
+def read_worker_pid(db, run_id):
+    with sqlite3.connect(str(db)) as conn:
+        row = conn.execute(
+            "SELECT worker_pid FROM async_runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+    if row is None or row[0] is None:
+        return None
+    return int(row[0])
+
+
+def wait_for_pid_gone(pid, timeout=5):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"worker pid {pid} still alive after terminal state")
 
 
 def wait_for_terminal(run_id, timeout=2):

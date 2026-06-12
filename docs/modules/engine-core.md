@@ -28,7 +28,8 @@ channel policy.
   (argv), and enforces the single-writer rule (only player-QUERY may reconcile/publish overlays).
 - Typed error taxonomy (JSON-RPC error.data.kind): `no_snapshot{hint}`, `briefing_unresolved
   {bad_refs[]}`, `capability_revoked`, `recipe_pin_mismatch`, `engine_stale{expected,found}`,
-  `harness_unavailable`, `lock_timeout{lock}`. New kinds require a doc update here + transcripts.
+  `harness_unavailable`, `lock_timeout{lock}`, `internal_error{exception,detail}` (the chassis
+  catch-all for unexpected handler exceptions). New kinds require a doc update here + transcripts.
 - Config: `.arbiter/config.yml`, strict YAML-subset parser (fail-closed dialect, line-precise
   errors; crun's recipe corpus as golden tests). Sections: `facts:{extractor, incremental,
   index_on_build:{pool, key_flags}}`, `runs:{...}`, `match:{goal_memo}`, `engine:{}`.

@@ -262,11 +262,12 @@ func mergeSettings(path, exe string, embedded bool) error {
 }
 
 // isArbiterStopHook reports whether a Stop hook command is arbiter-owned:
-// either the exact current command, or a command whose first field has
-// basename "arbiter" (or equals the current exe) and which ends with
-// "hook stop". The basename check is the middle ground that lets init and
-// remove clean up hooks left behind by moved or rebuilt arbiter binaries
-// without hijacking foreign hooks that merely end in "hook stop".
+// either the exact current command, or a provably dead arbiter entry — a
+// command ending in "hook stop" whose first field has basename "arbiter" and
+// no longer resolves to an existing file on disk. The liveness check is what
+// lets init and remove reclaim hooks left behind by moved or rebuilt arbiter
+// binaries while guaranteeing a live foreign binary that happens to be named
+// "arbiter" is never hijacked.
 func isArbiterStopHook(command, exe string) bool {
 	if command == exe+" hook stop" {
 		return true
@@ -275,7 +276,22 @@ func isArbiterStopHook(command, exe string) bool {
 	if len(fields) < 3 || fields[len(fields)-2] != "hook" || fields[len(fields)-1] != "stop" {
 		return false
 	}
-	return fields[0] == exe || filepath.Base(fields[0]) == "arbiter"
+	if filepath.Base(fields[0]) != "arbiter" {
+		return false
+	}
+	return !binaryExists(fields[0])
+}
+
+// binaryExists reports whether a hook command's first token still resolves to
+// a file on disk: os.Stat for path-shaped tokens, exec.LookPath for bare
+// names. A token that no longer resolves marks the hook as dead/stale.
+func binaryExists(token string) bool {
+	if strings.ContainsRune(token, '/') || strings.ContainsRune(token, os.PathSeparator) {
+		_, err := os.Stat(token)
+		return err == nil
+	}
+	_, err := exec.LookPath(token)
+	return err == nil
 }
 
 // mergeStopHook rewrites any arbiter-owned Stop hook to the current command
@@ -627,8 +643,12 @@ func guidance(replacedMCP, noExecutor bool) string {
 	return msg
 }
 
+// defaultConfig must stay parseable by the engine's strict config parser
+// (engine/arbiter_engine/config/__init__.py), which only allows
+// facts.{extractor,incremental,index_on_build} and nests key_flags at
+// facts.index_on_build.key_flags.
 func defaultConfig() string {
-	return "# Arbiter engine config.\nfacts:\n  key_flags: []\n"
+	return "# Arbiter engine config.\nfacts:\n  index_on_build:\n    key_flags: []\n"
 }
 
 // defaultRecipes must stay parseable by the engine's strict RecipeBook v2
@@ -670,7 +690,10 @@ func verifyEngine(python, root string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, python, "-m", "arbiter_engine", "--version")
-	cmd.Env = os.Environ()
+	// PYTHONDONTWRITEBYTECODE keeps this probe from writing __pycache__/*.pyc
+	// into the engine tree; for the embedded engine that bytecode would change
+	// the freshly-unpacked tree whose digest init just recorded.
+	cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 	if _, err := os.Stat(filepath.Join(root, embeddedengine.RootRel, "arbiter_engine")); err == nil {
 		cmd.Env = append(cmd.Env, "PYTHONPATH="+embeddedengine.PythonPath(root))
 	} else if _, err := os.Stat(filepath.Join(root, "engine", "arbiter_engine")); err == nil {

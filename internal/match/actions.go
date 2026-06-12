@@ -464,6 +464,7 @@ func (s *Store) CheckStepJob(ctx context.Context) (CheckStepJobOutput, error) {
 	var startRunSeq int
 	var startRunDigest string
 	var pollRunGoal *GoalPending
+	var discardedPending bool
 	out, err := s.withLock(func(m *Match) (*Match, any, error) {
 		if m == nil || m.Status != StatusActive || m.Current == nil {
 			return nil, nil, &ToolError{Code: playbook.CodeNoActiveMatch, Message: "no active match"}
@@ -472,6 +473,7 @@ func (s *Store) CheckStepJob(ctx context.Context) (CheckStepJobOutput, error) {
 			pending := *m.GoalPending
 			if pending.RoundSeq != m.RoundSeq {
 				m.GoalPending = nil
+				discardedPending = true
 				return m, CheckStepJobOutput{Complete: false, Reason: "state_changed", RunID: pending.RunID}, nil
 			}
 			pollRunGoal = &pending
@@ -517,6 +519,11 @@ func (s *Store) CheckStepJob(ctx context.Context) (CheckStepJobOutput, error) {
 	})
 	if err != nil {
 		return CheckStepJobOutput{}, err
+	}
+	if discardedPending {
+		// pending 属于已死回合,刚刚在锁内被清除:goal 生命周期结束,
+		// 缓存的 exec 引擎随之关闭(锁已释放,Close 不在文件锁内)。
+		s.closeGoalEngine()
 	}
 	if pollRunGoal != nil {
 		return s.pollAsyncRunGoal(ctx, *pollRunGoal)

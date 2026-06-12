@@ -93,8 +93,22 @@ func Digest(repo string) (Manifest, error) {
 	hash := sha256.New()
 	files := 0
 	if err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+		if err != nil {
 			return err
+		}
+		// Python bytecode is interpreter-generated runtime state, not engine
+		// content: any import of the tree may write __pycache__/*.pyc, so
+		// hashing it would make the digest diverge from the unpack-time
+		// manifest the moment the engine runs.
+		if d.IsDir() {
+			if d.Name() == "__pycache__" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		switch filepath.Ext(d.Name()) {
+		case ".pyc", ".pyo":
+			return nil
 		}
 		rel, err := filepath.Rel(root, path)
 		if err != nil {

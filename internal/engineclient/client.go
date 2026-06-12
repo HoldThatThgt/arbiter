@@ -204,6 +204,10 @@ func spawnCommand(ctx context.Context, role EngineRole, repo string, argv []stri
 }
 
 func spawnConfigured(ctx context.Context, cfg spawnConfig) (*Engine, error) {
+	// PYTHONDONTWRITEBYTECODE keeps the child from writing __pycache__/*.pyc
+	// into the engine tree; for the embedded engine that bytecode would
+	// otherwise change the on-disk tree that digest verification hashes.
+	cfg.env = setEnv(cfg.env, "PYTHONDONTWRITEBYTECODE", "1")
 	// ARBITER_BIN tells engine-side compile stages where the arbiter binary
 	// lives so they can build CC='<arbiter> cc -- <real>' interposition
 	// without relying on PATH. Left unset when the executable path is
@@ -623,6 +627,7 @@ func knownEngineErrorKind(kind string) bool {
 		"capability_revoked",
 		"engine_stale",
 		"harness_unavailable",
+		"internal_error",
 		"invalid_args",
 		"invalid_json",
 		"invalid_jsonrpc",
