@@ -19,12 +19,27 @@ import (
 
 func main() {
 	if len(os.Args) >= 2 && os.Args[1] == "cc" {
-		root, err := os.Getwd()
+		cwd, err := os.Getwd()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-		os.Exit(interpose.Run(root, os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
+		args := os.Args[2:]
+		root := ""
+		if len(args) >= 2 && args[0] == "--root" {
+			root = args[1]
+			args = args[2:]
+			if !filepath.IsAbs(root) {
+				root = filepath.Join(cwd, root)
+			}
+			root = filepath.Clean(root)
+		} else {
+			// ADR-0014: cwd is not load-bearing — builds compile from subdirs
+			// and out-of-tree build dirs, so the journal root is discovered,
+			// not assumed.
+			root = interpose.DiscoverRoot(cwd)
+		}
+		os.Exit(interpose.Run(root, cwd, args, os.Stdin, os.Stdout, os.Stderr))
 	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -34,7 +49,7 @@ func main() {
 
 func run() error {
 	if len(os.Args) < 2 {
-		return fmt.Errorf("usage: arbiter init [flags] | adopt | status [--json] | report [--json] [match_id] | serve <seat> | hook stop | cc -- <real-compiler> [args...]")
+		return fmt.Errorf("usage: arbiter init [flags] | adopt | status [--json] | report [--json] [match_id] | serve <seat> | hook stop | cc [--root DIR] -- <real-compiler> [args...]")
 	}
 	root, err := os.Getwd()
 	if err != nil {
@@ -119,10 +134,40 @@ func run() error {
 		return seat.Run(context.Background(), seatRoot, seatName)
 	case "hook":
 		sub, hookRoot, err := parseRootArgs(os.Args[2:], root, 1)
-		if err != nil || (sub != "stop" && sub != "guard") {
-			return fmt.Errorf("usage: arbiter hook <stop|guard> [--root DIR]")
+		if err != nil || (sub != "stop" && sub != "guard" && sub != "subagent-stop") {
+			return fmt.Errorf("usage: arbiter hook <stop|guard|subagent-stop> [--root DIR]")
 		}
 		root = hookRoot
+		if sub == "subagent-stop" {
+			payload, err := io.ReadAll(os.Stdin)
+			if err != nil {
+				return nil // fail-open:门控故障不阻塞子代理
+			}
+			var input struct {
+				TranscriptPath string `json:"transcript_path"`
+				AgentID        string `json:"agent_id"`
+			}
+			if err := json.Unmarshal(payload, &input); err != nil {
+				return nil
+			}
+			transcript := match.ResolveSubagentTranscript(input.TranscriptPath, input.AgentID)
+			ids := match.ExtractDispatchTaskIDs(transcript)
+			if len(ids) == 0 {
+				return nil
+			}
+			decision, err := match.New(root, "hook").SubagentStopGate(ids)
+			if err != nil {
+				return err // 非零退出但无 block 决策:门控故障放行(fail-open),错误进 stderr
+			}
+			if !decision.Allow {
+				data, err := json.Marshal(map[string]any{"decision": "block", "reason": decision.Reason})
+				if err != nil {
+					return err
+				}
+				fmt.Println(string(data))
+			}
+			return nil
+		}
 		if sub == "guard" {
 			payload, err := io.ReadAll(os.Stdin)
 			if err != nil {
@@ -158,7 +203,7 @@ func run() error {
 		}
 		return nil
 	default:
-		return fmt.Errorf("usage: arbiter init [flags] | adopt | status [--json] | report [--json] [match_id] | serve <seat> | hook stop | cc -- <real-compiler> [args...]")
+		return fmt.Errorf("usage: arbiter init [flags] | adopt | status [--json] | report [--json] [match_id] | serve <seat> | hook stop | cc [--root DIR] -- <real-compiler> [args...]")
 	}
 }
 
@@ -179,7 +224,7 @@ Commands:
   serve    Run a seat MCP server (player|curator|executor). Spawned by Claude
            Code from .mcp.json and the agent files — not run by hand.
   hook     The Stop-hook gate (arbiter hook stop). Wired by init — not run by hand.
-  cc       The per-TU compiler shim (arbiter cc -- <real-cc> ...). Installed
+  cc       The per-TU compiler shim (arbiter cc [--root DIR] -- <real-cc> ...). Installed
            into recipes by /arbiter-intro — not run by hand.
   help     Show this help. init also accepts -h / --help.
 

@@ -133,6 +133,106 @@ func TestIsArbiterStopHookOwnership(t *testing.T) {
 	}
 }
 
+func TestSettingsSubagentStopHookMerge(t *testing.T) {
+	root := t.TempDir()
+	writeJSONFile(t, filepath.Join(root, fileSettings), map[string]any{
+		"hooks": map[string]any{
+			"SubagentStop": []any{
+				map[string]any{"matcher": "*", "hooks": []any{map[string]any{"type": "command", "command": "other-tool subagent-audit"}}},
+				map[string]any{"hooks": []any{map[string]any{"type": "command", "command": "/stale/path/arbiter hook subagent-stop --root /old", "timeout": 10}}},
+			},
+		},
+	})
+	if _, err := InitWithOptions(root, testInitOptions()); err != nil {
+		t.Fatal(err)
+	}
+	var settings map[string]any
+	readJSONFile(t, filepath.Join(root, fileSettings), &settings)
+	entries := settings["hooks"].(map[string]any)["SubagentStop"].([]any)
+	if len(entries) != 2 {
+		t.Fatalf("subagent-stop entries = %d (%#v)", len(entries), entries)
+	}
+	exe := testExecutable(t)
+	foreign, claimed := false, 0
+	for _, c := range hookCommands(settings, "SubagentStop") {
+		if c == "other-tool subagent-audit" {
+			foreign = true
+		}
+		if c == exe+" hook subagent-stop --root "+root {
+			claimed++
+		}
+	}
+	if !foreign || claimed != 1 {
+		t.Fatalf("commands = %#v", hookCommands(settings, "SubagentStop"))
+	}
+	// 被认领的条目必须带执行席位 matcher;外来条目的 matcher 不动
+	for _, entry := range entries {
+		em := entry.(map[string]any)
+		for _, h := range em["hooks"].([]any) {
+			if h.(map[string]any)["command"] == exe+" hook subagent-stop --root "+root {
+				if em["matcher"] != subagentStopMatcher {
+					t.Fatalf("claimed matcher = %#v", em["matcher"])
+				}
+			}
+		}
+	}
+
+	// 幂等:再跑一次不应新增条目
+	if _, err := InitWithOptions(root, testInitOptions()); err != nil {
+		t.Fatal(err)
+	}
+	readJSONFile(t, filepath.Join(root, fileSettings), &settings)
+	if n := len(settings["hooks"].(map[string]any)["SubagentStop"].([]any)); n != 2 {
+		t.Fatalf("entries after re-init = %d", n)
+	}
+
+	// remove 只撤本工具条目
+	opts := testInitOptions()
+	opts.Remove = true
+	if _, err := InitWithOptions(root, opts); err != nil {
+		t.Fatal(err)
+	}
+	readJSONFile(t, filepath.Join(root, fileSettings), &settings)
+	commands := hookCommands(settings, "SubagentStop")
+	if len(commands) != 1 || commands[0] != "other-tool subagent-audit" {
+		t.Fatalf("after remove = %#v", commands)
+	}
+}
+
+func TestIsArbiterSubagentStopHookOwnership(t *testing.T) {
+	exe := "/current/arbiter-test"
+	t.Setenv("PATH", t.TempDir())
+	cases := []struct {
+		command string
+		want    bool
+	}{
+		{exe + " hook subagent-stop", true},
+		{exe + " hook subagent-stop --root /x", true},
+		{"/stale/path/arbiter hook subagent-stop", true},
+		{"/stale/path/arbiter hook stop", false}, // Stop 门控不归本识别器认领
+		{"/foreign/tool hook subagent-stop", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := isArbiterSubagentStopHook(tc.command, exe); got != tc.want {
+			t.Errorf("isArbiterSubagentStopHook(%q) = %t, want %t", tc.command, got, tc.want)
+		}
+	}
+}
+
+func hookCommands(settings map[string]any, key string) []string {
+	entries, _ := settings["hooks"].(map[string]any)[key].([]any)
+	var commands []string
+	for _, entry := range entries {
+		for _, h := range entry.(map[string]any)["hooks"].([]any) {
+			if command, ok := h.(map[string]any)["command"].(string); ok {
+				commands = append(commands, command)
+			}
+		}
+	}
+	return commands
+}
+
 func stopCommands(settings map[string]any) []string {
 	stops, _ := settings["hooks"].(map[string]any)["Stop"].([]any)
 	var commands []string

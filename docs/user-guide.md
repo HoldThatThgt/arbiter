@@ -380,7 +380,7 @@ arbiter status [--json]
 arbiter report [--json] [match_id]
 arbiter serve player|curator|executor
 arbiter hook stop
-arbiter cc -- <real-compiler> [args...]
+arbiter cc [--root DIR] -- <real-compiler> [args...]
 ```
 
 `serve` speaks MCP over stdio and exits on EOF — it is always spawned by Claude

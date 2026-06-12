@@ -177,6 +177,104 @@ func TestInterposeAdversarialMatrix(t *testing.T) {
 		}
 	})
 
+	t.Run("subdir compile journals to discovered root", func(t *testing.T) {
+		work := t.TempDir()
+		fake, _ := fakeCompiler(t, work, 0)
+		if err := os.MkdirAll(filepath.Join(work, ".arbiter"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		sub := filepath.Join(work, "build", "CMakeFiles")
+		if err := os.MkdirAll(sub, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, work, "src/deep.c", "int deep;\n")
+
+		if err := runCCFrom(bin, sub, work, "subdir", "--", fake, "-c", "../../src/deep.c", "-o", "deep.o"); err != nil {
+			t.Fatal(err)
+		}
+
+		entries := readJournal(t, work, "subdir") // at the deployment root, not under build/
+		wantCWD, err := filepath.EvalSymlinks(sub)
+		if err != nil {
+			t.Fatal(err)
+		}
+		gotCWD, _ := entries[0]["cwd"].(string)
+		if resolved, err := filepath.EvalSymlinks(gotCWD); err != nil || resolved != wantCWD {
+			t.Fatalf("cwd = %q (resolved err %v), want %q", gotCWD, err, wantCWD)
+		}
+		if entries[0]["src"] != "../../src/deep.c" {
+			t.Fatalf("src = %#v, want the relative path the compiler saw", entries[0]["src"])
+		}
+		if _, err := os.Stat(filepath.Join(sub, ".arbiter")); !os.IsNotExist(err) {
+			t.Fatalf("stray .arbiter in build subdir (stat err %v)", err)
+		}
+	})
+
+	t.Run("explicit root override wins", func(t *testing.T) {
+		work := t.TempDir()
+		fake, _ := fakeCompiler(t, work, 0)
+		other := t.TempDir()
+		src := writeFile(t, work, "src/r.c", "int r;\n")
+
+		if err := runCCFrom(bin, work, work, "rooted", "--root", other, "--", fake, "-c", src, "-o", filepath.Join(work, "r.o")); err != nil {
+			t.Fatal(err)
+		}
+
+		entries := readJournal(t, other, "rooted")
+		if len(entries) != 1 || entries[0]["src"] != src {
+			t.Fatalf("journal at --root = %#v", entries)
+		}
+		if _, err := os.Stat(journalPath(work, "rooted")); !os.IsNotExist(err) {
+			t.Fatalf("journal also written under cwd (stat err %v)", err)
+		}
+	})
+
+	t.Run("one-step compile and link journals per source", func(t *testing.T) {
+		work := t.TempDir()
+		fake, _ := fakeCompiler(t, work, 0)
+		a := writeFile(t, work, "src/a.c", "int a;\n")
+		b := writeFile(t, work, "src/b.c", "int b;\n")
+
+		runCC(t, bin, work, "onestep", fake, a, b, "-o", filepath.Join(work, "app"))
+
+		entries := readJournal(t, work, "onestep")
+		if len(entries) != 2 || entries[0]["src"] != a || entries[1]["src"] != b {
+			t.Fatalf("one-step journal = %#v", entries)
+		}
+		if out, ok := entries[0]["out"]; ok && out != "" {
+			t.Fatalf("multi-TU out = %#v, want empty (the -o is the link product)", out)
+		}
+	})
+
+	t.Run("preprocess, assembly, depscan, syntax-only do not journal", func(t *testing.T) {
+		work := t.TempDir()
+		fake, _ := fakeCompiler(t, work, 0)
+		src := writeFile(t, work, "src/e.c", "int e;\n")
+
+		for _, flag := range []string{"-E", "-S", "-M", "-MM", "-fsyntax-only"} {
+			runCC(t, bin, work, "modeflag", fake, flag, src)
+		}
+
+		if _, err := os.Stat(journalPath(work, "modeflag")); !os.IsNotExist(err) {
+			t.Fatalf("mode-flag invocations journaled (stat err %v)", err)
+		}
+	})
+
+	t.Run("self wrap with explicit root collapses", func(t *testing.T) {
+		work := t.TempDir()
+		fake, log := fakeCompiler(t, work, 0)
+		src := writeFile(t, work, "src/swr.c", "int swr;\n")
+
+		runCC(t, bin, work, "selfroot", bin, "cc", "--root", work, "--", fake, "-c", src, "-o", filepath.Join(work, "swr.o"))
+
+		if got := strings.Count(readText(t, log), "argv0:"); got != 1 {
+			t.Fatalf("fake compiler invocations = %d want 1", got)
+		}
+		if got := len(readJournal(t, work, "selfroot")); got != 1 {
+			t.Fatalf("journal lines = %d want 1", got)
+		}
+	})
+
 	t.Run("self wrap collapses", func(t *testing.T) {
 		work := t.TempDir()
 		fake, log := fakeCompiler(t, work, 0)
@@ -289,6 +387,19 @@ func runCC(t *testing.T, bin, work, buildID string, args ...string) {
 	if err := runCCErr(bin, work, buildID, args...); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// runCCFrom runs the shim with an explicit working directory and raw
+// post-"cc" arguments (so tests can exercise --root and subdir invocations).
+func runCCFrom(bin, dir, work, buildID string, ccArgs ...string) error {
+	cmd := exec.Command(bin, append([]string{"cc"}, ccArgs...)...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "ARBITER_BUILD_ID="+buildID, "FAKE_CC_LOG="+filepath.Join(work, "fake-cc.log"))
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%w: %s", err, out)
+	}
+	return nil
 }
 
 func runCCErr(bin, work, buildID string, args ...string) error {

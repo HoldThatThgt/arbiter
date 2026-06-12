@@ -38,9 +38,12 @@ type Match struct {
 	TaskSeq      int                          `json:"task_seq"`
 	RoundSeq     int                          `json:"round_seq"`
 	StopBlocks   int                          `json:"stop_blocks"` // 本回合内被拦截的停止次数,进入新回合清零
-	GoalPending  *GoalPending                 `json:"goal_pending,omitempty"`
-	GoalMemo     map[string]GoalMemoEntry     `json:"goal_memo,omitempty"`
-	StartedAt    string                       `json:"started_at"`
+	// SubagentBlocks 按 task 记录子代理停止被拦截的次数(SubagentStop 门控)。
+	// 旧 state.json 缺省 → nil,行为等同从零计数。
+	SubagentBlocks map[string]int           `json:"subagent_blocks,omitempty"`
+	GoalPending    *GoalPending             `json:"goal_pending,omitempty"`
+	GoalMemo       map[string]GoalMemoEntry `json:"goal_memo,omitempty"`
+	StartedAt      string                   `json:"started_at"`
 }
 
 type GoalPending struct {

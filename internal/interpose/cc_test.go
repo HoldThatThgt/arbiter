@@ -50,6 +50,34 @@ func TestShlexSplitRejectsMalformedInput(t *testing.T) {
 	}
 }
 
+func TestDiscoverRoot(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".arbiter"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	deep := filepath.Join(root, "build", "x", "y")
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := DiscoverRoot(deep); got != root {
+		t.Fatalf("DiscoverRoot(%q) = %q, want %q", deep, got, root)
+	}
+	if got := DiscoverRoot(root); got != root {
+		t.Fatalf("DiscoverRoot(root) = %q, want %q", got, root)
+	}
+	orphan := t.TempDir()
+	if got := DiscoverRoot(orphan); got != orphan {
+		t.Fatalf("DiscoverRoot fallback = %q, want cwd %q", got, orphan)
+	}
+	filed := t.TempDir()
+	if err := os.WriteFile(filepath.Join(filed, ".arbiter"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := DiscoverRoot(filed); got != filed {
+		t.Fatalf("DiscoverRoot with .arbiter file = %q, want cwd fallback %q", got, filed)
+	}
+}
+
 func TestExpandArgsKeepsRawArgWhenResponseFileMalformed(t *testing.T) {
 	rsp := filepath.Join(t.TempDir(), "bad.rsp")
 	if err := os.WriteFile(rsp, []byte(`"unterminated`), 0o644); err != nil {
