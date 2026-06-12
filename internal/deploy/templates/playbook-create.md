@@ -10,12 +10,22 @@ description: 根据用户描述创建新的流程棋谱。当用户要求"新建
 1. 缺什么问什么,一次问全:目标与适用场景;步骤划分;每一步的完成标准
    (必须可被 shell 命令或 mcp 调用客观验证);失败时去哪(原地重试/回退/放弃);
    整体成功判据(checkmate 条件,可选但推荐);步数预算 max_steps(可选,默认 256)。
-2. 按下方格式起草全文。checklist 每条都要可机器验证;有明确终态判据就写 [SetGoal]
-   ——goal 通过即 checkmate,对局立即胜利终局。
-3. 调用 AddPlayBook(content=全文)注册。返回 playbook_invalid 时按 data.issues
-   逐条修正后重交;name_conflict 时换一个名称,不要试图覆盖既有棋谱。
-4. 注册成功后向用户复述:名称、步骤图(step → success/failure 去向)、goal 与
-   max_steps,并提示可立即试跑(/arbiter-play …)。
+2. 定名(强制规约,见 FORMAT.md"Naming & dedup"):name 是用户意图的祈使短语
+   ——动词开头、kebab-case、≤3 段(如 fix-reported-bug / build-feature),不是
+   方法名、不是机制名、不是代号。description 以 "Use when …" 开头;若与既有
+   棋谱意图相邻,必须写 "Do not use …(use <某棋谱>)" 互指。先看一眼既有棋谱
+   名:意图重叠就扩展那一份,不要造近义词分身。
+3. 按下方格式起草全文,执行谓词纪律(FORMAT.md"Predicate discipline"):
+   - 每个可检验的步骤,在 [StepJob] 里写出执行席要提交的【确切】result 谓词
+     ——具体 shell 命令(注意退出码极性)或 mcp 调用 + expect 子句;
+   - 规则写成机器检查而非散文:测试不可改 = `git diff --quiet -- <paths> && …`,
+     确定性 = 5 次循环,性能改善 = 两次 expect 度量对照噪声带;
+   - checklist 每条可机器验证,写不出验证就回去重拆步骤;
+   - 有明确终态判据就写 [SetGoal]——goal 通过即 checkmate。
+4. 调用 AddPlayBook(content=全文)注册。返回 playbook_invalid 时按 data.issues
+   逐条修正后重交;name_conflict 时说明撞名并回到第 2 步重新定名,不要覆盖。
+5. 注册成功后向用户复述:名称、步骤图(step → success/failure 去向)、各步谓词、
+   goal 与 max_steps,并提示可立即试跑(/arbiter-play …)。
 
 ## 格式
 
