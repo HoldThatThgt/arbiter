@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import signal
@@ -25,6 +26,7 @@ DEFAULT_TIMEOUT_S = 600
 _SPEC_KEYS = frozenset(
     {
         "expect",
+        "frozen",
         "kind",
         "options",
         "recipe",
@@ -131,6 +133,9 @@ def _validate_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
     tests = spec.get("tests", [])
     if not isinstance(tests, list) or not all(isinstance(item, str) for item in tests):
         raise RPCError(-32602, "invalid params", {"kind": "invalid_params", "field": "tests"})
+    frozen = spec.get("frozen", [])
+    if not isinstance(frozen, list) or not all(isinstance(item, str) for item in frozen):
+        raise RPCError(-32602, "invalid params", {"kind": "invalid_params", "field": "frozen"})
     options = spec.get("options", {})
     if not isinstance(options, dict):
         raise RPCError(-32602, "invalid params", {"kind": "invalid_params", "field": "options"})
@@ -263,6 +268,17 @@ def _run_recipe(path: Path, run_id: str, spec: Mapping[str, Any]) -> Mapping[str
     book = recipes.load(repo / ".arbiter" / "recipes.yaml")
     options = spec.get("options", {})
     profiles = options.get("profiles", []) if isinstance(options, Mapping) else []
+    # Integrity step: hash the referee's frozen test sources HERE, at worker time,
+    # the instant before we hand control to the compile stages — these are the
+    # bytes the build is about to consume. The digests ride back in the result so
+    # the Go side can diff them against the frozen registry and reject any run
+    # whose compiled bytes differ from what RegisterTest froze. This is what makes
+    # the verdict reflect the bytes the worker actually compiled, closing the
+    # "pass round → weaken frozen test → let the worker compile the weakened test →
+    # restore before poll" race that a content hash in Go (which only ever sees the
+    # restored disk) structurally cannot observe. The worker runs the digest-verified
+    # embedded engine, so an in-match player cannot tamper with this hashing itself.
+    frozen_digests = _hash_frozen(repo, spec.get("frozen", []))
     result = gtest.run_target(
         repo,
         book,
@@ -273,7 +289,37 @@ def _run_recipe(path: Path, run_id: str, spec: Mapping[str, Any]) -> Mapping[str
     )
     payload = result.to_json()
     payload["isError"] = False
+    if frozen_digests is not None:
+        payload["frozen_digests"] = frozen_digests
     return payload
+
+
+def _hash_frozen(repo: Path, paths: Any) -> dict[str, str] | None:
+    """Hash each frozen test source (repo-relative, forward-slash) to its content
+    sha256, mirroring the Go-side RegisterTest digest. Returns None when there is
+    nothing to police so the result omits the key entirely.
+
+    A path the worker cannot read (deleted/unreadable during the run) is reported
+    with an empty digest: it never equals a real sha256, so the Go comparison
+    fails it as a violation rather than silently dropping it.
+    """
+    if not isinstance(paths, (list, tuple)) or not paths:
+        return None
+    digests: dict[str, str] = {}
+    for rel in paths:
+        if not isinstance(rel, str) or not rel:
+            continue
+        # Defense in depth: Go already constrains frozen paths to in-repo files,
+        # but never let a reported path escape the repo via abs/.. components.
+        if os.path.isabs(rel) or ".." in Path(rel).parts:
+            continue
+        try:
+            data = (repo / rel).read_bytes()
+        except OSError:
+            digests[rel] = ""
+            continue
+        digests[rel] = hashlib.sha256(data).hexdigest()
+    return digests
 
 
 def _repo_from_db(path: Path) -> Path:

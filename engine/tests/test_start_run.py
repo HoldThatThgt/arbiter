@@ -1,3 +1,4 @@
+import hashlib
 import io
 import json
 import os
@@ -134,6 +135,101 @@ class StartRunTest(unittest.TestCase):
                 status = wait_for_terminal(started["result"]["run_id"], timeout=5)
                 self.assertEqual(status["state"], "failed")
                 self.assertEqual(status["result"]["overall"], "failed")
+
+    def test_run_reports_frozen_test_digests_it_observed(self):
+        # The worker hashes the referee's frozen test sources at compile time and
+        # reports {path: sha256} so the Go side can reject a run whose compiled
+        # bytes differ from the frozen registry. The digest must reflect the bytes
+        # on disk when the worker ran — here, the tampered content.
+        with tempfile.TemporaryDirectory() as tmp:
+            recipe = Path(tmp) / ".arbiter" / "recipes.yaml"
+            recipe.parent.mkdir(parents=True)
+            recipe.write_text(
+                """
+targets:
+  - id: unit
+    binary: build/unit
+    harness:
+      kind: gtest
+    test_run:
+      cmd: [/bin/sh, -c, "true"]
+""",
+                encoding="utf-8",
+            )
+            test_src = Path(tmp) / "tests" / "frozen_test.cc"
+            test_src.parent.mkdir(parents=True)
+            body = b"TAMPERED CONTENT\n"
+            test_src.write_bytes(body)
+            with chdir(tmp):
+                started = response_for(
+                    request(
+                        "arbiter/startRun",
+                        {
+                            "spec": {
+                                "kind": "run",
+                                "recipe": "unit",
+                                "timeout_s": 5,
+                                "frozen": ["tests/frozen_test.cc"],
+                            }
+                        },
+                    )
+                )
+
+                self.assertNotIn("error", started)
+                status = wait_for_terminal(started["result"]["run_id"], timeout=5)
+                digests = status["result"].get("frozen_digests")
+                self.assertEqual(
+                    digests,
+                    {"tests/frozen_test.cc": hashlib.sha256(body).hexdigest()},
+                )
+
+    def test_run_reports_empty_digest_for_unreadable_frozen_test(self):
+        # A frozen path the worker cannot read (deleted mid-run) is reported with
+        # an empty digest, never silently dropped — the Go comparison fails it.
+        with tempfile.TemporaryDirectory() as tmp:
+            recipe = Path(tmp) / ".arbiter" / "recipes.yaml"
+            recipe.parent.mkdir(parents=True)
+            recipe.write_text(
+                """
+targets:
+  - id: unit
+    binary: build/unit
+    harness:
+      kind: gtest
+    test_run:
+      cmd: [/bin/sh, -c, "true"]
+""",
+                encoding="utf-8",
+            )
+            with chdir(tmp):
+                started = response_for(
+                    request(
+                        "arbiter/startRun",
+                        {
+                            "spec": {
+                                "kind": "run",
+                                "recipe": "unit",
+                                "timeout_s": 5,
+                                "frozen": ["tests/gone.cc"],
+                            }
+                        },
+                    )
+                )
+
+                self.assertNotIn("error", started)
+                status = wait_for_terminal(started["result"]["run_id"], timeout=5)
+                self.assertEqual(
+                    status["result"].get("frozen_digests"), {"tests/gone.cc": ""}
+                )
+
+    def test_start_run_rejects_non_string_frozen_entries(self):
+        response = response_for(
+            request("arbiter/startRun", {"spec": {"kind": "run", "recipe": "unit", "frozen": [7]}})
+        )
+
+        self.assertEqual(response["error"]["code"], -32602)
+        self.assertEqual(response["error"]["data"]["kind"], "invalid_params")
+        self.assertEqual(response["error"]["data"]["field"], "frozen")
 
     def test_recipe_run_is_bounded_by_spec_timeout(self):
         with tempfile.TemporaryDirectory() as tmp:
