@@ -82,7 +82,8 @@ func runEndgameDemoFixture(t *testing.T) endgameDemoResult {
 		VerifyEngine: func(string, string) (string, error) {
 			return "test-engine", nil
 		},
-		FSKind: "apfs",
+		VerifyCompanions: func(string) error { return nil },
+		FSKind:           "apfs",
 	}
 	if _, err := deploy.InitWithOptions(root, opts); err != nil {
 		t.Fatal(err)

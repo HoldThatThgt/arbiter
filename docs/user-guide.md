@@ -30,8 +30,12 @@ Install — one command, one artifact (ADR-0011):
 
 ```sh
 git clone https://github.com/HoldThatThgt/arbiter && cd arbiter
-make install        # → $HOME/.local/bin/arbiter (override with PREFIX=…)
+make install        # root → /usr/local/bin ; others → $HOME/.local/bin (override with PREFIX=…)
 ```
+
+If `arbiter` is not found afterwards, the install prefix is not on your PATH —
+the install prints the exact note; add the printed `bin` directory or rerun
+with `PREFIX=/usr/local`.
 
 **Offline installation is fully supported.** Go dependencies are vendored under
 `vendor/` (the build never touches the network), and the Python engine —
@@ -411,6 +415,15 @@ this normally means `python3` itself is missing or broken — install python3
 `arbiter init --embedded-engine`, or
 install it (`pip install ./engine` from the Arbiter repo, offline-capable), and
 ensure the right interpreter wins via `ARBITER_ENGINE_PYTHON`.
+
+**gdb-mcp / perf-mcp "not connected", reconnect returns `-32000`** — the
+server process exited on spawn. Since the companion entries became fully
+absolute (command, `--root`, and embedded `PYTHONPATH`) and `arbiter init`
+performs a real initialize handshake against both servers at deploy time, the
+usual cause is a stale `.mcp.json` written by an older arbiter: re-run
+`arbiter init` (idempotent — it refreshes the entries and re-verifies the
+handshakes; a broken companion now fails *init* with `companion_verify_failed`
+and the server's stderr, instead of failing silently in the session).
 
 **`arbiter init refused network filesystem`** — the runtime relies on POSIX
 file locks; deploy on a local filesystem.

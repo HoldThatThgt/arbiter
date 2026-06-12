@@ -3,9 +3,11 @@ package deploy
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/HoldThatThgt/arbiter/internal/playbook"
 )
@@ -21,8 +23,8 @@ func TestInitWiresCompanionsInstalledMode(t *testing.T) {
 	readJSONFile(t, filepath.Join(root, fileMCP), &mcpRoot)
 	servers := mcpRoot["mcpServers"].(map[string]any)
 	wantArgs := map[string][]any{
-		"gdb-mcp":  {"-m", "arbiter_engine.gdbmcp", "serve", "--root", "."},
-		"perf-mcp": {"-m", "arbiter_engine.perfmcp", "serve"},
+		"gdb-mcp":  {"-m", "arbiter_engine.gdbmcp", "serve", "--root", root},
+		"perf-mcp": {"-m", "arbiter_engine.perfmcp", "serve", "--root", root},
 	}
 	for name, args := range wantArgs {
 		entry, ok := servers[name].(map[string]any)
@@ -87,16 +89,17 @@ func TestInitLadderFallsBackToEmbeddedAndWiresPythonPath(t *testing.T) {
 	var mcpRoot map[string]any
 	readJSONFile(t, filepath.Join(root, fileMCP), &mcpRoot)
 	servers := mcpRoot["mcpServers"].(map[string]any)
+	wantPythonPath := filepath.Join(root, ".arbiter", "engine")
 	for _, name := range []string{"gdb-mcp", "perf-mcp"} {
 		entry := servers[name].(map[string]any)
 		env, ok := entry["env"].(map[string]any)
-		if !ok || env["PYTHONPATH"] != ".arbiter/engine" {
-			t.Fatalf("%s env = %#v, want PYTHONPATH=.arbiter/engine", name, entry["env"])
+		if !ok || env["PYTHONPATH"] != wantPythonPath {
+			t.Fatalf("%s env = %#v, want absolute PYTHONPATH %q", name, entry["env"], wantPythonPath)
 		}
 	}
 	agent := readText(t, filepath.Join(root, fileDebugger))
-	if !strings.Contains(agent, "PYTHONPATH: .arbiter/engine") {
-		t.Fatal("debugger agent missing embedded PYTHONPATH")
+	if !strings.Contains(agent, "PYTHONPATH: "+wantPythonPath) {
+		t.Fatal("debugger agent missing absolute embedded PYTHONPATH")
 	}
 }
 
@@ -118,6 +121,78 @@ func TestInitPreservesForeignCompanionEntries(t *testing.T) {
 	}
 	if _, ok := servers["perf-mcp"]; !ok {
 		t.Fatalf("perf-mcp not added alongside preserved entry: %#v", servers)
+	}
+}
+
+// 旧版 init 写出的相对路径条目(-m arbiter_engine.*)是本工具的产物:
+// 重跑 init 必须刷新成绝对路径形态 —— 这是用户 -32000 故障的自愈路径。
+func TestInitRefreshesStaleEngineCompanionEntries(t *testing.T) {
+	root := t.TempDir()
+	writeJSONFile(t, filepath.Join(root, fileMCP), map[string]any{
+		"mcpServers": map[string]any{
+			"gdb-mcp": map[string]any{
+				"type": "stdio", "command": "/usr/bin/python3",
+				"args": []any{"-m", "arbiter_engine.gdbmcp", "serve", "--root", "."},
+				"env":  map[string]any{"PYTHONPATH": ".arbiter/engine"},
+			},
+		},
+	})
+	if _, err := InitWithOptions(root, testInitOptions()); err != nil {
+		t.Fatal(err)
+	}
+	var mcpRoot map[string]any
+	readJSONFile(t, filepath.Join(root, fileMCP), &mcpRoot)
+	entry := mcpRoot["mcpServers"].(map[string]any)["gdb-mcp"].(map[string]any)
+	args := entry["args"].([]any)
+	rootArg := args[len(args)-1].(string)
+	if !filepath.IsAbs(rootArg) {
+		t.Fatalf("stale entry not refreshed to absolute --root: %#v", args)
+	}
+	if entry["command"] != "/test/python" {
+		t.Fatalf("stale entry command not refreshed: %#v", entry)
+	}
+}
+
+// TestInitVerifiesCompanionHandshakesForReal 是用户实测回归:Linux 裸机
+// make install → init → Claude 里 gdb-mcp/perf-mcp reconnect -32000。
+// 根因是相对 PYTHONPATH/--root 依赖宿主 cwd;现在条目全绝对路径,且 init
+// 以 Claude 同款方式真实拉起两个服务器完成 initialize 握手。
+// 注意 cwd 故意设为 "/":握手必须不依赖工作目录。
+func TestInitVerifiesCompanionHandshakesForReal(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not available")
+	}
+	root := t.TempDir()
+	opts := Options{
+		FSKind: "apfs",
+		Now:    func() time.Time { return time.Date(2026, 6, 12, 0, 0, 0, 0, time.UTC) },
+	}
+	if _, err := InitWithOptions(root, opts); err != nil {
+		t.Fatalf("real init failed: %v", err)
+	}
+	var mcpRoot map[string]any
+	readJSONFile(t, filepath.Join(root, fileMCP), &mcpRoot)
+	servers := mcpRoot["mcpServers"].(map[string]any)
+	for _, name := range []string{"gdb-mcp", "perf-mcp"} {
+		entry := servers[name].(map[string]any)
+		env, _ := entry["env"].(map[string]any)
+		pythonPath, _ := env["PYTHONPATH"].(string)
+		if !filepath.IsAbs(pythonPath) {
+			t.Fatalf("%s PYTHONPATH must be absolute, got %q", name, pythonPath)
+		}
+		args := entry["args"].([]any)
+		rootArg := args[len(args)-1].(string)
+		if !filepath.IsAbs(rootArg) {
+			t.Fatalf("%s --root must be absolute, got %q", name, rootArg)
+		}
+		// Claude 同款拉起,但 cwd= "/":绝对路径条目必须照常握手。
+		comp := companion{Name: name, Command: entry["command"].(string), PythonPath: pythonPath}
+		for _, a := range args {
+			comp.Args = append(comp.Args, a.(string))
+		}
+		if err := verifyCompanion("/", comp); err != nil {
+			t.Fatalf("%s handshake with cwd=/ failed: %v", name, err)
+		}
 	}
 }
 

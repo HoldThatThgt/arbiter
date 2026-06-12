@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+from pathlib import Path
 from typing import Any
 
 from . import __version__
@@ -25,6 +27,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     if args.command == "serve":
+        if args.root:
+            # Pin the default project root for every tool call: stdio servers
+            # cannot assume their spawn cwd (Claude Code's is host-defined),
+            # and a wrong implicit root makes scans silently empty.
+            os.environ["CLAUDE_PROJECT_DIR"] = str(Path(args.root).expanduser().resolve())
         return serve_stdio()
     if args.command == "scan":
         payload = scan_c_project(
@@ -73,7 +80,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    subparsers.add_parser("serve", help="Run the stdio MCP server.")
+    serve = subparsers.add_parser("serve", help="Run the stdio MCP server.")
+    serve.add_argument("--root", default=None, help="Default project root for tool calls (absolute recommended).")
 
     scan = subparsers.add_parser("scan", help="Scan C/C++ files for performance risks.")
     scan.add_argument("root", nargs="?", default=None, help="Project root. Defaults to CLAUDE_PROJECT_DIR or cwd.")
