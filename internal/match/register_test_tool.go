@@ -104,6 +104,12 @@ func (s *Store) hashUnderRoot(p string) (rel, hash string, err error) {
 	if e != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
 		return "", "", &ToolError{Code: playbook.CodeTestRegister, Message: "test path is outside the repo: " + p}
 	}
+	// 拒绝符号链接:词法 Rel 判定挡不住仓内软链指向仓外文件——那会冻结一份
+	// 实体在仓外、可绕开 guard 与哈希检测随意改动的"测试"。冻结对象必须是
+	// 仓内真实文件。
+	if info, lerr := os.Lstat(abs); lerr == nil && info.Mode()&os.ModeSymlink != 0 {
+		return "", "", &ToolError{Code: playbook.CodeTestRegister, Message: "test path is a symlink, not a real in-repo file: " + p + " — freeze the actual test file"}
+	}
 	data, e := os.ReadFile(abs)
 	if e != nil {
 		return "", "", &ToolError{Code: playbook.CodeTestRegister, Message: "cannot read test file " + p + ": " + e.Error()}
@@ -144,12 +150,17 @@ func copyStringMap(in map[string]string) map[string]string {
 func frozenList(frozen map[string]string) []FrozenTest {
 	out := make([]FrozenTest, 0, len(frozen))
 	for rel, hash := range frozen {
-		short := hash
-		if len(short) > 12 {
-			short = short[:12]
-		}
-		out = append(out, FrozenTest{Path: rel, SHA256: short})
+		out = append(out, FrozenTest{Path: rel, SHA256: shortHash(hash)})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out
+}
+
+// shortHash 取内容哈希前 12 位作展示。sha256Hex 恒为 64 位十六进制,这里只是
+// 显示截断;对异常短值(正常路径不会出现)原样返回以防越界。
+func shortHash(h string) string {
+	if len(h) > 12 {
+		return h[:12]
+	}
+	return h
 }

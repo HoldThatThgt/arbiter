@@ -67,6 +67,11 @@ func (s *Store) pollAsyncRunGoal(ctx context.Context, pending GoalPending) (Chec
 			return nil, CheckStepJobOutput{Complete: false, Reason: "state_changed", RunID: pending.RunID, Goal: report}, nil
 		}
 		m.GoalPending = nil
+		// 冻结测试完整性闸(异步将死路径):run 期间冻结测试可能被旁路 guard 的
+		// Bash 改写。落子前重算哈希,改动即令 goal 判负 —— 与同步路径、SubmitTask 同源。
+		if violated := frozenViolation(s.Root, m.FrozenTests); violated != "" {
+			report = frozenGoalReport(violated)
+		}
 		if pending.MemoDigest != "" {
 			// TOCTOU 防线:run 执行期间工作区可能已被改写。重算摘要,
 			// 只有与执行前一致(工作区未变)才记入 memo;否则静默跳过。

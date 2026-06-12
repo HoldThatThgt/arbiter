@@ -327,16 +327,18 @@ func (s *Store) SubmitTask(ctx context.Context, taskID, summary, report string, 
 	// 谓词都不必跑 —— tampered 测试不可能换来 pass。
 	var result verify.Result
 	if violated := frozenViolation(s.Root, frozen); violated != "" {
-		result = verify.Result{
-			Spec:    spec,
-			Failure: playbook.CodeFrozenTestModified,
-			Output:  "registered test was modified and is immutable: " + violated + " — restore it byte-for-byte; fixes go in product code, never the test",
-		}
+		result = frozenViolationResult(spec, violated)
 	} else {
 		var execErr error
 		result, execErr = verify.ExecuteWithMeta(ctx, s.Root, spec, map[string]any{"match_id": matchID, "round_seq": roundSeq})
 		if execErr != nil {
 			return SubmitTaskOutput{}, specError(execErr)
+		}
+		// 执行后再核对一次:谓词自身的副作用(如 shell 谓词里 sed/cp 改写)可能在
+		// 前置检查通过之后篡改冻结测试,再跑一个被弱化的套件蒙混。执行后内容一变,
+		// 本次裁决直接判负 —— 谓词的 pass 不作数。
+		if violated := frozenViolation(s.Root, frozen); violated != "" {
+			result = frozenViolationResult(spec, violated)
 		}
 	}
 	verdict := TaskFail
@@ -378,6 +380,9 @@ func (s *Store) SubmitTask(ctx context.Context, taskID, summary, report string, 
 		if result.IsError != nil {
 			fields["is_error"] = *result.IsError
 		}
+		if result.Failure != "" {
+			fields["failure"] = result.Failure // frozen_test_modified 等失败码入账,台账可审计
+		}
 		s.append("task_submitted", fields)
 		return m, SubmitTaskOutput{
 			TaskID:     taskID,
@@ -393,6 +398,21 @@ func (s *Store) SubmitTask(ctx context.Context, taskID, summary, report string, 
 		return SubmitTaskOutput{}, err
 	}
 	return out.(SubmitTaskOutput), nil
+}
+
+// frozenModifiedMessage 是冻结测试被改动时回报给执行者的统一说明。
+func frozenModifiedMessage(violated string) string {
+	return "registered test was modified and is immutable: " + violated + " — restore it byte-for-byte; fixes go in product code, never the test"
+}
+
+// frozenViolationResult 合成一个谓词未跑、直接判负的裁决结果(冻结测试被改)。
+func frozenViolationResult(spec verify.ResultSpec, violated string) verify.Result {
+	return verify.Result{Spec: spec, Failure: playbook.CodeFrozenTestModified, Output: frozenModifiedMessage(violated)}
+}
+
+// frozenGoalReport 合成一个 goal/将死谓词判负的报告(冻结测试被改)。
+func frozenGoalReport(violated string) *GoalReport {
+	return &GoalReport{Verdict: TaskFail, Failure: playbook.CodeFrozenTestModified, Output: frozenModifiedMessage(violated)}
 }
 
 // roundVerdict 是裁决的纯计算结果(不含状态变更)。
@@ -573,6 +593,12 @@ func (s *Store) CheckStepJob(ctx context.Context) (CheckStepJobOutput, error) {
 	out, err = s.withLock(func(m *Match) (*Match, any, error) {
 		if m == nil || m.Status != StatusActive || m.Current == nil || m.RoundSeq != pendingSeq {
 			return nil, CheckStepJobOutput{Complete: false, Reason: "state_changed", Goal: report}, nil
+		}
+		// 冻结测试完整性闸(将死路径):goal 谓词正是宣布胜利的那次裁决。落子前
+		// 重算冻结测试哈希,任何改动(经 Bash/git/sed 旁路 guard 后改写、或谓词
+		// 副作用)都使 goal 判负 —— 被篡改的测试不能换来将死。与 SubmitTask 同源。
+		if violated := frozenViolation(s.Root, m.FrozenTests); violated != "" {
+			report = frozenGoalReport(violated)
 		}
 		if pendingDigest != "" {
 			// TOCTOU 防线:goal 执行期间工作区可能已被改写(谓词本身也可能有副作用)。
