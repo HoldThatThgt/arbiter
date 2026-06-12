@@ -349,12 +349,17 @@ func InitWithOptions(root string, opts Options) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := writeIfMissing(filepath.Join(root, fileFormat), mustTemplate("templates/FORMAT.md"), 0o644); err != nil {
+	// FORMAT.md 与起手棋谱是 arbiter 自带、deploy 生成的资产(与 .claude/agents
+	// 同):每次 init 刷新到最新模板,这样升级 arbiter 后重跑 init 就能拿到新版
+	// 棋谱(此前 write-if-missing 让 shipped 棋谱的更新永远到不了既有仓库)。
+	// 用户定制应另起新名(AddPlayBook)——那些文件不在 baseOpenings 列表、
+	// init 永不触碰。注意 config.yml / recipes.yaml 才是用户状态(recipes.yaml
+	// 存着派生配方),下面仍保持 write-if-missing,绝不可在此一并刷新。
+	if err := atomicWrite(filepath.Join(root, fileFormat), []byte(mustTemplate("templates/FORMAT.md")), 0o644); err != nil {
 		return "", err
 	}
-	// 起手棋谱随 init 永远就位(ADR-0012),write-if-missing:用户内容神圣。
 	for _, opening := range baseOpenings {
-		if err := writeIfMissing(filepath.Join(root, dirPlaybook, opening.file), mustTemplate(opening.template), 0o644); err != nil {
+		if err := atomicWrite(filepath.Join(root, dirPlaybook, opening.file), []byte(mustTemplate(opening.template)), 0o644); err != nil {
 			return "", err
 		}
 	}
@@ -1066,7 +1071,7 @@ func guidance(replacedMCP, noExecutor, embedded bool, staleInstalled, expectedVe
 	} else {
 		msg += "引擎:使用已安装的 arbiter-engine 包。\n"
 	}
-	msg += "起手棋谱已就位:.arbiter/playbook/(fix-reported-bug, hunt-latent-bugs, build-feature, fix-slow-path + freeplay, gold-digger, recipe-derivation, regression-triage;既有文件不覆盖)。\n"
+	msg += "起手棋谱已刷新到最新:.arbiter/playbook/(fix-reported-bug, hunt-latent-bugs, build-feature, fix-slow-path + freeplay, gold-digger, recipe-derivation, regression-triage;arbiter 自带棋谱每次 init 覆盖刷新,定制请另起新名;用户自带棋谱与 recipes.yaml 不动)。\n"
 	msg += "伙伴诊断服务器已接线(ADR-0010):gdb-mcp, perf-mcp(既有同名 .mcp.json 条目保留);崩溃/内存破坏/性能类任务派发给 arbiter-debugger 子代理。\n"
 	if noExecutor {
 		msg += "提示:--no-executor 已跳过 executor agents(含 arbiter-debugger)。\n"

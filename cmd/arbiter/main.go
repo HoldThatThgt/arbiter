@@ -244,7 +244,8 @@ Writes or merges, always preserving foreign content:
                            (seat credential injected, 0600, gitignored)
   .claude/skills/          arbiter-play, arbiter-intro, playbook-create
   .claude/settings.json    deny rules + the Stop-hook gate
-  .arbiter/playbook/       FORMAT.md + starter openings, write-if-missing:
+  .arbiter/playbook/       FORMAT.md + starter openings, refreshed to the shipped
+                           version every init (customize by forking to a new name):
                            fix-reported-bug, hunt-latent-bugs, build-feature,
                            fix-slow-path, freeplay, gold-digger,
                            recipe-derivation, regression-triage

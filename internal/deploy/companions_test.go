@@ -225,7 +225,7 @@ func TestInitVerifiesCompanionHandshakesForReal(t *testing.T) {
 	}
 }
 
-func TestStarterOpeningsFollowConventionAndSurviveEdits(t *testing.T) {
+func TestStarterOpeningsFollowConventionAndRefreshOnInit(t *testing.T) {
 	// ADR-0012 命名规约 lint:仅约束 starter intent 集(templates/openings/);
 	// 设计钦定的 intro 系棋谱(freeplay/gold-digger/…)不在此列。
 	entries, err := templates.ReadDir("templates/openings")
@@ -257,19 +257,28 @@ func TestStarterOpeningsFollowConventionAndSurviveEdits(t *testing.T) {
 		}
 	}
 
-	// write-if-missing:用户改过的棋谱第二次 init 绝不覆盖。
+	// arbiter 自带的起手棋谱每次 init 刷新到最新模板(与 .claude/agents 同):
+	// 这样升级 arbiter 后重跑 init 就拿到新版棋谱。定制请另起新名。
 	root := t.TempDir()
 	if _, err := InitWithOptions(root, testInitOptions()); err != nil {
 		t.Fatal(err)
 	}
-	edited := filepath.Join(root, dirPlaybook, "build-feature.md")
-	if err := os.WriteFile(edited, []byte("user owns this\n"), 0o644); err != nil {
+	shipped := filepath.Join(root, dirPlaybook, "build-feature.md")
+	if err := os.WriteFile(shipped, []byte("stale edit to a shipped opening\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// 用户自带的棋谱(名字不在 baseOpenings 列表)init 永不触碰。
+	userBook := filepath.Join(root, dirPlaybook, "my-custom-flow.md")
+	if err := os.WriteFile(userBook, []byte("user owns this\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := InitWithOptions(root, testInitOptions()); err != nil {
 		t.Fatal(err)
 	}
-	if got := readText(t, edited); got != "user owns this\n" {
-		t.Fatalf("user-edited opening overwritten: %q", got)
+	if got := readText(t, shipped); !strings.Contains(got, "[STEP]") || strings.Contains(got, "stale edit") {
+		t.Fatalf("shipped opening not refreshed to template on re-init: %q", got)
+	}
+	if got := readText(t, userBook); got != "user owns this\n" {
+		t.Fatalf("user-authored playbook overwritten: %q", got)
 	}
 }
