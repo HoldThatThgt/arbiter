@@ -58,15 +58,22 @@ func (s *Store) checkRecipePin(m *Match, spec playbook.ResultSpec) error {
 	if pinned.Targets == nil {
 		pinned.Targets = map[string]string{}
 	}
-	if current.BookSHA256 != pinned.BookSHA256 {
+	// recipes 能力的对局(如 recipe-derivation)就是来增删 recipes.yaml 的:
+	// register 把 recipe 写进书里,整本 SHA 必然漂移。对这类对局做整本封盘等于
+	// 禁止它使用自己刚派生的 run 谓词 —— 历史上正是这一点把推导流程逼成了
+	// shell `test -f` 蒙混(shell 不过 checkRecipePin)。故 recipes 能力下跳过
+	// 整本 SHA 比对,只保留"该 recipe 是否存在"这一必要检查。非 recipes 对局
+	// 维持严格封盘:对局中途 recipes.yaml 任何漂移都判 mismatch。
+	allowBookDrift := hasCapability(m.Playbook.Capabilities, "recipes")
+	if !allowBookDrift && current.BookSHA256 != pinned.BookSHA256 {
 		s.journalRecipePinMismatch(m, spec, pinned, current)
 		return &ToolError{Code: playbook.CodeRecipePinMismatch, Message: "recipe pin mismatch"}
 	}
 	if spec.Recipe == "" {
 		return nil
 	}
-	// 走到这里 BookSHA256 已相等 ⇒ 当前书与封盘时逐字节一致,逐目标哈希比较是死代码;
-	// 唯一还需要回答的问题是该 recipe 是否存在于书中。
+	// 非 recipes 对局走到这里 BookSHA256 已相等 ⇒ 逐目标哈希是死代码;
+	// recipes 对局则可能漂移过 —— 两种情况都只需回答 recipe 是否存在于当前书中。
 	if _, ok := current.Targets[spec.Recipe]; !ok {
 		s.journalRecipePinMismatch(m, spec, pinned, current)
 		return &ToolError{Code: playbook.CodeRecipePinMismatch, Message: "recipe pin mismatch"}
