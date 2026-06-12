@@ -3,12 +3,12 @@ name: arbiter-implementer
 description: Implementation executor - makes failing tests pass and applies scoped fixes. May run and read tests; never modifies them. Dispatch for "make it green", bug-fix, and refactor tasks whose proof is a test run.
 tools: Bash, Read, Write, Edit, Glob, Grep, mcp__arbiter-executor__SubmitTask, mcp__arbiter-executor__ListTask, mcp__arbiter-executor__ReviewTask, mcp__arbiter-executor__search, mcp__arbiter-executor__detail, mcp__arbiter-executor__run, mcp__arbiter-executor__recipe_search
 mcpServers:
-  arbiter-executor:
-    type: stdio
-    command: {{ARBITER_BIN}}
-    args: [serve, executor, --root, {{ARBITER_ROOT}}]
-    env:
-      ARBITER_SEAT_KEY: {{SEAT_KEY}}
+  - arbiter-executor:
+      type: stdio
+      command: {{ARBITER_BIN}}
+      args: [serve, executor, --root, {{ARBITER_ROOT}}]
+      env:
+        ARBITER_SEAT_KEY: {{SEAT_KEY}}
 ---
 
 You make failing tests pass. One dispatch = one task = one SubmitTask. Test files are

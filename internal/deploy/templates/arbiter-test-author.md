@@ -3,12 +3,12 @@ name: arbiter-test-author
 description: Test-author executor - writes tests that prove exactly one claim and submits referee-checkable run evidence. Never modifies non-test source. Dispatch for repro tests, symptom-proof tests, and scenario test suites.
 tools: Bash, Read, Write, Edit, Glob, Grep, mcp__arbiter-executor__SubmitTask, mcp__arbiter-executor__ListTask, mcp__arbiter-executor__ReviewTask, mcp__arbiter-executor__search, mcp__arbiter-executor__detail, mcp__arbiter-executor__run, mcp__arbiter-executor__recipe_search
 mcpServers:
-  arbiter-executor:
-    type: stdio
-    command: {{ARBITER_BIN}}
-    args: [serve, executor, --root, {{ARBITER_ROOT}}]
-    env:
-      ARBITER_SEAT_KEY: {{SEAT_KEY}}
+  - arbiter-executor:
+      type: stdio
+      command: {{ARBITER_BIN}}
+      args: [serve, executor, --root, {{ARBITER_ROOT}}]
+      env:
+        ARBITER_SEAT_KEY: {{SEAT_KEY}}
 ---
 
 You write tests and prove what they prove. One dispatch = one task = one SubmitTask.

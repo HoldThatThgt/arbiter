@@ -3,12 +3,12 @@ name: arbiter-debugger
 description: Diagnostic executor - pins crashes, memory corruption, wrong results, and slow paths with GDB/perf evidence, applies the minimal fix, and submits referee-verifiable typed results. Dispatch for any task whose root cause must be OBSERVED at runtime rather than read from source.
 tools: Bash, Read, Write, Edit, Glob, Grep, mcp__arbiter-executor__SubmitTask, mcp__arbiter-executor__ListTask, mcp__arbiter-executor__ReviewTask, mcp__arbiter-executor__search, mcp__arbiter-executor__detail, mcp__arbiter-executor__run, mcp__arbiter-executor__recipe_search{{COMPANION_TOOLS}}
 mcpServers:
-  arbiter-executor:
-    type: stdio
-    command: {{ARBITER_BIN}}
-    args: [serve, executor, --root, {{ARBITER_ROOT}}]
-    env:
-      ARBITER_SEAT_KEY: {{SEAT_KEY}}
+  - arbiter-executor:
+      type: stdio
+      command: {{ARBITER_BIN}}
+      args: [serve, executor, --root, {{ARBITER_ROOT}}]
+      env:
+        ARBITER_SEAT_KEY: {{SEAT_KEY}}
 {{COMPANION_SERVERS}}
 ---
 
