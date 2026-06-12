@@ -1,105 +1,74 @@
 ---
 name: fix-slow-path
-description: Use when code is reported slow, a performance regression appeared, or a hot path needs optimizing. Refuses to optimize without a reproducible measured baseline; checkmate is a measured improvement that beats the recorded noise band with the suite green and exactly one bounded change per round. Do not use for correctness problems (fix-reported-bug / hunt-latent-bugs) - "slow" here means measurably slow, not broken.
+description: Use when code is reported slow, a performance regression appeared, or a hot path needs optimizing. A test-author writes a deterministic COMPLEXITY-RATIO test - the workload at size N and 2N, asserting the growth ratio stays under a fixed bound - and FREEZES it; production code is then optimized until that immutable test flips from red to green with the suite intact. The ratio proves the algorithmic fix and is robust to host speed; perf-mcp is analysis only - it finds WHERE to optimize, never proof. Do not use for correctness problems (fix-reported-bug / hunt-latent-bugs) - "slow" here means measurably slow, not broken.
 max_steps: 48
+verify_policy: named
 ---
 
-[STEP] scope
+[Verify] ratio-runs-red
+run: primary
+tests: ["*"]
+expect: {"overall":"failed"}
+allow_overrides: ["tests"]
+
+[Verify] suite-green
+run: primary
+tests: ["*"]
+expect: {"overall":"passed","max_failed":0}
+
+[SetGoal]
+verify: suite-green
+
+[STEP] write-ratio-test
 [StepJob]
-Pin down WHAT is slow and HOW it will be observed - no code changes. Name the
-code area from the request, then derive a deterministic workload: one argv
-command (fixed inputs, fixed seeds, no network) that exercises the suspected
-path and finishes in seconds-to-minutes. Record it verbatim - baseline and
-prove-gain must run the IDENTICAL command or the comparison adjudicates
-nothing.
+Hand the arbiter-test-author the SCENARIO and the standard, never an implementation. The
+scenario: the user-facing operation that is slow, the input-size knob (what "N" is), the
+observable cost (latency / throughput / scaling), and the suspected growth ("should be
+~linear; today doubling N more than doubles the time"). The standard this opening proves
+is a COMPLEXITY-RATIO test — run the same workload at N and 2N and assert the growth ratio
+time(2N)/time(N) stays under a fixed bound. A ratio proves the ALGORITHMIC fix and
+survives a fast or slow host; an absolute wall-time budget does not. HOW it makes that
+robust — median of repeats, an N in the asymptotic regime, a bound K with margin between
+linear ≈ 2 and quadratic ≈ 4 — is the test-author's call, not yours.
 
-CreateTask (prefer the arbiter-debugger agent) when perf-mcp is wired: run
-perf.scan_c over the area and perf.toolchain_probe for the measurement options;
-return the ranked findings (rule_id, file:line, severity, confidence). The
-result predicate proves the scan really ran rather than being narrated:
-
-  {"kind":"mcp","server":"perf-mcp","tool":"perf.scan_c",
-   "arguments":{"paths":["<area>"],"min_severity":"low"},
-   "expect":[{"path":"schema_version","op":"eq","value":"perf-mcp.scan.v1"},
-             {"path":"summary","op":"exists"}]}
-
-Zero findings is still a valid outcome - the workload then drives hotspot
-discovery in baseline. Without perf-mcp, list candidate hotspots from reading
-and say so in the report.
+It writes the test, proves it runs RED today (the slow path violates the bound) through
+the recipe, then RegisterTest-freezes it — from that instant the requirement is immutable.
+No production code in this step. perf-mcp is not needed here: the test is black-box over
+the workload; the tools earn their keep next, finding where the time goes.
 [CheckList]
-- Slow path named with the observable complaint (latency, throughput, scaling)
-- Deterministic workload command recorded verbatim (argv, fixed inputs/seeds)
-- Scan findings captured via the expect-clause predicate, or "no static findings" recorded
+- The test-author owns the test; the dispatch carries the scenario, not an implementation
+- The test asserts a GROWTH RATIO across N and 2N (robust to host speed), never an absolute time
+- Submit ratio-runs-red with tests overridden to the new test — it runs and fails (slowness reproduced)
+- The ratio test is RegisterTest-frozen before finishing; zero production code touched
+[Submit] ratio-runs-red
 [Branch]
-success: baseline
-failure: scope
+success: optimize
+failure: write-ratio-test
 
-[STEP] baseline
+[STEP] optimize
 [StepJob]
-Measure BEFORE touching anything. CreateTask: run the workload with
-perf.measure_command, repeat >= 5, every run exiting 0, and submit the
-measurement itself as the predicate - expect clauses give the mcp predicate
-its teeth (a measurement whose runs failed cannot pass, no matter what the
-text says):
+Dispatch the arbiter-debugger — it OBSERVES where the time goes. Reach for perf.scan_c to
+rank suspect sites, perf.explain_finding to vet one before touching it, and — only when
+choosing between candidate changes — perf.measure_command (argv arrays, repeat ≥ 5, a
+second baseline for the noise band) to see which is worth trying. When a hotspot emerges,
+ground it: search {callers:<fn>} / {reachable:<entry>-><fn>} confirms the path is actually
+reached, so you don't optimize dead code. These tools only point at WHERE and WHICH to
+try — keeping or reverting a change is decided by ONE thing: whether the frozen ratio test
+moves toward green (the debugger agent's one rule). Stop measuring once you have a change
+to make; without perf-mcp, read the hot path, apply the obvious win, and go.
 
-  {"kind":"mcp","server":"perf-mcp","tool":"perf.measure_command",
-   "arguments":{"command":["<argv0>","<argv1>","..."],"repeat":5},
-   "expect":[{"path":"summary.all_successful","op":"eq","value":true},
-             {"path":"summary.repeat","op":"ge","value":5}]}
-
-Then measure a SECOND baseline the same way: the gap between the two medians
-is the recorded noise band, and prove-gain must clear it - without the band,
-"3% faster" is indistinguishable from measurement noise and the referee would
-be rubber-stamping vibes. Two baselines that disagree wildly mean the workload
-is not measurable: branch failure and rebuild it in scope. Without perf-mcp,
-use hyperfine or /usr/bin/time via a shell predicate capturing the same
-numbers. Both medians, the noise band, and the exact command go in the task
-report.
+Change PRODUCT code only — the ratio test is frozen and re-hashed before the verdict, so
+the fix can come from nowhere else — one bounded change per round. A change that doesn't
+move the ratio test toward green is reverted with a recorded reason via
+NotePlaybook(step_id="optimize", note=...) (a disproven experiment is a result), and you
+pivot to the next hotspot rather than grinding the same one; if nothing moves it, report
+which sites you tried and why — the slowness may be algorithmic by design. You cannot make
+the test pass by touching it.
 [CheckList]
-- Two baseline measurements, each >= 5 runs all exit 0 (expect-clause predicates passed)
-- Noise band between the two medians written down
-- Exact command + repeat + both medians stored in the task report
-[Branch]
-success: patch
-failure: scope
-
-[STEP] patch
-[StepJob]
-Pick exactly ONE finding or measured hotspot. When perf-mcp is wired, run
-perf.explain_finding first and walk its false-positive checks - a finding that
-fails them is discarded here with a recorded reason, not patched. CreateTask
-for the fix: a minimal behavior-preserving change scoped to that finding, with
-the result predicate proving the tree is still correct before any speed claim:
-
-  {"kind":"shell","command":"git diff --quiet -- <test-paths> && <suite-command>"}
-
-(test untouchability + suite green; speed is prove-gain's job, never this
-step's). Bigger rewrites are out of scope by law: one bounded change per
-round, measured before the next one - two unmeasured changes can mask each
-other's regression and the match would adjudicate a lie.
-[CheckList]
-- Exactly one bounded change, tied to a named finding or measured hotspot
-- False-positive checks consulted; discarded findings recorded with reasons
-- Correctness predicate passed (zero test diff + suite green)
-[Branch]
-success: prove-gain
-failure: patch
-
-[STEP] prove-gain
-[StepJob]
-Re-measure with the IDENTICAL command and repeat count via the same
-expect-clause measure predicate as baseline. Compare medians: the improvement
-must exceed the recorded noise band. Improved beyond noise: write the final
-report - finding -> change -> before/after medians -> band - and branch
-success: checkmate. Within noise or regressed: revert the change, record what
-was disproven via NotePlaybook(step_id="patch", note=...), and branch failure
-to patch a different finding; when patch has no credible candidates left it
-branches failure back to scope to re-derive the workload. A reverted attempt
-with a recorded reason is a successful experiment, not a failure to hide.
-[CheckList]
-- Same command and repeat as baseline; after-median recorded via the measure predicate
-- Improvement exceeds the recorded noise band; suite still green
-- Report ties finding -> change -> before/after medians (or revert + disproof noted)
+- Optimization confined to product code; the frozen ratio test untouched (enforced by the freeze, not trusted)
+- perf / facts evidence (chosen hotspot, before/after medians) in the report — as analysis, never as the proof
+- Submit suite-green — the frozen ratio test now passes and the full suite is green
+[Submit] suite-green
 [Branch]
 success: END
-failure: patch
+failure: optimize
