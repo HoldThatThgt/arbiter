@@ -89,9 +89,11 @@ func TestBaseOpeningTemplatesParse(t *testing.T) {
 			entry: "scenario",
 		},
 		{
-			file:  "openings/fix-reported-bug.md",
-			name:  "fix-reported-bug",
-			entry: "design-repro",
+			file:   "openings/fix-reported-bug.md",
+			name:   "fix-reported-bug",
+			entry:  "write-repro",
+			policy: "named",
+			verify: []string{"repro-runs-red", "suite-green"},
 		},
 		{
 			file:  "openings/fix-slow-path.md",
