@@ -338,7 +338,7 @@ func checkKey(root, seatName string) error {
 }
 
 func addReadPlayBook(server *mcp.Server, root string, store *match.Store) {
-	add(server, root, store.Seat, "ReadPlayBook", "Read all playbooks", emptySchema(), func(ctx context.Context, raw json.RawMessage) (any, error) {
+	add(server, root, store.Seat, "ReadPlayBook", "Return every playbook's full content: description, steps (job/checklist/branches), [Verify] names, capabilities. Call before EVERY selection and select from this output only — never from memory of a previous call.", emptySchema(), func(ctx context.Context, raw json.RawMessage) (any, error) {
 		var in EmptyInput
 		if err := decode(raw, &in); err != nil {
 			return nil, err
@@ -348,7 +348,7 @@ func addReadPlayBook(server *mcp.Server, root string, store *match.Store) {
 }
 
 func addLoadPlayBook(server *mcp.Server, root string, store *match.Store) {
-	add(server, root, store.Seat, "LoadPlayBook", "Load a playbook", objectSchema(map[string]any{"name": stringSchema()}, []string{"name"}), func(ctx context.Context, raw json.RawMessage) (any, error) {
+	add(server, root, store.Seat, "LoadPlayBook", "Load the named playbook and start the refereed match (pins the recipe book). On playbook_not_found the error lists data.available — pick from it or fall back to freeplay; on playbook_invalid relay data.issues verbatim, never repair the file.", objectSchema(map[string]any{"name": stringSchema()}, []string{"name"}), func(ctx context.Context, raw json.RawMessage) (any, error) {
 		var in LoadPlayBookInput
 		if err := decode(raw, &in); err != nil {
 			return nil, err
@@ -358,7 +358,7 @@ func addLoadPlayBook(server *mcp.Server, root string, store *match.Store) {
 }
 
 func addShowStepJob(server *mcp.Server, root string, store *match.Store) {
-	add(server, root, store.Seat, "ShowStepJob", "Show current step", emptySchema(), func(ctx context.Context, raw json.RawMessage) (any, error) {
+	add(server, root, store.Seat, "ShowStepJob", "Show the active match's CURRENT step: job, checklist, gotchas from past matches, available [Verify] names, and this round's task ledger. The player's only view of the flow — future steps are never revealed. no_active_match means the curator must LoadPlayBook first.", emptySchema(), func(ctx context.Context, raw json.RawMessage) (any, error) {
 		var in EmptyInput
 		if err := decode(raw, &in); err != nil {
 			return nil, err
@@ -372,7 +372,7 @@ func addCreateTask(server *mcp.Server, root string, store *match.Store) {
 		"request":   stringSchema(),
 		"fact_refs": map[string]any{"type": "array", "items": stringSchema()},
 	}
-	add(server, root, store.Seat, "CreateTask", "Create a task", objectSchema(props, []string{"request"}), func(ctx context.Context, raw json.RawMessage) (any, error) {
+	add(server, root, store.Seat, "CreateTask", "Create one executor work item for the current step. request must be self-contained: goal, scope limits, and the exact result predicate or [Verify] name to submit. fact_refs (<=8 object ids from search) are resolved into briefing cards the executor reads via ReviewTask; unresolvable refs fail with briefing_unresolved listing data.bad_refs.", objectSchema(props, []string{"request"}), func(ctx context.Context, raw json.RawMessage) (any, error) {
 		var in CreateTaskInput
 		if err := decode(raw, &in); err != nil {
 			return nil, err
@@ -398,7 +398,7 @@ func addSubmitTask(server *mcp.Server, root string, store *match.Store) {
 }
 
 func addCheckStepJob(server *mcp.Server, root string, store *match.Store) {
-	add(server, root, store.Seat, "CheckStepJob", "Adjudicate current step", emptySchema(), func(ctx context.Context, raw json.RawMessage) (any, error) {
+	add(server, root, store.Seat, "CheckStepJob", "Ask the referee to adjudicate the current step from submitted verdicts. complete=false carries reason: no_tasks (create tasks first), open_tasks (await or re-dispatch the listed ids), goal_running (async checkmate goal in flight - call again later). complete=true advances the step or ends the match.", emptySchema(), func(ctx context.Context, raw json.RawMessage) (any, error) {
 		var in EmptyInput
 		if err := decode(raw, &in); err != nil {
 			return nil, err
@@ -408,7 +408,7 @@ func addCheckStepJob(server *mcp.Server, root string, store *match.Store) {
 }
 
 func addAddPlayBook(server *mcp.Server, root string, store *match.Store) {
-	add(server, root, store.Seat, "AddPlayBook", "Register a new playbook", objectSchema(map[string]any{"content": stringSchema()}, []string{"content"}), func(ctx context.Context, raw json.RawMessage) (any, error) {
+	add(server, root, store.Seat, "AddPlayBook", "Register a new playbook from full markdown (validated against the grammar; append-only). playbook_invalid returns data.issues to fix and resubmit; name_conflict means that intent already has a book — extend it or choose a different intent name, never overwrite.", objectSchema(map[string]any{"content": stringSchema()}, []string{"content"}), func(ctx context.Context, raw json.RawMessage) (any, error) {
 		var in AddPlayBookInput
 		if err := decode(raw, &in); err != nil {
 			return nil, err
@@ -421,7 +421,7 @@ func addAddPlayBook(server *mcp.Server, root string, store *match.Store) {
 }
 
 func addListTask(server *mcp.Server, root string, store *match.Store) {
-	add(server, root, store.Seat, "ListTask", "List all tasks with summaries", emptySchema(), func(ctx context.Context, raw json.RawMessage) (any, error) {
+	add(server, root, store.Seat, "ListTask", "List every task in the match with its verdict and one-line summary — the match's pulse. Drill into any entry with ReviewTask.", emptySchema(), func(ctx context.Context, raw json.RawMessage) (any, error) {
 		var in EmptyInput
 		if err := decode(raw, &in); err != nil {
 			return nil, err
@@ -435,7 +435,7 @@ func addNotePlaybook(server *mcp.Server, root string, store *match.Store) {
 		"step_id": stringSchema(),
 		"note":    stringSchema(),
 	}
-	add(server, root, store.Seat, "NotePlaybook", "Append a gotcha note to a playbook step", objectSchema(props, []string{"step_id", "note"}), func(ctx context.Context, raw json.RawMessage) (any, error) {
+	add(server, root, store.Seat, "NotePlaybook", "Append a one-sentence, step-scoped gotcha to the loaded playbook (committed, append-only). Record pitfalls the moment you hit them; every future match sees them in ShowStepJob for that step. Skip notes that restate existing gotchas.", objectSchema(props, []string{"step_id", "note"}), func(ctx context.Context, raw json.RawMessage) (any, error) {
 		var in NotePlaybookInput
 		if err := decode(raw, &in); err != nil {
 			return nil, err
@@ -445,7 +445,7 @@ func addNotePlaybook(server *mcp.Server, root string, store *match.Store) {
 }
 
 func addReviewTask(server *mcp.Server, root string, store *match.Store) {
-	add(server, root, store.Seat, "ReviewTask", "Review a task", objectSchema(map[string]any{"task_id": stringSchema()}, []string{"task_id"}), func(ctx context.Context, raw json.RawMessage) (any, error) {
+	add(server, root, store.Seat, "ReviewTask", "Full detail for one task: authoritative request, briefing cards (pre-resolved facts), report, verdict, and the per-clause expect_report (path/op/value/actual). Executors call this FIRST on every dispatch; players call it on failures before re-dispatching.", objectSchema(map[string]any{"task_id": stringSchema()}, []string{"task_id"}), func(ctx context.Context, raw json.RawMessage) (any, error) {
 		var in ReviewTaskInput
 		if err := decode(raw, &in); err != nil {
 			return nil, err

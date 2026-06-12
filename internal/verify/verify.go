@@ -87,7 +87,7 @@ func Validate(spec ResultSpec) error {
 	// 具名 [Verify] 引用必须先由 match 对照对局快照解析成 curated spec;
 	// 引用与内联谓词混搭到达这里即拒绝(深度防御,match 解析侧已先行拦截)。
 	if spec.Verify != "" && spec.Kind != "" {
-		return &SpecError{Code: playbook.CodeBadResult, Message: "verify reference cannot carry an inline predicate"}
+		return &SpecError{Code: playbook.CodeBadResult, Message: "verify reference cannot carry an inline predicate — send either {\"verify\": \"<name>\"} or an inline kind spec, never both"}
 	}
 	switch spec.Kind {
 	case "run", "fact":
@@ -103,14 +103,14 @@ func Validate(spec ResultSpec) error {
 		return &SpecError{Code: playbook.CodeBadResult, Message: "unknown result kind"}
 	}
 	if spec.Kind == "shell" && strings.TrimSpace(spec.Command) == "" {
-		return &SpecError{Code: playbook.CodeBadResult, Message: "empty shell command"}
+		return &SpecError{Code: playbook.CodeBadResult, Message: "empty shell command — provide the exact command whose exit 0 proves the task done"}
 	}
 	if spec.Kind == "shell" && len(spec.Expect) != 0 {
-		return &SpecError{Code: playbook.CodeBadResult, Message: "shell spec must not set expect"}
+		return &SpecError{Code: playbook.CodeBadResult, Message: "shell spec must not set expect — exit code is a shell predicate's only signal; use the mcp kind for field comparisons"}
 	}
 	if spec.Kind == "mcp" {
 		if strings.TrimSpace(spec.Server) == "" || strings.TrimSpace(spec.Tool) == "" {
-			return &SpecError{Code: playbook.CodeBadResult, Message: "incomplete mcp result"}
+			return &SpecError{Code: playbook.CodeBadResult, Message: "incomplete mcp result — an mcp predicate needs both server (an .mcp.json entry name) and tool"}
 		}
 		if _, err := ParseMCPExpect(spec.Expect); err != nil {
 			return err
@@ -453,17 +453,17 @@ func readServerConfig(root, name string) (serverConfig, error) {
 	path := deploy.MCPConfigPath(root)
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return serverConfig{}, &SpecError{Code: playbook.CodeServerNotFound, Message: "mcp server not found"}
+		return serverConfig{}, &SpecError{Code: playbook.CodeServerNotFound, Message: "mcp server not found — the server must be an entry in this repo's .mcp.json; the bundled diagnostics are named gdb-mcp and perf-mcp"}
 	}
 	if err := json.Unmarshal(data, &file); err != nil {
-		return serverConfig{}, &SpecError{Code: playbook.CodeServerNotFound, Message: "mcp server not found"}
+		return serverConfig{}, &SpecError{Code: playbook.CodeServerNotFound, Message: "mcp server not found — the server must be an entry in this repo's .mcp.json; the bundled diagnostics are named gdb-mcp and perf-mcp"}
 	}
 	cfg, ok := file.Servers[name]
 	if !ok {
-		return serverConfig{}, &SpecError{Code: playbook.CodeServerNotFound, Message: "mcp server not found"}
+		return serverConfig{}, &SpecError{Code: playbook.CodeServerNotFound, Message: "mcp server not found — the server must be an entry in this repo's .mcp.json; the bundled diagnostics are named gdb-mcp and perf-mcp"}
 	}
 	if cfg.Type != "stdio" {
-		return serverConfig{}, &SpecError{Code: playbook.CodeUnsupportedTransport, Message: "only stdio transport is supported"}
+		return serverConfig{}, &SpecError{Code: playbook.CodeUnsupportedTransport, Message: "only stdio transport is supported — re-point the .mcp.json entry at a stdio server"}
 	}
 	selfPath, err := os.Executable()
 	if err != nil {
@@ -476,7 +476,7 @@ func readServerConfig(root, name string) (serverConfig, error) {
 	target, err := resolvedExecutable(cfg.Command)
 	if err == nil {
 		if target == self || sameFile(target, self) {
-			return serverConfig{}, &SpecError{Code: playbook.CodeReservedServer, Message: "reserved server"}
+			return serverConfig{}, &SpecError{Code: playbook.CodeReservedServer, Message: "reserved server — the arbiter binary cannot adjudicate itself; self-evaluation goes through the run/fact kinds, which never route via .mcp.json"}
 		}
 	}
 	return cfg, nil

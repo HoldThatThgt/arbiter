@@ -177,6 +177,27 @@ engine-generated companion entries alike. **Consequences:** the cross-process re
 a repo, re-run `arbiter init` (already the posture for the binary path); user-guide documents
 "no active match" troubleshooting.
 
+## ADR-0015 — The PreToolUse guard: playbook/match/engine paths are mechanically fenced (2026-06-12, accepted)
+Owner verdict: "none of the agents (including the main agent) should be able to read playbook
+files — I see no mechanism guaranteeing this block." Correct: the deployed `Read(...)` deny
+rules gate only the Read tool; Bash `cat`, Grep, and Glob bypassed them freely. The mechanism
+is now `arbiter hook guard` (internal/guard), wired by init as a PreToolUse hook with matcher
+`Bash|Read|Edit|Write|NotebookEdit|Glob|Grep`: file tools are checked by resolved path, Bash
+and glob/grep patterns by literal occurrence of the guarded paths (relative and root-absolute
+forms). Guarded zones: `.arbiter/playbook/` (future steps must stay fenced),
+`.arbiter/match/` (referee state and journal), `.arbiter/engine/` (the digest-verified
+evaluator), `.claude/agents/arbiter-*` (credential-bearing seat files). Every denial returns a
+TEACHING reason naming the sanctioned route (ShowStepJob / ReadPlayBook / AddPlayBook /
+NotePlaybook / ListTask / ReviewTask / arbiter init). Posture matches the Stop gate: fail-open
+on malformed input, deny on a hit; over-blocking a Bash command that merely mentions a guarded
+path is accepted — the reason explains the correct route. Deny rules are still written
+(defense in depth, now incl. Edit/Write on the same paths); `--remove` strips the guard like
+every other generated entry. **Consequences:** the user-typed shell and editors are unaffected
+(hooks fire on model tool calls only); the journal remains the forensics trail for anything
+the guard cannot see; tool descriptions and error messages across the seat surface were
+rewritten in the same change to carry next-action guidance — the deny reasons are part of
+that same teaching contract.
+
 ---
 
 *Template for new entries:*

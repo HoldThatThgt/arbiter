@@ -701,7 +701,7 @@ _DEFAULT_TOOLS = (
     (
         "runs",
         "run",
-        "Run a recipe-backed test target.",
+        "Run tests through a registered recipe and return structured per-test results (the evidence the referee adjudicates). recipe is the recipe id (recipe_search finds it); tests are gtest-style patterns like Suite.Case or Suite.*; options.profiles selects build overlays (asan/coverage/...). Prefer this over raw shell test runs.",
         _object_schema(
             {
                 "recipe": {"type": "string"},
@@ -734,25 +734,25 @@ _DEFAULT_TOOLS = (
     (
         "runs",
         "recipe_search",
-        "Search registered run recipes.",
+        "Search the committed recipe book by keyword and return matching recipe ids with their targets - use it to find the recipe id that run/SubmitTask run-kind predicates need.",
         _object_schema({"query": {"type": "string"}}, ("query",)),
     ),
     (
         "runs",
         "register",
-        "Register a recipe book.",
+        "Register a candidate recipe book from a path (capability-gated: live only while a capabilities:[recipes] opening is loaded). A candidate becomes committed knowledge only after a refereed run proves it - register, then submit a run-kind task over it.",
         _object_schema({"path": {"type": "string"}}, ("path",)),
     ),
     (
         "runs",
         "import_recipes",
-        "Import recipes from a path.",
+        "Import recipe definitions from a path into the working book (capability-gated, like register). Imported entries still need a proving run before they count as committed knowledge.",
         _object_schema({"path": {"type": "string"}}, ("path",)),
     ),
     (
         "runs",
         "scan",
-        "Scan for test targets.",
+        "Scan the given scope for test targets to seed recipe derivation (capability-gated; facts-derived discovery is primary, tree-sitter is the optional fallback). Returns candidate targets to register and prove.",
         _object_schema({"scope": {"type": "string"}}, ("scope",)),
     ),
 )

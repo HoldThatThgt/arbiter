@@ -52,6 +52,8 @@ compatibility). Emits a **whole-token scan checklist** of files containing legac
 (`LoadPlayBook` server names, `crun-mcp` references, …) for manual rewrite — the constitution
 forbids automated prose edits. Removes the legacy `.mcp.json` entries it recognizes.
 
+**PreToolUse guard (ADR-0015):** init wires `arbiter hook guard --root <abs>` (matcher Bash|Read|Edit|Write|NotebookEdit|Glob|Grep) denying model access to playbook/match/engine/agent paths with teaching reasons; deny rules remain as defense in depth; `--remove` strips it.
+
 ## Invariants
 Non-interactive; idempotent (run twice = no diff); never touches files it didn't write except
 via the structured mergers; secrets never world-readable; recipe `env` values linted against
