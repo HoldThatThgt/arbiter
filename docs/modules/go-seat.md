@@ -9,10 +9,14 @@ verbatim proxying of engine tools.
 chess `internal/seat` (M1 verbatim), extended in M2/M3/M7.
 
 ## Public surface
-`arbiter serve <player|curator|executor>`. Player: spawned by Claude Code from `.mcp.json`,
-session-resident, no credential. Curator/executor: spawned per-subagent via inline `mcpServers`
-frontmatter in the agent files deploy writes; both require `ARBITER_SEAT_KEY` (0600, gitignored)
-— wrong/missing key is refusal of service, the chess posture.
+`arbiter serve <player|curator|executor> [--root DIR]`. Player: spawned by Claude Code from
+`.mcp.json`, session-resident, no credential. Curator/executor: spawned per-subagent via inline
+`mcpServers` frontmatter in the agent files deploy writes; both require `ARBITER_SEAT_KEY`
+(0600, gitignored) — wrong/missing key is refusal of service, the chess posture.
+**The repo root is explicit (ADR-0014):** init writes `--root <abs>` into every entry; cwd is
+only a hand-run fallback. Match state is file-shared across seat processes, so a cwd-derived
+root makes curator-loaded matches invisible to the player whenever the host spawns the two
+contexts with different cwds.
 
 ## Seat → tool registration
 - **player (9):** ShowStepJob, CreateTask, CheckStepJob, ListTask, ReviewTask, NotePlaybook,

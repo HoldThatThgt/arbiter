@@ -30,8 +30,10 @@ Writes/merges, all idempotent and atomic (temp+rename), merge-preserving for for
   variant wired with both companions (key-injected, 0600, gitignored, deny-read).
 - Skills: `.claude/skills/{arbiter-play,arbiter-intro,playbook-create}/` (see
   skills-and-playbooks.md).
-- `.mcp.json`: ONE arbiter entry (`arbiter` → `serve player`) via the merge-preserving atomic
-  writer, plus the add-if-missing companion entries above.
+- `.mcp.json`: ONE arbiter entry (`arbiter` → `serve player --root <abs>`) via the
+  merge-preserving atomic writer, plus the add-if-missing companion entries above. Every seat
+  entry, agent frontmatter server, and the Stop-hook command carries an explicit absolute
+  `--root` (ADR-0014) — spawn cwd is never load-bearing.
 - `.claude/settings.json`: deny rules — `Read(.arbiter/playbook/**)`, `Read(.arbiter/match/**)`,
   `Read(.claude/agents/arbiter-*.md)`; Edit/Write deny on `.arbiter/engine/**` when
   `--embedded-engine`. Stop hook claimed by **exact command match**, plus reclamation of provably

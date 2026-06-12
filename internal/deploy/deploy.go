@@ -155,7 +155,7 @@ func isEngineCompanionEntry(value any) bool {
 
 // renderDebugger 渲染诊断执行席 agent:席位凭证注入 + 伙伴服务器进
 // frontmatter(mcpServers 与 tools 同步生成;embedded 模式附 PYTHONPATH)。
-func renderDebugger(text, exe, key string, companions []companion) string {
+func renderDebugger(text, exe, key, root string, companions []companion) string {
 	var servers strings.Builder
 	var tools strings.Builder
 	for i, comp := range companions {
@@ -171,7 +171,7 @@ func renderDebugger(text, exe, key string, companions []companion) string {
 			tools.WriteString(", mcp__" + comp.Name + "__" + tool)
 		}
 	}
-	text = render(text, exe, key)
+	text = renderSeat(text, exe, key, root)
 	text = strings.ReplaceAll(text, "{{COMPANION_SERVERS}}", servers.String())
 	return strings.ReplaceAll(text, "{{COMPANION_TOOLS}}", tools.String())
 }
@@ -367,7 +367,7 @@ func InitWithOptions(root string, opts Options) (string, error) {
 	if err := writeEngines(filepath.Join(root, fileEngines), python, engineVersion, now(opts), embedded, embeddedDigest); err != nil {
 		return "", err
 	}
-	replacedMCP, err := mergeMCP(filepath.Join(root, fileMCP), exe)
+	replacedMCP, err := mergeMCP(filepath.Join(root, fileMCP), exe, root)
 	if err != nil {
 		return "", err
 	}
@@ -382,18 +382,18 @@ func InitWithOptions(root string, opts Options) (string, error) {
 	} else if err := verifyCompanions(root, companions); err != nil {
 		return "", err
 	}
-	curator := render(mustTemplate("templates/arbiter-curator.md"), exe, key)
+	curator := renderSeat(mustTemplate("templates/arbiter-curator.md"), exe, key, root)
 	if err := atomicWrite(filepath.Join(root, fileCurator), []byte(curator), 0o600); err != nil {
 		return "", err
 	}
 	if !opts.NoExecutor {
 		for _, agent := range executorAgents {
-			rendered := render(mustTemplate(agent.template), exe, key)
+			rendered := renderSeat(mustTemplate(agent.template), exe, key, root)
 			if err := atomicWrite(filepath.Join(root, agent.file), []byte(rendered), 0o600); err != nil {
 				return "", err
 			}
 		}
-		debugger := renderDebugger(mustTemplate("templates/arbiter-debugger.md"), exe, key, companions)
+		debugger := renderDebugger(mustTemplate("templates/arbiter-debugger.md"), exe, key, root, companions)
 		if err := atomicWrite(filepath.Join(root, fileDebugger), []byte(debugger), 0o600); err != nil {
 			return "", err
 		}
@@ -408,7 +408,7 @@ func InitWithOptions(root string, opts Options) (string, error) {
 	if err := atomicWrite(filepath.Join(root, fileSkillCreate), []byte(mustTemplate("templates/playbook-create.md")), 0o644); err != nil {
 		return "", err
 	}
-	if err := mergeSettings(filepath.Join(root, fileSettings), exe, embedded); err != nil {
+	if err := mergeSettings(filepath.Join(root, fileSettings), exe, root, embedded); err != nil {
 		return "", err
 	}
 	if err := appendGitignore(filepath.Join(root, fileGitignore), embedded); err != nil {
@@ -468,7 +468,7 @@ func ensureSeatKey(path string) (string, error) {
 	return key, nil
 }
 
-func mergeMCP(path, exe string) (bool, error) {
+func mergeMCP(path, exe, repoRoot string) (bool, error) {
 	root, err := readJSON(path)
 	if err != nil {
 		return false, err
@@ -487,12 +487,12 @@ func mergeMCP(path, exe string) (bool, error) {
 	servers["arbiter"] = map[string]any{
 		"type":    "stdio",
 		"command": exe,
-		"args":    []any{"serve", "player"},
+		"args":    []any{"serve", "player", "--root", repoRoot},
 	}
 	return replaced, writeJSON(path, root, 0o644)
 }
 
-func mergeSettings(path, exe string, embedded bool) error {
+func mergeSettings(path, exe, repoRoot string, embedded bool) error {
 	root, err := readJSON(path)
 	if err != nil {
 		return err
@@ -512,7 +512,7 @@ func mergeSettings(path, exe string, embedded bool) error {
 		}
 	}
 	perms["deny"] = deny
-	mergeStopHook(root, exe)
+	mergeStopHook(root, exe, repoRoot)
 	return writeJSON(path, root, 0o644)
 }
 
@@ -524,12 +524,16 @@ func mergeSettings(path, exe string, embedded bool) error {
 // binaries while guaranteeing a live foreign binary that happens to be named
 // "arbiter" is never hijacked.
 func isArbiterStopHook(command, exe string) bool {
-	if command == exe+" hook stop" {
-		return true
-	}
 	fields := strings.Fields(command)
+	// 归一:剥掉尾部 "--root <dir>"(带根形态),其余按 legacy 规则识别。
+	if len(fields) >= 4 && fields[len(fields)-2] == "--root" {
+		fields = fields[:len(fields)-2]
+	}
 	if len(fields) < 3 || fields[len(fields)-2] != "hook" || fields[len(fields)-1] != "stop" {
 		return false
+	}
+	if fields[0] == exe {
+		return true
 	}
 	if filepath.Base(fields[0]) != "arbiter" {
 		return false
@@ -552,14 +556,14 @@ func binaryExists(token string) bool {
 // mergeStopHook rewrites any arbiter-owned Stop hook to the current command
 // (so stale entries from moved/rebuilt binaries do not accumulate) and drops
 // duplicates; if no arbiter-owned entry exists it appends a fresh one.
-func mergeStopHook(root map[string]any, exe string) {
+func mergeStopHook(root map[string]any, exe, repoRoot string) {
 	hooks, _ := root["hooks"].(map[string]any)
 	if hooks == nil {
 		hooks = map[string]any{}
 		root["hooks"] = hooks
 	}
 	stops, _ := hooks["Stop"].([]any)
-	cmd := exe + " hook stop"
+	cmd := exe + " hook stop --root " + repoRoot
 	claimed := false
 	var keptStops []any
 	for _, entry := range stops {
@@ -653,6 +657,13 @@ func removeMCP(path, exe string) error {
 	if isArbiterServer(servers["arbiter"], exe) {
 		delete(servers, "arbiter")
 	}
+	// 本工具生成的伙伴条目(python -m arbiter_engine.*)随 --remove 一并撤除;
+	// 用户手写的同名外来条目不在此列(isEngineCompanionEntry 区分)。
+	for _, spec := range companionSpecs {
+		if isEngineCompanionEntry(servers[spec.Name]) {
+			delete(servers, spec.Name)
+		}
+	}
 	return writeJSON(path, root, 0o644)
 }
 
@@ -662,7 +673,10 @@ func isArbiterServer(value any, exe string) bool {
 		return false
 	}
 	args, _ := server["args"].([]any)
-	return server["command"] == exe && len(args) == 2 && args[0] == "serve" && args[1] == "player"
+	if server["command"] != exe || len(args) < 2 || args[0] != "serve" || args[1] != "player" {
+		return false
+	}
+	return len(args) == 2 || (len(args) == 4 && args[2] == "--root")
 }
 
 func removeSettings(path, exe string) error {
@@ -867,6 +881,13 @@ func mustTemplate(name string) string {
 func render(text, exe, key string) string {
 	text = strings.ReplaceAll(text, "{{ARBITER_BIN}}", exe)
 	return strings.ReplaceAll(text, "{{SEAT_KEY}}", key)
+}
+
+// renderSeat 在 render 之上替换 {{ARBITER_ROOT}}:席位服务器条目必须携带
+// 显式仓根 —— 主会话与子代理拉起 MCP 服务器的 cwd 可能不同,cwd 推导的
+// 仓根会让 curator 写出的对局对 player 不可见("no active match")。
+func renderSeat(text, exe, key, root string) string {
+	return strings.ReplaceAll(render(text, exe, key), "{{ARBITER_ROOT}}", root)
 }
 
 func hasLineValue(values []any, target string) bool {

@@ -49,7 +49,7 @@ func TestSettingsStopHookMerge(t *testing.T) {
 		if c == liveArbiter+" hook stop" {
 			live = true
 		}
-		if c == exe+" hook stop" {
+		if c == exe+" hook stop --root "+root {
 			claimed++
 		}
 	}

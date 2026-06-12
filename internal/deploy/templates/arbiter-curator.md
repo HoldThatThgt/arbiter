@@ -6,7 +6,7 @@ mcpServers:
   arbiter-curator:
     type: stdio
     command: {{ARBITER_BIN}}
-    args: [serve, curator]
+    args: [serve, curator, --root, {{ARBITER_ROOT}}]
     env:
       ARBITER_SEAT_KEY: {{SEAT_KEY}}
 ---

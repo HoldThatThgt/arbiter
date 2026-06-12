@@ -416,6 +416,13 @@ this normally means `python3` itself is missing or broken — install python3
 install it (`pip install ./engine` from the Arbiter repo, offline-capable), and
 ensure the right interpreter wins via `ARBITER_ENGINE_PYTHON`.
 
+**"no active match" in the main session after the curator loaded a playbook** — match
+state is shared through repo-local files, so this means the two seat processes disagree about
+the repo root. Since ADR-0014 every entry init writes carries an explicit absolute `--root`;
+the usual cause is a stale deployment from an older arbiter — re-run `arbiter init` (it
+refreshes the player entry, all agent files, and the Stop hook). Moving the repo also requires
+a re-init, same as for the binary path.
+
 **gdb-mcp / perf-mcp "not connected", reconnect returns `-32000`** — the
 server process exited on spawn. Since the companion entries became fully
 absolute (command, `--root`, and embedded `PYTHONPATH`) and `arbiter init`
