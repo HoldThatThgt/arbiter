@@ -165,7 +165,7 @@ targets:
             )
 
             result = response["result"]
-            self.assertEqual(result["overall"], "failed")
+            self.assertEqual(result["overall"], "errored")
             self.assertEqual(result["failure"], "timeout")
 
     def write_recipe(self, root):

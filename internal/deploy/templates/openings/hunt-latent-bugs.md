@@ -4,6 +4,12 @@ description: Use when asked to FIND defects nobody has pinned down yet - audit a
 max_steps: 48
 ---
 
+[Verify] symptom-proven
+run: src_compile
+tests: ["*"]
+expect: {"overall":"passed"}
+allow_overrides: ["tests"]
+
 [STEP] hypothesize
 [StepJob]
 Study the code area named in the match request and form EXACTLY ONE falsifiable
@@ -40,22 +46,21 @@ CreateTask for the executor (prefer the arbiter-debugger agent): turn the
 hypothesis into a machine proof with a SYMPTOM test. The test must assert the
 buggy behavior itself - it PASSES if and only if the bug exists:
 
-  bug present  -> symptom assertion holds -> test passes -> runner exit 0
-  bug absent   -> assertion fails        -> test fails  -> runner exit != 0
+  bug present  -> symptom assertion holds -> test passes (recipe overall=passed)
+  bug absent   -> assertion fails        -> test fails  (recipe overall=failed)
 
-so the result predicate is simply:
-
-  {"kind":"shell","command":"<build-command> && <symptom-test-run-command>"}
-
-and exit 0 == "bug proven, mechanically". This polarity is the whole game: a
+so the proof is the curated predicate symptom-proven with tests overridden to
+exactly the symptom test: the recipe builds, runs only that test, and certifies
+overall=passed == "bug proven, mechanically". This polarity is the whole game: a
 conventional regression test (assert CORRECT behavior, watch it fail) has the
-opposite exit-code direction, and "it failed, see?" is exactly the prose claim
-the referee refuses to take. Write the symptom test, never the regression
-form - the regression form is what fix-reported-bug uses AFTER a bug is proven.
+opposite direction, and "it failed, see?" is exactly the prose claim the referee
+refuses to take. Write the symptom test, never the regression form - the
+regression form is what fix-reported-bug uses AFTER a bug is proven.
 
-The test must not patch or work around the suspect code, and the build must
-succeed (the && makes a broken build fail the predicate rather than fake a
-proof). For corruption-class hypotheses with gdb-mcp wired, strengthen the
+The test must not patch or work around the suspect code; a test that only passes
+because it does not compile never reaches overall=passed (the build error is a
+different verdict), so the proof cannot be faked. For corruption-class
+hypotheses with gdb-mcp wired, strengthen the
 proof: a watchpoint run (gdb_breakpoint kind=watch on the corrupted field)
 stopping at exactly the predicted statement - capture the gdb_snapshot stop in
 the task report alongside the test.
@@ -69,10 +74,11 @@ the proof: the referee re-hashes it before every verdict, so the machine-proven
 symptom can never be quietly weakened or deleted after the fact.
 [CheckList]
 - Symptom test written (passes iff bug present); polarity stated in the task report
-- Result predicate "<build> && <run>" submitted and judged
+- Submit symptom-proven with tests overridden to the symptom test - it builds, runs green (bug proven)
 - Proven symptom test RegisterTest-frozen so the proof cannot be weakened later
 - Corruption-class: watchpoint stop evidence captured when gdb-mcp is wired
 - Verdict recorded: proven for the predicted reason, or disproof noted
+[Submit] symptom-proven
 [Branch]
 success: qualify
 failure: hypothesize

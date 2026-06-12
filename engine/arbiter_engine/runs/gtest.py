@@ -94,7 +94,7 @@ def run_target(
     except runner.RunnerError as exc:
         return RunResult(
             run_id=run_id,
-            overall="failed",
+            overall="errored",
             passed=0,
             failed=0,
             skipped=0,
@@ -113,7 +113,7 @@ def run_target(
     if facts.get("compile_failed"):
         return RunResult(
             run_id=run_id,
-            overall="failed",
+            overall="errored",
             passed=0,
             failed=0,
             skipped=0,
@@ -139,7 +139,7 @@ def run_target(
     if proc.exit_code == 124 and not xml_path.exists():
         return RunResult(
             run_id=run_id,
-            overall="failed",
+            overall="errored",
             passed=0,
             failed=0,
             skipped=0,
@@ -151,7 +151,7 @@ def run_target(
     if not xml_path.exists():
         return RunResult(
             run_id=run_id,
-            overall="failed",
+            overall="errored",
             passed=0,
             failed=0,
             skipped=0,
@@ -165,7 +165,7 @@ def run_target(
     except ET.ParseError:
         return RunResult(
             run_id=run_id,
-            overall="failed",
+            overall="errored",
             passed=0,
             failed=0,
             skipped=0,
@@ -175,6 +175,12 @@ def run_target(
             stderr_tail=proc.stderr_tail,
         )
     if proc.exit_code != 0 and result.failed == 0:
+        # The suite built and ran (results parsed) but the process still exited
+        # non-zero with nothing marked failed: a sanitizer abort, a leak report,
+        # or a crash at teardown. That is a genuine adverse verdict ("failed"),
+        # NOT "errored" - the tests ran. "errored" is reserved above for the
+        # cases where no verdict could be obtained at all (build broke, no
+        # result file, timed out before completion).
         return RunResult(
             run_id=run_id,
             overall="failed",

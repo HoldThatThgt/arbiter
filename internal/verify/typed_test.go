@@ -269,6 +269,34 @@ func TestCompareRunOneOf(t *testing.T) {
 	}
 }
 
+// An "errored" run (build broke, no result file, timed out before completion -
+// the engine could obtain no test verdict) must satisfy NEITHER a red gate
+// (expect overall=failed) NOR a green gate (expect overall=passed). This is the
+// referee-side half of the engine contract that a non-compiling test does not
+// count as a reproduced failure: the gtest adapter emits overall="errored" for
+// build/harness failures, and exact-set matching here rejects it both ways.
+func TestCompareRunErroredSatisfiesNoGate(t *testing.T) {
+	redGate, err := ParseRunExpect(mustRaw(t, `{"overall":"failed"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, report := CompareRun(redGate, RunEvidence{Overall: "errored"}); ok {
+		t.Fatalf("build error satisfied a run-red gate: %#v", report)
+	}
+	greenGate, err := ParseRunExpect(mustRaw(t, `{"overall":"passed","max_failed":0}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, report := CompareRun(greenGate, RunEvidence{Overall: "errored"}); ok {
+		t.Fatalf("build error satisfied a suite-green gate: %#v", report)
+	}
+	// A genuine assertion failure (the test ran and went red) still satisfies the
+	// red gate - errored is strictly narrower than failed, not a rename of it.
+	if ok, _ := CompareRun(redGate, RunEvidence{Overall: "failed", Failed: 1}); !ok {
+		t.Fatal("a real assertion failure was rejected by the run-red gate")
+	}
+}
+
 func TestCompareRunFactsPublished(t *testing.T) {
 	expect, err := ParseRunExpect(mustRaw(t, `{"overall":"passed","facts":{"published":true}}`))
 	if err != nil {
