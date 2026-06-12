@@ -109,10 +109,11 @@ func filePath(fields map[string]any) string {
 	return path
 }
 
-// decideFrozen 判定改写类工具是否触碰某个冻结测试文件。先按解析后绝对路径
-// 词法精确比对(覆盖文件尚不存在的 Write);再按文件身份(os.SameFile,即
-// inode/设备)比对,挡住词法漏掉的同一文件改写——大小写不敏感卷上的大小写
-// 变体、以及指向冻结测试的符号链接别名。命中任一即拒。
+// decideFrozen 判定改写类工具是否触碰某个冻结测试文件。三道比对:解析后绝对
+// 路径词法精确比对(覆盖文件尚不存在的 Write);文件身份(os.SameFile,即
+// inode/设备)比对,挡住大小写不敏感卷上的大小写变体、以及指向冻结测试的软链
+// 别名;若候选是悬挂软链(指向已被删除的冻结测试,os.Stat 跟随失败),按其
+// readlink 目标的词法路径兜一道。命中任一即拒;三道都只增不减拒绝。
 func decideFrozen(root string, frozen []string, path string) Decision {
 	if path == "" || len(frozen) == 0 {
 		return Decision{}
@@ -123,9 +124,21 @@ func decideFrozen(root string, frozen []string, path string) Decision {
 	}
 	resolved = filepath.Clean(resolved)
 	candInfo, candErr := os.Stat(resolved) // 跟随符号链接;文件不存在时 candErr != nil
+	// 悬挂软链兜底:os.Stat 跟随失败时,取其链接目标的词法绝对路径再比对一次。
+	linkTarget := ""
+	if candErr != nil {
+		if linfo, lerr := os.Lstat(resolved); lerr == nil && linfo.Mode()&os.ModeSymlink != 0 {
+			if t, rerr := os.Readlink(resolved); rerr == nil {
+				if !filepath.IsAbs(t) {
+					t = filepath.Join(filepath.Dir(resolved), t)
+				}
+				linkTarget = filepath.Clean(t)
+			}
+		}
+	}
 	for _, rel := range frozen {
 		frozenAbs := filepath.Clean(filepath.Join(root, filepath.FromSlash(rel)))
-		if resolved == frozenAbs {
+		if resolved == frozenAbs || (linkTarget != "" && linkTarget == frozenAbs) {
 			return Decision{Deny: true, Reason: frozenReason}
 		}
 		if candErr == nil {

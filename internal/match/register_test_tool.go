@@ -104,11 +104,23 @@ func (s *Store) hashUnderRoot(p string) (rel, hash string, err error) {
 	if e != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
 		return "", "", &ToolError{Code: playbook.CodeTestRegister, Message: "test path is outside the repo: " + p}
 	}
-	// 拒绝符号链接:词法 Rel 判定挡不住仓内软链指向仓外文件——那会冻结一份
+	// 拒绝叶子符号链接:词法 Rel 判定挡不住仓内软链指向仓外文件——那会冻结一份
 	// 实体在仓外、可绕开 guard 与哈希检测随意改动的"测试"。冻结对象必须是
 	// 仓内真实文件。
 	if info, lerr := os.Lstat(abs); lerr == nil && info.Mode()&os.ModeSymlink != 0 {
 		return "", "", &ToolError{Code: playbook.CodeTestRegister, Message: "test path is a symlink, not a real in-repo file: " + p + " — freeze the actual test file"}
+	}
+	// 父目录也可能是软链(叶子 Lstat 不跟随父级)。解析整条路径后确认真实位置仍
+	// 在仓内,堵住经软链父目录把冻结对象指向仓外。root 自身也可能含软链(macOS
+	// /var、/tmp),一并解析后比对,避免误伤仓内真实文件。
+	if realAbs, lerr := filepath.EvalSymlinks(abs); lerr == nil {
+		realRoot := s.Root
+		if rr, rerr := filepath.EvalSymlinks(s.Root); rerr == nil {
+			realRoot = rr
+		}
+		if rrel, re := filepath.Rel(realRoot, realAbs); re != nil || rrel == ".." || strings.HasPrefix(rrel, ".."+string(os.PathSeparator)) {
+			return "", "", &ToolError{Code: playbook.CodeTestRegister, Message: "test path resolves outside the repo via a symlink: " + p}
+		}
 	}
 	data, e := os.ReadFile(abs)
 	if e != nil {

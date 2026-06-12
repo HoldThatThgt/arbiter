@@ -148,3 +148,22 @@ func TestGuardFreezesCaseAndSymlinkVariants(t *testing.T) {
 		t.Fatal("case-variant denied on case-sensitive FS (it is a distinct file)")
 	}
 }
+
+// A dangling symlink — one whose target (a frozen test) has been deleted via Bash —
+// must still be denied: os.Stat follows-and-fails, so the readlink-target fallback
+// catches a Write that would recreate/poison the frozen path through the alias.
+func TestGuardFreezesDanglingSymlinkToFrozen(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "tests"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	frozen := []string{"tests/repro_test.cc"}
+	// The frozen target is intentionally NOT created (simulating `rm` of the frozen test).
+	alias := filepath.Join(root, "alias.cc")
+	if err := os.Symlink(filepath.Join(root, "tests", "repro_test.cc"), alias); err != nil {
+		t.Skipf("symlink unsupported on this platform: %v", err)
+	}
+	if d := Decide(root, frozen, event(t, "Write", map[string]any{"file_path": "alias.cc"})); !d.Deny {
+		t.Fatal("dangling symlink to deleted frozen test not denied")
+	}
+}

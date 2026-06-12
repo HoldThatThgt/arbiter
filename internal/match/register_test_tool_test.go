@@ -123,6 +123,28 @@ func TestRegisterTestRejectsSymlink(t *testing.T) {
 	}
 }
 
+// A leaf that is a regular file but sits under a SYMLINKED PARENT directory pointing
+// out of the repo must also be rejected: the lexical Rel guard and the leaf-Lstat both
+// pass, so the EvalSymlinks escape check is what keeps the frozen object in-repo.
+func TestRegisterTestRejectsSymlinkedParent(t *testing.T) {
+	root := repoWithBook(t, "flow.md", twoStepBook)
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "t.cc"), []byte("OUT\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// repo/evil -> outside (a symlinked parent directory escaping the repo).
+	if err := os.Symlink(outside, filepath.Join(root, "evil")); err != nil {
+		t.Skipf("symlink unsupported on this platform: %v", err)
+	}
+	store := New(root, "test")
+	if _, err := store.LoadPlayBook("flow"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RegisterTest([]string{"evil/t.cc"}); toolCode(err) != playbook.CodeTestRegister {
+		t.Fatalf("symlinked-parent freeze: code = %q, want %q", toolCode(err), playbook.CodeTestRegister)
+	}
+}
+
 // A predicate's own side effects can tamper a frozen test AFTER the pre-execution
 // hash check; the post-execution re-hash must catch "rewrite the test, then run a
 // weakened suite" and fail the submit.
