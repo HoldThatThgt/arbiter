@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -242,6 +243,16 @@ func addEngineProxy(server *mcp.Server, root, seatName string, store *match.Stor
 				result, err = engine.CallTool(ctx, decl.Name, args, store.CurrentMeta())
 			}
 		}
+		var terr *match.ToolError
+		if err != nil {
+			terr = toolError(err)
+			if terr == nil {
+				terr = engineToolError(err)
+			}
+			if terr == nil {
+				terr = &match.ToolError{Code: playbook.CodeEngineUnavailable, Message: err.Error()}
+			}
+		}
 		fields := map[string]any{
 			"tool":        decl.Name,
 			"args":        args,
@@ -249,15 +260,12 @@ func addEngineProxy(server *mcp.Server, root, seatName string, store *match.Stor
 			"duration_ms": int(time.Since(start).Milliseconds()),
 			"proxy":       true,
 		}
-		if terr := toolError(err); terr != nil {
+		if terr != nil {
 			fields["error_code"] = terr.Code
 		}
 		_ = journal.Append(root, seatName, "tool_called", fields)
-		if err != nil {
-			if toolError(err) != nil {
-				return errorResult(err), nil
-			}
-			return errorResult(&match.ToolError{Code: playbook.CodeEngineUnavailable, Message: err.Error()}), nil
+		if terr != nil {
+			return errorResult(terr), nil
 		}
 		return engineResult(result)
 	})
@@ -547,6 +555,31 @@ func toolError(err error) *match.ToolError {
 		return terr
 	}
 	return nil
+}
+
+// engineToolError maps a structured engine JSON-RPC error onto the seat's
+// teaching contract: the engine answered and named what to fix, so data.kind
+// becomes the code and data.field/detail join the message. Spawn and
+// transport failures return nil and stay engine_unavailable.
+func engineToolError(err error) *match.ToolError {
+	var engineErr *engineclient.EngineError
+	if !errors.As(err, &engineErr) {
+		return nil
+	}
+	message := engineErr.Message
+	var data map[string]any
+	_ = json.Unmarshal(engineErr.Data, &data)
+	if field, ok := data["field"].(string); ok && field != "" {
+		message += fmt.Sprintf(" (field %q)", field)
+	}
+	if detail, ok := data["detail"].(string); ok && detail != "" {
+		message += ": " + detail
+	}
+	terr := &match.ToolError{Code: engineErr.Kind, Message: message}
+	if len(data) > 0 {
+		terr.Data = data
+	}
+	return terr
 }
 
 func rawArgs(raw json.RawMessage) any {
