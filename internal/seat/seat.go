@@ -48,6 +48,10 @@ type ReviewTaskInput struct {
 	TaskID string `json:"task_id"`
 }
 
+type RegisterTestInput struct {
+	Paths []string `json:"paths"`
+}
+
 type NotePlaybookInput struct {
 	StepID string `json:"step_id"`
 	Note   string `json:"note"`
@@ -176,6 +180,7 @@ func buildServerWithRuntime(ctx context.Context, root, seatName string) (*mcp.Se
 		addReviewTask(server, root, store)
 	case Executor:
 		addSubmitTask(server, root, store)
+		addRegisterTest(server, root, store)
 		addListTask(server, root, store)
 		addReviewTask(server, root, store)
 	default:
@@ -394,6 +399,19 @@ func addSubmitTask(server *mcp.Server, root string, store *match.Store) {
 			return nil, err
 		}
 		return store.SubmitTask(ctx, in.TaskID, in.Summary, in.Report, in.Result)
+	})
+}
+
+func addRegisterTest(server *mcp.Server, root string, store *match.Store) {
+	props := map[string]any{
+		"paths": map[string]any{"type": "array", "items": stringSchema()},
+	}
+	add(server, root, store.Seat, "RegisterTest", "Freeze the test file(s) you wrote so they become immutable for the rest of the match: pass repo-relative paths. After this, any modification to a registered test — by anyone, by any means — makes every subsequent predicate fail (the referee re-hashes them before adjudicating), so a fix can only come from product code. Call it once your test compiles and proves its standard; re-registering a frozen path with different content is refused.", objectSchema(props, []string{"paths"}), func(ctx context.Context, raw json.RawMessage) (any, error) {
+		var in RegisterTestInput
+		if err := decode(raw, &in); err != nil {
+			return nil, err
+		}
+		return store.RegisterTest(in.Paths)
 	})
 }
 

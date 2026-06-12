@@ -49,7 +49,7 @@ func TestGuardDecisions(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			decision := Decide(root, event(t, tc.tool, tc.input))
+			decision := Decide(root, nil, event(t, tc.tool, tc.input))
 			if decision.Deny != tc.deny {
 				t.Fatalf("deny = %v, want %v (reason=%q)", decision.Deny, tc.deny, decision.Reason)
 			}
@@ -62,8 +62,38 @@ func TestGuardDecisions(t *testing.T) {
 
 func TestGuardFailsOpenOnMalformedInput(t *testing.T) {
 	for _, raw := range []string{"", "not json", `{"tool_name":"Read"}`, `{"tool_name":"Read","tool_input":"oops"}`} {
-		if decision := Decide("/repo", []byte(raw)); decision.Deny {
+		if decision := Decide("/repo", nil, []byte(raw)); decision.Deny {
 			t.Fatalf("malformed input must fail open: %q -> %+v", raw, decision)
 		}
+	}
+}
+
+// 注册测试只对改写类工具不可写;读、glob、grep、以及 Bash(编译/运行)放行。
+func TestGuardFreezesRegisteredTests(t *testing.T) {
+	root := "/repo"
+	frozen := []string{"tests/repro_test.cc"}
+	cases := []struct {
+		name  string
+		tool  string
+		input map[string]any
+		deny  bool
+	}{
+		{"edit frozen test", "Edit", map[string]any{"file_path": "tests/repro_test.cc"}, true},
+		{"write frozen test", "Write", map[string]any{"file_path": "/repo/tests/repro_test.cc"}, true},
+		{"edit other file", "Edit", map[string]any{"file_path": "src/bloom.cc"}, false},
+		{"read frozen test", "Read", map[string]any{"file_path": "tests/repro_test.cc"}, false},
+		{"grep frozen test", "Grep", map[string]any{"pattern": "x", "path": "tests/repro_test.cc"}, false},
+		{"compile frozen test via bash", "Bash", map[string]any{"command": "g++ tests/repro_test.cc -o t"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			decision := Decide(root, frozen, event(t, tc.tool, tc.input))
+			if decision.Deny != tc.deny {
+				t.Fatalf("deny = %v, want %v (reason=%q)", decision.Deny, tc.deny, decision.Reason)
+			}
+			if tc.deny && !strings.Contains(decision.Reason, "immutable") {
+				t.Fatalf("frozen denial reason missing 'immutable': %q", decision.Reason)
+			}
+		})
 	}
 }

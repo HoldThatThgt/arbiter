@@ -40,10 +40,15 @@ type Match struct {
 	StopBlocks   int                          `json:"stop_blocks"` // 本回合内被拦截的停止次数,进入新回合清零
 	// SubagentBlocks 按 task 记录子代理停止被拦截的次数(SubagentStop 门控)。
 	// 旧 state.json 缺省 → nil,行为等同从零计数。
-	SubagentBlocks map[string]int           `json:"subagent_blocks,omitempty"`
-	GoalPending    *GoalPending             `json:"goal_pending,omitempty"`
-	GoalMemo       map[string]GoalMemoEntry `json:"goal_memo,omitempty"`
-	StartedAt      string                   `json:"started_at"`
+	SubagentBlocks map[string]int `json:"subagent_blocks,omitempty"`
+	// FrozenTests 是 RegisterTest 冻结的测试文件:仓根相对路径 → 内容 sha256。
+	// 一经登记不可改写(append-only,改哈希即拒)。任何谓词裁决前重算哈希,
+	// 不符即判负 —— 这是"测试一经注册无人可改"的检测层,不依赖列举所有改写
+	// 途径(guard 是预防层,见 internal/guard)。旧 state.json 缺省 → nil。
+	FrozenTests map[string]string        `json:"frozen_tests,omitempty"`
+	GoalPending *GoalPending             `json:"goal_pending,omitempty"`
+	GoalMemo    map[string]GoalMemoEntry `json:"goal_memo,omitempty"`
+	StartedAt   string                   `json:"started_at"`
 }
 
 type GoalPending struct {

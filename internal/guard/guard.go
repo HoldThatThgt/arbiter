@@ -53,10 +53,16 @@ type Input struct {
 	ToolInput json.RawMessage `json:"tool_input"`
 }
 
-// Decide 对一次工具调用做出门控决定。root 必须是绝对仓根。
+// frozenReason 是注册测试被改写工具触碰时的拒绝理由(预防层)。注册测试
+// 仍可读、可编译、可运行 —— 只是不可改写;Bash 途径的改写交由裁判端的
+// 哈希检测兜底(guard 无法在 Bash 命令里区分编译与篡改)。
+const frozenReason = "This test is registered and immutable for the rest of the match — no edit, by anyone, by any means. A fix goes in product code; if the test itself is wrong, that is a finding to report (not to edit). The referee also re-hashes every registered test before each verdict, so a modified one can never pass."
+
+// Decide 对一次工具调用做出门控决定。root 必须是绝对仓根。frozen 是当前
+// 冻结的测试文件(仓根相对路径),改写类工具触碰即拒。
 // 未知工具、未知字段、解析失败一律放行(fail-open)——门控的职责是挡住
 // 明确的越界,不是猜测。
-func Decide(root string, raw []byte) Decision {
+func Decide(root string, frozen []string, raw []byte) Decision {
 	var input Input
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return Decision{}
@@ -70,12 +76,17 @@ func Decide(root string, raw []byte) Decision {
 	}
 	switch input.ToolName {
 	case "Bash":
+		// 冻结测试不在 Bash 这里拦:编译/运行测试是正当且必需的,无法与
+		// 篡改区分;Bash 改写由 SubmitTask 的哈希检测层判负兜底。
 		command, _ := fields["command"].(string)
 		return decideText(root, command)
-	case "Read", "Edit", "Write", "NotebookEdit":
-		path, _ := fields["file_path"].(string)
-		if path == "" {
-			path, _ = fields["notebook_path"].(string)
+	case "Read":
+		// 注册测试可读(implementer 需要看断言);只过裁判私有静态区。
+		return decidePath(root, filePath(fields))
+	case "Edit", "Write", "NotebookEdit":
+		path := filePath(fields)
+		if decision := decideFrozen(root, frozen, path); decision.Deny {
+			return decision
 		}
 		return decidePath(root, path)
 	case "Glob", "Grep":
@@ -87,6 +98,33 @@ func Decide(root string, raw []byte) Decision {
 	default:
 		return Decision{}
 	}
+}
+
+func filePath(fields map[string]any) string {
+	path, _ := fields["file_path"].(string)
+	if path == "" {
+		path, _ = fields["notebook_path"].(string)
+	}
+	return path
+}
+
+// decideFrozen 判定改写类工具是否触碰某个冻结测试文件(按解析后绝对路径
+// 精确比对)。命中即拒。
+func decideFrozen(root string, frozen []string, path string) Decision {
+	if path == "" || len(frozen) == 0 {
+		return Decision{}
+	}
+	resolved := path
+	if !filepath.IsAbs(resolved) {
+		resolved = filepath.Join(root, resolved)
+	}
+	resolved = filepath.Clean(resolved)
+	for _, rel := range frozen {
+		if resolved == filepath.Clean(filepath.Join(root, filepath.FromSlash(rel))) {
+			return Decision{Deny: true, Reason: frozenReason}
+		}
+	}
+	return Decision{}
 }
 
 func stringField(fields map[string]any, key string) string {

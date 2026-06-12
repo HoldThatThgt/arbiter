@@ -274,6 +274,7 @@ func (s *Store) SubmitTask(ctx context.Context, taskID, summary, report string, 
 	var roundSeq int
 	var matchID string
 	var verifyName string
+	var frozen map[string]string
 	out, err := s.withLock(func(m *Match) (*Match, any, error) {
 		if m == nil || m.Status != StatusActive || m.Current == nil {
 			return nil, nil, &ToolError{Code: playbook.CodeNoActiveMatch, Message: "no active match — the curator must LoadPlayBook first; match tools only work inside a loaded match"}
@@ -308,6 +309,7 @@ func (s *Store) SubmitTask(ctx context.Context, taskID, summary, report string, 
 		if _, ok := findCurrentTask(m, taskID); ok {
 			roundSeq = m.RoundSeq
 			matchID = m.ID
+			frozen = copyStringMap(m.FrozenTests)
 			return nil, nil, nil
 		}
 		if findHistoryTask(m, taskID) != nil {
@@ -320,9 +322,22 @@ func (s *Store) SubmitTask(ctx context.Context, taskID, summary, report string, 
 	}
 	_ = out
 
-	result, err := verify.ExecuteWithMeta(ctx, s.Root, spec, map[string]any{"match_id": matchID, "round_seq": roundSeq})
-	if err != nil {
-		return SubmitTaskOutput{}, specError(err)
+	// 冻结测试完整性闸:任何谓词执行前先核对已注册测试未被改动。一旦改动,
+	// 不论经由何种途径(guard 旁路、git、sed、脚本……),本次提交直接判负,
+	// 谓词都不必跑 —— tampered 测试不可能换来 pass。
+	var result verify.Result
+	if violated := frozenViolation(s.Root, frozen); violated != "" {
+		result = verify.Result{
+			Spec:    spec,
+			Failure: playbook.CodeFrozenTestModified,
+			Output:  "registered test was modified and is immutable: " + violated + " — restore it byte-for-byte; fixes go in product code, never the test",
+		}
+	} else {
+		var execErr error
+		result, execErr = verify.ExecuteWithMeta(ctx, s.Root, spec, map[string]any{"match_id": matchID, "round_seq": roundSeq})
+		if execErr != nil {
+			return SubmitTaskOutput{}, specError(execErr)
+		}
 	}
 	verdict := TaskFail
 	if verify.Pass(result) {

@@ -53,7 +53,7 @@ func TestSeatToolSurfaceForwardsEngineTools(t *testing.T) {
 	}{
 		{Player, []string{"AddPlayBook", "CheckStepJob", "CreateTask", "ListTask", "NotePlaybook", "ReviewTask", "ShowStepJob", "detail", "search"}},
 		{Curator, []string{"ListTask", "LoadPlayBook", "ReadPlayBook", "ReviewTask"}},
-		{Executor, []string{"ListTask", "ReviewTask", "SubmitTask", "detail", "recipe_search", "run", "search"}},
+		{Executor, []string{"ListTask", "RegisterTest", "ReviewTask", "SubmitTask", "detail", "recipe_search", "run", "search"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.seat, func(t *testing.T) {

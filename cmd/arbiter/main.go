@@ -173,7 +173,7 @@ func run() error {
 			if err != nil {
 				return nil // fail-open:门控故障不阻塞会话
 			}
-			decision := guard.Decide(root, payload)
+			decision := guard.Decide(root, match.FrozenTestPaths(root), payload)
 			if decision.Deny {
 				out, err := json.Marshal(map[string]any{
 					"hookSpecificOutput": map[string]any{
