@@ -31,6 +31,8 @@ const (
 	CodeVerifyPolicy         = "verify_policy"
 	CodeVerifyOverride       = "verify_override"
 	CodeStepSubmitMismatch   = "step_submit_mismatch"
+	CodeTestRegister         = "test_register"
+	CodeFrozenTestModified   = "frozen_test_modified"
 
 	IssueBadFrontmatter      = "bad_frontmatter"
 	IssueNoSteps             = "no_steps"
