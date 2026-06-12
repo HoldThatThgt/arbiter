@@ -15,12 +15,15 @@ func (s *Store) startAsyncRunGoal(ctx context.Context, spec playbook.ResultSpec,
 	if err != nil {
 		return CheckStepJobOutput{}, engineUnavailable(err)
 	}
+	discarded := false
 	out, err := s.withLock(func(m *Match) (*Match, any, error) {
 		if m == nil || m.Status != StatusActive || m.Current == nil || m.RoundSeq != roundSeq {
+			discarded = true
 			return nil, CheckStepJobOutput{Complete: false, Reason: "state_changed", RunID: runID}, nil
 		}
 		v := evaluateRound(m)
 		if !v.complete || v.outcome != OutcomeSuccess {
+			discarded = true
 			return nil, CheckStepJobOutput{Complete: false, Reason: "state_changed", RunID: runID}, nil
 		}
 		m.GoalPending = &GoalPending{
@@ -34,7 +37,14 @@ func (s *Store) startAsyncRunGoal(ctx context.Context, spec playbook.ResultSpec,
 		return m, CheckStepJobOutput{Complete: false, Reason: "goal_running", RunID: runID}, nil
 	})
 	if err != nil {
+		// 状态层面的终局错误:这次 goal 生命周期已经结束,关掉缓存引擎。
+		s.closeGoalEngine()
 		return CheckStepJobOutput{}, err
+	}
+	if discarded {
+		// run 已启动但 pending 被弃置(state_changed):没有任何后续 poll 会
+		// 复用这台引擎,立即关闭。
+		s.closeGoalEngine()
 	}
 	return out.(CheckStepJobOutput), nil
 }
@@ -42,11 +52,16 @@ func (s *Store) startAsyncRunGoal(ctx context.Context, spec playbook.ResultSpec,
 func (s *Store) pollAsyncRunGoal(ctx context.Context, pending GoalPending) (CheckStepJobOutput, error) {
 	report, running, err := s.pollRunGoal(ctx, pending)
 	if err != nil {
+		// 可重试(engine_unavailable):GoalPending 原样保留,缓存引擎也保留——
+		// 协议层失败已使其中毒,下次 poll 由 goalExecEngine 原地重生。
 		return CheckStepJobOutput{}, engineUnavailable(err)
 	}
 	if running {
 		return CheckStepJobOutput{Complete: false, Reason: "goal_running", RunID: pending.RunID}, nil
 	}
+	// run 已达终态:下面每个分支要么 settle 要么弃置这个 pending,
+	// goal 生命周期就此结束,缓存引擎随之关闭。
+	defer s.closeGoalEngine()
 	out, err := s.withLock(func(m *Match) (*Match, any, error) {
 		if m == nil || m.Status != StatusActive || m.Current == nil || m.RoundSeq != pending.RoundSeq {
 			return nil, CheckStepJobOutput{Complete: false, Reason: "state_changed", RunID: pending.RunID, Goal: report}, nil
@@ -78,12 +93,13 @@ func (s *Store) pollAsyncRunGoal(ctx context.Context, pending GoalPending) (Chec
 	return out.(CheckStepJobOutput), nil
 }
 
+// startRunGoal / pollRunGoal 共用 Store 缓存的 exec 引擎(goals_engine.go):
+// GoalPending 存续期间每次 CheckStepJob poll 不再各付一次解释器启动开销。
 func (s *Store) startRunGoal(ctx context.Context, spec playbook.ResultSpec) (string, error) {
-	engine, err := engineclient.Spawn(ctx, engineclient.RoleExec, s.Root)
+	engine, err := s.goalExecEngine(ctx)
 	if err != nil {
 		return "", err
 	}
-	defer engine.Close()
 	started, err := engine.StartRun(ctx, engineRunSpec(spec), nil)
 	if err != nil {
 		return "", err
@@ -92,11 +108,10 @@ func (s *Store) startRunGoal(ctx context.Context, spec playbook.ResultSpec) (str
 }
 
 func (s *Store) pollRunGoal(ctx context.Context, pending GoalPending) (*GoalReport, bool, error) {
-	engine, err := engineclient.Spawn(ctx, engineclient.RoleExec, s.Root)
+	engine, err := s.goalExecEngine(ctx)
 	if err != nil {
 		return nil, false, err
 	}
-	defer engine.Close()
 	status, err := engine.RunStatus(ctx, pending.RunID)
 	if err != nil {
 		return nil, false, err

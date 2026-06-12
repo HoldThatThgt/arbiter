@@ -1,6 +1,7 @@
 package match
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -8,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/HoldThatThgt/arbiter/internal/journal"
@@ -18,6 +20,16 @@ import (
 type Store struct {
 	Root string
 	Seat string
+
+	// engineMu guards the exec engine cached across the async run-goal
+	// lifecycle (goals_engine.go). It is independent of the match file
+	// lock and the two are never held together: engine spawn/calls stay
+	// outside withLock, exactly like the previous per-call Spawn.
+	engineMu   sync.Mutex
+	goalEngine execEngine
+	// spawnExec is the engine factory; tests substitute a counting fake.
+	// nil means engineclient.Spawn with RoleExec.
+	spawnExec func(ctx context.Context, root string) (execEngine, error)
 }
 
 func New(root, seat string) *Store {

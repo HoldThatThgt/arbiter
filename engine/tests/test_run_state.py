@@ -1,5 +1,9 @@
 import sqlite3
+import subprocess
+import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -87,6 +91,130 @@ class RunStateTest(unittest.TestCase):
                 conn.execute("SELECT 1").fetchone()
 
             self.assertIn("BEGIN IMMEDIATE", statements[0])
+
+    def test_transaction_rolls_back_on_exception_and_keeps_committed_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "state.sqlite"
+            state.init(db)
+
+            with state.transaction(db) as conn:
+                conn.execute(
+                    "INSERT INTO compile_cache (key, sources_digest, binary, built_at)"
+                    " VALUES ('committed', 'd1', 'bin1', 1.0)"
+                )
+
+            with self.assertRaises(RuntimeError):
+                with state.transaction(db) as conn:
+                    conn.execute(
+                        "INSERT INTO compile_cache (key, sources_digest, binary, built_at)"
+                        " VALUES ('rolled-back', 'd2', 'bin2', 2.0)"
+                    )
+                    raise RuntimeError("abort mid-transaction")
+
+            with sqlite3.connect(str(db)) as conn:
+                keys = sorted(
+                    row[0]
+                    for row in conn.execute("SELECT key FROM compile_cache")
+                )
+            self.assertEqual(keys, ["committed"])
+
+    def test_crashed_writer_mid_transaction_leaves_db_clean(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "state.sqlite"
+            state.init(db)
+
+            with state.transaction(db) as conn:
+                conn.execute(
+                    "INSERT INTO compile_cache (key, sources_digest, binary, built_at)"
+                    " VALUES ('survivor', 'd1', 'bin1', 1.0)"
+                )
+
+            # A writer that dies mid-transaction (BEGIN IMMEDIATE + INSERT,
+            # then hard exit without commit) must not corrupt the DB or leak
+            # its uncommitted row.
+            crasher = (
+                "import os, sqlite3, sys\n"
+                "conn = sqlite3.connect(sys.argv[1], isolation_level=None)\n"
+                "conn.execute('BEGIN IMMEDIATE')\n"
+                "conn.execute(\"INSERT INTO compile_cache\"\n"
+                "             \" (key, sources_digest, binary, built_at)\"\n"
+                "             \" VALUES ('torn', 'd2', 'bin2', 2.0)\")\n"
+                "os._exit(1)\n"
+            )
+            proc = subprocess.run(
+                [sys.executable, "-c", crasher, str(db)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            self.assertEqual(proc.returncode, 1)
+
+            with sqlite3.connect(str(db)) as conn:
+                integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+                keys = sorted(
+                    row[0]
+                    for row in conn.execute("SELECT key FROM compile_cache")
+                )
+            self.assertEqual(integrity, "ok")
+            self.assertEqual(keys, ["survivor"])
+
+    def test_concurrent_begin_immediate_writers_serialize(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "state.sqlite"
+            state.init(db)
+
+            first_in_transaction = threading.Event()
+            release_first = threading.Event()
+            events = []
+            errors = []
+
+            def first_writer():
+                try:
+                    with state.transaction(db) as conn:
+                        conn.execute(
+                            "INSERT INTO compile_cache (key, sources_digest, binary, built_at)"
+                            " VALUES ('first', 'd1', 'bin1', 1.0)"
+                        )
+                        first_in_transaction.set()
+                        release_first.wait(timeout=10)
+                    events.append("first_committed")
+                except BaseException as exc:  # pragma: no cover - surfaced below
+                    errors.append(exc)
+
+            def second_writer():
+                try:
+                    first_in_transaction.wait(timeout=10)
+                    with state.transaction(db) as conn:
+                        # BEGIN IMMEDIATE only succeeds once the first writer
+                        # has committed; reaching this line records the order.
+                        events.append("second_in_transaction")
+                        conn.execute(
+                            "INSERT INTO compile_cache (key, sources_digest, binary, built_at)"
+                            " VALUES ('second', 'd2', 'bin2', 2.0)"
+                        )
+                except BaseException as exc:  # pragma: no cover - surfaced below
+                    errors.append(exc)
+
+            t1 = threading.Thread(target=first_writer)
+            t2 = threading.Thread(target=second_writer)
+            t1.start()
+            t2.start()
+            self.assertTrue(first_in_transaction.wait(timeout=10))
+            # Give the second writer a moment to block on BEGIN IMMEDIATE
+            # while the first transaction is still open.
+            time.sleep(0.2)
+            self.assertEqual(events, [])
+            release_first.set()
+            t1.join(timeout=15)
+            t2.join(timeout=15)
+
+            self.assertEqual(errors, [])
+            self.assertEqual(sorted(events), ["first_committed", "second_in_transaction"])
+            with sqlite3.connect(str(db)) as conn:
+                keys = sorted(
+                    row[0]
+                    for row in conn.execute("SELECT key FROM compile_cache")
+                )
+            self.assertEqual(keys, ["first", "second"])
 
     def test_proven_lifecycle_preserves_doc_only_edit(self):
         with tempfile.TemporaryDirectory() as tmp:

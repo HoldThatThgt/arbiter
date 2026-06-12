@@ -51,15 +51,25 @@ class LockInventoryTest(unittest.TestCase):
             self.assertEqual(ctx.exception.data, {"kind": "lock_timeout", "lock": "state.lock"})
 
     def test_no_ad_hoc_engine_flocks(self):
-        engine_root = Path(__file__).resolve().parents[1] / "arbiter_engine"
+        engine_dir = Path(__file__).resolve().parents[1]
+        # shared/locks.py is the single sanctioned flock home; the contention
+        # test embeds a fixture worker that uses raw flock to observe
+        # serialization from outside the engine, and this meta-test names the
+        # tokens it scans for.
+        allowlist = {
+            "arbiter_engine/shared/locks.py",
+            "tests/test_locks.py",
+            "tests/test_runner_contention.py",
+        }
         offenders = []
-        for path in engine_root.rglob("*.py"):
-            rel = path.relative_to(engine_root).as_posix()
-            if rel == "shared/locks.py":
-                continue
-            text = path.read_text(encoding="utf-8")
-            if "fcntl.flock" in text or "LOCK_EX" in text or "LOCK_NB" in text:
-                offenders.append(rel)
+        for root in ("arbiter_engine", "tests"):
+            for path in (engine_dir / root).rglob("*.py"):
+                rel = path.relative_to(engine_dir).as_posix()
+                if rel in allowlist:
+                    continue
+                text = path.read_text(encoding="utf-8")
+                if "fcntl.flock" in text or "LOCK_EX" in text or "LOCK_NB" in text:
+                    offenders.append(rel)
 
         self.assertEqual(offenders, [])
 

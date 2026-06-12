@@ -49,6 +49,17 @@ class EngineErrorTaxonomyTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             errors.RPCError(-32000, "new kind", {"kind": "not_documented"})
 
+    def test_internal_error_is_a_validated_chassis_kind(self):
+        self.assertIn("internal_error", errors.CHASSIS_ERROR_KINDS)
+        self.assertIn("internal_error", errors.KNOWN_ERROR_KINDS)
+
+        err = errors.internal_error(KeyError("missing-thing"))
+
+        self.assertEqual(err.code, -32603)
+        self.assertEqual(err.data["kind"], "internal_error")
+        self.assertEqual(err.data["exception"], "KeyError")
+        self.assertIn("missing-thing", err.data["detail"])
+
 
 if __name__ == "__main__":
     unittest.main()
