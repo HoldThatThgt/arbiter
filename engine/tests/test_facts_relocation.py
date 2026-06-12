@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import tempfile
 import textwrap
 import unittest
@@ -84,13 +85,20 @@ class FactsRelocationTest(unittest.TestCase):
         self.assertNotIn("_meta", tools["search"]["inputSchema"]["properties"])
         self.assertNotIn("_meta", tools["detail"]["inputSchema"]["properties"])
 
-        detail = response_for(
-            request("tools/call", {"name": "detail", "arguments": {"fact_id": "fact:1"}})
-        )
-        old_arg = response_for(request("tools/call", {"name": "detail", "arguments": {"id": "fact:1"}}))
-        search_limit = response_for(
-            request("tools/call", {"name": "search", "arguments": {"query": "callers:main", "limit": 50}})
-        )
+        # facts 工具以 cwd 为仓根(席位约定):沙箱化 cwd,杜绝 .arbiter/ 残留进源码树。
+        with tempfile.TemporaryDirectory() as tmp:
+            previous = os.getcwd()
+            os.chdir(tmp)
+            try:
+                detail = response_for(
+                    request("tools/call", {"name": "detail", "arguments": {"fact_id": "fact:1"}})
+                )
+                old_arg = response_for(request("tools/call", {"name": "detail", "arguments": {"id": "fact:1"}}))
+                search_limit = response_for(
+                    request("tools/call", {"name": "search", "arguments": {"query": "callers:main", "limit": 50}})
+                )
+            finally:
+                os.chdir(previous)
 
         self.assertTrue(detail["result"]["isError"])
         self.assertEqual(detail["result"]["structuredContent"]["error"]["code"], "not_found")

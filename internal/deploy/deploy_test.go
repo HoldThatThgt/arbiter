@@ -145,7 +145,7 @@ func TestInitWritesUnifiedDeploymentTree(t *testing.T) {
 
 	var engines map[string]any
 	readJSONFile(t, filepath.Join(root, ".arbiter", "run", "engines.json"), &engines)
-	if engines["python"] != "/test/python" || engines["engine_version"] != "test-engine" {
+	if engines["python"] != "/test/python" || engines["engine_version"] != mustEmbeddedVersion(t) {
 		t.Fatalf("engines.json = %#v", engines)
 	}
 	if engines["verified_at"] != "2026-06-11T00:00:00Z" {
@@ -438,7 +438,11 @@ func testInitOptions() Options {
 		Python: "/test/python",
 		Now:    func() time.Time { return time.Date(2026, 6, 11, 0, 0, 0, 0, time.UTC) },
 		VerifyEngine: func(string, string) (string, error) {
-			return "test-engine", nil
+			version, err := embeddedengine.Version()
+			if err != nil {
+				return "", err
+			}
+			return version, nil
 		},
 		VerifyCompanions: func(string) error { return nil },
 		FSKind:           "apfs",
@@ -521,4 +525,13 @@ func snapshot(t *testing.T, root string) map[string][]byte {
 		out[rel] = data
 	}
 	return out
+}
+
+func mustEmbeddedVersion(t *testing.T) string {
+	t.Helper()
+	version, err := embeddedengine.Version()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return version
 }
