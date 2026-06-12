@@ -145,6 +145,22 @@ is not worth shipping. **Consequences:**
 enforces the convention on user-authored books; the sibling `arbiter-playbooks/` directory is
 a mirror of the embedded openings, no longer the delivery channel.
 
+## ADR-0013 — Retire the in-tree cipher-2 reference; the recorded corpus is the pin (2026-06-12, accepted)
+Owner verdict: the full cipher-2 tree does not belong inside arbiter when a recorded corpus
+achieves the same integrity goal. `import/cipher-2` (3.1 MB, commit "import: cipher-2 @main")
+and the live A/B test (`test_facts_conformance.py`) are deleted. Before deletion the corpus
+generator was flipped to record from the engine and PROVEN to reproduce the cipher-2-recorded
+corpus byte-for-byte; `test_facts_conformance_corpus.py` remains the permanent byte-pin of the
+frozen `search`/`detail` surface, and existing corpus lines are immutable. Two facts recorded
+for future work: (1) the engine's `search`/`detail` are still STUBS (empty-corpus behavior
+only) — the cipher-2 query/storage/extractor absorption (M4) is pending, and its source is
+recoverable from this repo's import commit or the frozen upstream cipher-2 repo; (2) when
+populated-snapshot behavior lands, new corpus scenarios must be cross-checked against upstream
+cipher-2 OUT-OF-TREE before their recorded lines become the pin — the conformance discipline
+survives the in-tree copy. **Consequences:** `import/` is gone; the corpus replay test and the
+golden transcripts are the drift defenses; M4 work re-imports from upstream, not from a stale
+in-tree copy.
+
 ---
 
 *Template for new entries:*

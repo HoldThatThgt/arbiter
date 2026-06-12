@@ -67,8 +67,10 @@ Typed AST evidence only — no string-pattern symbol inference; explicit failure
 graph projection / concepts / git facts); ctypes runtime libclang loading stays.
 
 ## Tests
-cipher's 74 test files green unmodified (M4 exit); transcript byte-equality on the conformance
-corpus vs cipher-2 responses; extract-cache key property tests (profile switch → 0 re-extracts;
+cipher's 74 test files green unmodified (M4 exit, ported with the absorption); the recorded
+facts-conformance corpus (ADR-0013) replayed byte-exact against the engine — the in-tree
+cipher-2 reference is retired, and new corpus scenarios are cross-checked against upstream
+cipher-2 out-of-tree before their lines become the pin; extract-cache key property tests (profile switch → 0 re-extracts;
 `-DWITH_X` flip → exactly the closure cone; key_flags opt-in restores sensitivity); single-writer
 enforcement (executor engine attempting reconcile → typed refusal).
 
