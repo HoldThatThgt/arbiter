@@ -47,15 +47,18 @@ failure: write-ratio-test
 
 [STEP] optimize
 [StepJob]
-Dispatch the arbiter-debugger — it OBSERVES where the time goes. Reach for perf.scan_c to
-rank suspect sites, perf.explain_finding to vet one before touching it, and — only when
-choosing between candidate changes — perf.measure_command (argv arrays, repeat ≥ 5, a
-second baseline for the noise band) to see which is worth trying. When a hotspot emerges,
-ground it: search {callers:<fn>} / {reachable:<entry>-><fn>} confirms the path is actually
-reached, so you don't optimize dead code. These tools only point at WHERE and WHICH to
-try — keeping or reverting a change is decided by ONE thing: whether the frozen ratio test
-moves toward green (the debugger agent's one rule). Stop measuring once you have a change
-to make; without perf-mcp, read the hot path, apply the obvious win, and go.
+Dispatch the arbiter-debugger — it OBSERVES where the time goes, it does not read the hot
+file by eye and guess. "Where does the time go?" is a perf-mcp question, so when perf-mcp is
+wired that is the FIRST move, not a top-to-bottom read: perf.scan_c to rank suspect sites,
+perf.explain_finding to vet one before touching it, and — only when choosing between
+candidate changes — perf.measure_command (argv arrays, repeat ≥ 5, a second baseline for the
+noise band) to see which is worth trying. When a hotspot emerges, ground it: search
+{callers:<fn>} / {reachable:<entry>-><fn>} confirms the path is actually reached, so you
+don't optimize dead code; THEN read that one localized site to understand it before changing
+it. These tools only point at WHERE and WHICH to try — keeping or reverting a change is
+decided by ONE thing: whether the frozen ratio test moves toward green (the debugger agent's
+one rule). Stop measuring once you have a change to make. Falling back to reading the hot
+path by eye is only for when perf-mcp is not wired — not a shortcut to skip the scan.
 
 Change PRODUCT code only — the ratio test is frozen and re-hashed before the verdict, so
 the fix can come from nowhere else — one bounded change per round. A change that doesn't
