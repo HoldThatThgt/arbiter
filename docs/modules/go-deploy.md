@@ -7,7 +7,7 @@ checkouts via `arbiter adopt`. Inherits chess deploy's idempotent structured-mer
 the rest is rewritten.
 
 ## Public surface
-`arbiter init [--openings] [--no-executor] [--remove] [--embedded-engine]`, `arbiter adopt`.
+`arbiter init [--no-executor] [--remove] [--embedded-engine]`, `arbiter adopt`.
 
 ## `arbiter init` — wiring only, seconds, never builds or indexes
 Writes/merges, all idempotent and atomic (temp+rename), merge-preserving for foreign content:
@@ -15,8 +15,9 @@ Writes/merges, all idempotent and atomic (temp+rename), merge-preserving for for
   `arbiter-engine` package, verify version handshake, record `{python, engine_version,
   verified_at}`. Typed staleness errors surface in `arbiter status` (ADR-0007).
 - Seat key: `.arbiter/match/seat.key`, 0600, gitignored.
-- Agents: `.claude/agents/arbiter-curator.md`, `arbiter-executor.md` — generated, key-injected,
-  0600, gitignored. Executor agent creation is automated (was the worst manual step).
+- Agents: `.claude/agents/arbiter-{curator,executor,implementer,test-author}.md` — generated,
+  key-injected, 0600, gitignored (the `arbiter-debugger` companion variant is written below).
+  Executor-seat agent creation is automated (was the worst manual step).
 - Engine resolution (ADR-0011, automatic ladder): (1) an installed `arbiter-engine` package for
   `python3` — probed with a PYTHONPATH-scrubbed env so a dev shell can't fake "installed" —
   else (2) materialize the go:embed engine into `.arbiter/engine/` (digest-keyed idempotent

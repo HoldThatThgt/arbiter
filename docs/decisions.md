@@ -141,9 +141,10 @@ submit (shell with explicit exit-code polarity, or mcp + `expect` clauses), and 
 machine checks inside predicates (`git diff --quiet` untouchability, 5x determinism loops,
 noise-band-beating measured gain), never prose. A playbook that does not wire the referee in
 is not worth shipping. **Consequences:**
-`TestEmbeddedOpeningsParseAndFollowConvention` is the permanent lint; `/playbook-create`
-enforces the convention on user-authored books; the sibling `arbiter-playbooks/` directory is
-a mirror of the embedded openings, no longer the delivery channel.
+`TestStarterOpeningsFollowConventionAndRefreshOnInit` and `TestOpeningTemplateLint` are the
+permanent lints; `/playbook-create` enforces the convention on user-authored books; the sibling
+`arbiter-playbooks/` directory is a mirror of the embedded openings, no longer the delivery
+channel.
 
 ## ADR-0013 — Retire the in-tree cipher-2 reference; the recorded corpus is the pin (2026-06-12, accepted)
 Owner verdict: the full cipher-2 tree does not belong inside arbiter when a recorded corpus
@@ -197,6 +198,32 @@ every other generated entry. **Consequences:** the user-typed shell and editors 
 the guard cannot see; tool descriptions and error messages across the seat surface were
 rewritten in the same change to carry next-action guidance — the deny reasons are part of
 that same teaching contract.
+
+## ADR-0016 — `[Checkpoint]` step type: a human-confirmation gate (2026-06-15, proposed)
+*Records a spec change already shipped (PR #105); awaiting owner signature.* A `[Checkpoint]`
+step pauses the match for an explicit human pass/fail instead of dispatching executor work: the
+player relays the step's question to the user (AskUserQuestion) and submits the result via the
+player-seat tool `SubmitCheckpoint{decision:"pass"|"fail"}`. Pass advances the round, fail loops
+the step, and the model cannot self-approve. A step carries tasks or a checkpoint, never both
+(parser-enforced). **Consequences:** playbook tokens `[Checkpoint]`; player gains
+`SubmitCheckpoint`; FORMAT.md and user-guide §5 document the gate.
+
+## ADR-0017 — Result integrity: curated & step-bound predicates, frozen tests, subagent-stop gate (2026-06-15, proposed)
+*Records a spec change already shipped (PRs #106–#109); awaiting owner signature.* To remove the
+submitter's ability to choose its own verdict, verifications live in the playbook trust domain.
+`[Verify] <name>` predicates are snapshotted into match state at load; `[Submit] <name>` binds a
+step to one (the executor must finish with `{verify:"<name>"}`), and `verify_policy: named`
+forces every verdict through a curated predicate while the default `open` still permits inline
+specs. `allow_overrides:["tests","options"]` opens only those fields of a curated `run` spec.
+`RegisterTest{paths}` (executor) freezes test-source digests into match state; the async run
+worker re-hashes the frozen sources at compile time and rejects a run whose compiled test bytes
+drifted — closing the "pass round → weaken the frozen test → restore before poll" race a Go-side
+content hash cannot see. `arbiter hook subagent-stop` adjudicates an executor subagent's
+submission as a fail-open gate, and a build/harness failure or a zero-test run is `errored`,
+never a passing verdict. **Consequences:** playbook token `[Submit]` + `allow_overrides`;
+executor gains `RegisterTest`; match state carries `frozen_tests`, run payloads carry
+`frozen_digests`; specialized executors (implementer, test-author) split write from execute so
+the test-author authors tests without inheriting the player's framing.
 
 ---
 

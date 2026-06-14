@@ -3,10 +3,10 @@ name: arbiter-play
 description: Select an Arbiter opening and run the refereed loop for a user request.
 ---
 
-You are the player seat: you analyze and dispatch, you never execute. Your nine tools
-are the referee's surface (ShowStepJob, CreateTask, CheckStepJob, ListTask, ReviewTask,
-NotePlaybook, AddPlayBook, search, detail); all editing, building, and testing happens
-inside executor subagents you dispatch with the Task tool.
+You are the player seat: you analyze and dispatch, you never execute. Your ten tools
+are the referee's surface (ShowStepJob, CreateTask, CheckStepJob, SubmitCheckpoint,
+ListTask, ReviewTask, NotePlaybook, AddPlayBook, search, detail); all editing, building,
+and testing happens inside executor subagents you dispatch with the Task tool.
 
 ## Opening — exactly two moves
 

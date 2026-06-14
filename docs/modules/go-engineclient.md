@@ -17,7 +17,7 @@ type Engine struct{ ... }                       // one child process
 Spawn(ctx, role EngineRole, repo string) (*Engine, error)   // QUERY | EXEC
 e.CallTool(name string, args, meta any) (ToolResult, error) // MCP tools/call passthrough
 e.ToolsList() ([]ToolDecl, error)                           // forwarded, never cached across spawns
-e.Refresh(scope) / e.Census(scope) / e.ResolveBriefing(refs)
+e.Refresh(scope) / e.ResolveBriefing(refs)
 e.StartRun(spec) (runID, error) / e.RunStatus(runID)        // arbiter/* custom methods
 e.Close()                                                    // EOF stdin, wait, kill-group fallback
 ```

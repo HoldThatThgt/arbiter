@@ -19,13 +19,13 @@ root makes curator-loaded matches invisible to the player whenever the host spaw
 contexts with different cwds.
 
 ## Seat → tool registration
-- **player (9):** ShowStepJob, CreateTask, CheckStepJob, ListTask, ReviewTask, NotePlaybook,
-  AddPlayBook, + proxied `search`, `detail`.
+- **player (10):** ShowStepJob, CreateTask, CheckStepJob, SubmitCheckpoint, ListTask, ReviewTask,
+  NotePlaybook, AddPlayBook, + proxied `search`, `detail`.
 - **curator (4):** ReadPlayBook, LoadPlayBook, ListTask, ReviewTask.
-- **executor (7 base + 3 gated):** SubmitTask, ListTask, ReviewTask, `search`, `detail`, `run`,
-  `recipe_search` (renamed from crun's `search` — the only name collision in the bundle);
-  gated: `register`, `import_recipes`, `scan` — registered ONLY when the loaded playbook declares
-  `capabilities:[recipes]`.
+- **executor (8 base + 3 gated):** SubmitTask, RegisterTest, ListTask, ReviewTask, `search`,
+  `detail`, `run`, `recipe_search` (renamed from crun's `search` — the only name collision in the
+  bundle); gated: `register`, `import_recipes`, `scan` — registered ONLY when the loaded playbook
+  declares `capabilities:[recipes]`.
 - Capability-gating edge semantics are **fail-closed**: executor seat with no active match at
   birth registers NO gated tools; every gated call re-checks under flock that the granting match
   is still current, else `capability_revoked`.

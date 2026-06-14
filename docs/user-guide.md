@@ -148,19 +148,23 @@ profiles:
     cflags_append: [-fsanitize=address]
 targets:
   - id: unit
-    harness: gtest
+    harness:
+      kind: gtest
     sources: ["src/**/*.c", "include/**/*.h"]
-    stages:
-      src_compile:
-        cmd: make -j
-      test_run:
-        cmd: ./build/unit_tests
-        timeout_s: 600
+    src_compile:
+      cmd: [make, -j]
+    test_run:
+      cmd: [./build/unit_tests]
+      timeout_s: 600
 ```
 
 Rules worth knowing:
 
 - Target ids are path-safe identifiers (`[A-Za-z0-9._-]`, no leading dot).
+- Each target lists its stages **directly** as `src_compile` / `test_compile` /
+  `test_run` keys (there is no `stages:` wrapper), and `harness` is a mapping
+  (`harness:` then `kind: gtest`), not a bare scalar. A stage's `cmd` is an argv
+  list run without a shell — write `[make, -j]`, not `make -j`.
 - Compile stages run with `CC`/`CXX` wrapped by `arbiter cc` automatically —
   that is how the facts index gets built as a side effect of your build.
 - The gtest harness injects `--gtest_output` XML and parses **only** the result
@@ -212,6 +216,14 @@ failure: diagnose
   predicate; the default `open` also allows inline specs.
 - **`[SetGoal]`** declares the checkmate predicate, inline or as
   `verify: <name>`.
+- **`[Submit] <name>`** inside a `[STEP]` binds that step to a curated `[Verify]`
+  predicate: the executor must finish the dispatched task with exactly
+  `{"verify": "<name>"}` and cannot weaken or substitute it. A step carries either
+  tasks or a `[Checkpoint]`, never both.
+- **`[Checkpoint]`** is a human-confirmation gate: instead of dispatching work, the
+  player puts the step's question to *you* and relays your pass/fail decision via the
+  `SubmitCheckpoint` tool (pass advances the round, fail loops the step). The model
+  cannot self-approve a checkpoint.
 - Comments: a line starting with `#` inside `[SetGoal]`/`[Verify]` is a comment.
   Inline `#` comments are not supported and fail loudly where the field grammar
   excludes them; `shell:` values run verbatim to end of line.
@@ -229,6 +241,11 @@ kebab-case, ≤3 segments; descriptions lead "Use when …" and cross-point
 | `hunt-latent-bugs` | find defects nobody pinned down | symptom-test polarity: the test passes iff the bug exists, so `build && run` exit 0 is a machine proof |
 | `build-feature` | new functionality, scenario-first | `build && ! run` proves tests red for the right reason; test untouchability rides every later predicate |
 | `fix-slow-path` | something is measurably slow | expect-clause measurements; two baselines define the noise band; a gain must beat the band or the change reverts |
+
+The `build-feature` and `hunt-latent-bugs` mechanisms rely on **test untouchability**:
+the test-author executor calls `RegisterTest {"paths": [...]}` to freeze the test
+file(s), and every later run predicate re-hashes them at worker time — a "fix" that
+secretly weakens the frozen test is rejected, not rewarded.
 
 Alongside them ship the design-canonical intro openings: **freeplay** (open
 predicates, general work), **gold-digger** (prove the repro fails → fix →
@@ -278,7 +295,12 @@ arbiter binary itself is rejected (`reserved_server`) — the referee cannot be
 asked to interrogate itself; the bundled diagnostic servers run via the engine
 interpreter, so they are valid targets.
 
-Empty expects fail closed: a predicate with no clauses can never pass.
+Empty expects fail closed: a `run`, `fact`, or `mcp` predicate whose `expect` is
+present but empty can never pass. The one exception is an `mcp` predicate that omits
+`expect` entirely — with no fields to compare it passes whenever the call returns
+without `isError` (the legacy "did it run cleanly" check). Give every `mcp` predicate
+an `expect` clause whenever the verdict should depend on a field, not just on the call
+succeeding.
 
 ## 7. Facts: the build-driven index
 
@@ -358,11 +380,16 @@ fix-slow-path opening insists on a measured baseline and a measured gain.
 ```yaml
 facts:
   index_on_build:
-    pool: 4            # extraction worker cap during the build tail
+    pool: 4            # cap extraction workers during the build tail (unset ⇒ CPU-derived)
     key_flags: []      # extra compile flags that should key the facts cache
 match:
   goal_memo: false     # memoize goal passes per workspace digest (default off)
 ```
+
+`facts.extractor` and `facts.incremental` are also accepted (and written by
+`arbiter adopt` when migrating a cipher-2 deployment), but are currently **reserved**:
+they parse and validate, yet no runtime behavior keys off them. The `runs:` and
+`engine:` sections must be empty when present — any sub-key is rejected as unknown.
 
 Environment variables:
 
@@ -370,6 +397,11 @@ Environment variables:
 |---|---|
 | `ARBITER_ENGINE_PYTHON` | interpreter used for the engine (then `PYTHON`, then `python3`) |
 | `ARBITER_ENGINE_CALL_TIMEOUT_S` | engine call deadline when the caller has none (default 600) |
+| `ARBITER_ASSUME_FS` | override the filesystem-kind probe at `arbiter init` (e.g. force `local` when the network-mount heuristic misfires and refuses a deploy) |
+
+The remaining `ARBITER_*` variables (seat key, build id, engine role) are wiring that
+`arbiter init` injects into the seat/companion entries — they are managed for you, not
+user-set.
 
 ## 10. CLI reference
 
@@ -378,16 +410,20 @@ arbiter init [--no-executor] [--remove] [--embedded-engine]
 arbiter adopt
 arbiter status [--json]
 arbiter report [--json] [match_id]
-arbiter serve player|curator|executor
-arbiter hook stop
+arbiter serve player|curator|executor [--root DIR]
+arbiter hook stop|guard|subagent-stop [--root DIR]
 arbiter cc [--root DIR] -- <real-compiler> [args...]
 ```
 
 `serve` speaks MCP over stdio and exits on EOF — it is always spawned by Claude
-Code via `.mcp.json`, never run as a daemon. `cc` is fail-open: it never breaks
-a build, even when journaling fails (the miss is recorded and facts publication
-is withheld instead). `hook stop` is the only other component allowed to fail
-open.
+Code via `.mcp.json`, never run as a daemon. The three `hook` subcommands are all
+wired by `arbiter init` (each with an absolute `--root`, ADR-0014) and all fail open
+so a broken referee never traps your session: `stop` is the Stop-hook checkmate gate,
+`guard` is the PreToolUse path fence over playbook/match/engine/agent files
+(ADR-0015), and `subagent-stop` adjudicates an executor subagent's submission. `cc`
+is likewise fail-open: it never breaks a build, even when journaling fails (the miss
+is recorded and facts publication is withheld instead). Every spawned entry carries an
+explicit `--root`; cwd is only a hand-run fallback.
 
 ## 11. Runtime layout
 

@@ -6,20 +6,24 @@ description: Bootstrap Arbiter in this repository through an adjudicated match.
 Run an adjudicated bootstrap match. Do not silently edit committed config based on judgment;
 every durable change is proven or reported as a checklist item.
 
-You operate as the player seat throughout: load openings via the arbiter-curator
-subagent (Task tool), create work as referee tasks (CreateTask), dispatch them to
-executor subagents (`arbiter-executor` for probing and recipe work — `register` and
-`import_recipes` are its capability-gated tools, live only while a
-capabilities:[recipes] opening is loaded), and accept outcomes only as SubmitTask
-verdicts. Nothing in this bootstrap is "done" because you observed it; it is done
-when a typed predicate said so.
+You operate as the player seat throughout — you analyze and dispatch, you never execute.
+Load openings via the arbiter-curator subagent (Task tool); then, for each step the opening
+presents, run the same refereed loop the play skill uses:
+**ShowStepJob** (read the step's job, checklist, and any bound `submit` predicate) →
+**CreateTask** (define one self-contained unit of work) → dispatch an **arbiter-executor**
+subagent with the Task tool (it does the probing and recipe work — `register`,
+`import_recipes`, and `scan` are its capability-gated tools, live only while a
+`capabilities:[recipes]` opening is loaded) → **CheckStepJob** (the referee adjudicates and
+advances the round). Accept outcomes only as SubmitTask verdicts: nothing in this bootstrap is
+"done" because you observed it; it is done when a typed predicate said so.
 
 ## Bootstrap
 
 1. probe the build system: identify make, cmake, or custom entry points; locate the compiler,
    gtest binary, build directory, and the repo's primary suite target.
-2. Load the `recipe-derivation` opening with arbiter-curator. If it is not installed yet, use
-   freeplay only to derive the first recipe, then install the base openings.
+2. Load the `recipe-derivation` opening with arbiter-curator (it ships with `arbiter init`,
+   write-if-missing). If the curator reports it missing, the deployment is stale — tell the
+   user to re-run `arbiter init`, then stop.
 3. Derive candidate recipes in `.arbiter/recipes.yaml`. Each candidate must prove itself before
    it is treated as committed knowledge: call `register`, then create a referee task with
    `run: <candidate>`, representative `tests`, and
@@ -34,8 +38,9 @@ when a typed predicate said so.
    to confirm because facts relevance is a semantic choice.
 6. Run the first gear-up task through the proven `src_compile` recipe with the selected profile.
    The predicate is `{"overall":"passed","facts":{"published":true}}`.
-7. Ensure the base openings exist: `freeplay`, `gold-digger`, `recipe-derivation`, and
-   `regression-triage`.
+7. Confirm the base openings are present — `freeplay`, `gold-digger`, `recipe-derivation`,
+   and `regression-triage` are delivered by `arbiter init` (write-if-missing); ask the curator
+   to list them and, if any are missing, have the user re-run `arbiter init`.
 
 ## Checkmate
 

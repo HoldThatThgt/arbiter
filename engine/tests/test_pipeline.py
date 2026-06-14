@@ -228,6 +228,17 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(pipeline.pool_width(16, compiler_active=False), 16)
         self.assertEqual(pipeline.pool_width(3, compiler_active=True), 1)
 
+    def test_pool_width_honors_config_cap(self):
+        # facts.index_on_build.pool caps the build-tail extraction width.
+        self.assertEqual(pipeline.pool_width(16, compiler_active=False, cap=4), 4)
+        # A cap above the computed width is a no-op.
+        self.assertEqual(pipeline.pool_width(2, compiler_active=False, cap=8), 2)
+        # None / non-positive caps are ignored (default behavior preserved).
+        self.assertEqual(pipeline.pool_width(8, compiler_active=False, cap=None), 8)
+        self.assertEqual(pipeline.pool_width(8, compiler_active=False, cap=0), 8)
+        # The cap never drives the width below 1.
+        self.assertEqual(pipeline.pool_width(8, compiler_active=False, cap=1), 1)
+
     def write_journal(self, path, *entries):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(

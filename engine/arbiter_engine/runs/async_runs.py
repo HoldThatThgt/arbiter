@@ -15,6 +15,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Mapping
 
+from arbiter_engine import config
 from arbiter_engine.errors import RPCError
 from arbiter_engine.runs import gtest
 from arbiter_engine.runs import recipes
@@ -263,6 +264,16 @@ def _run_payload(path: Path, run_id: str, spec: Mapping[str, Any]) -> Mapping[st
     return dict(spec["result"])
 
 
+def _facts_config(repo: Path) -> config.FactsConfig:
+    """Load the repo's committed facts config so index_on_build.{key_flags,pool}
+    take effect during build-tail extraction. Missing or malformed config falls
+    back to defaults — a run must never fail on config alone."""
+    try:
+        return config.load_config(repo / ".arbiter" / "config.yml").facts
+    except (OSError, ValueError):
+        return config.FactsConfig()
+
+
 def _run_recipe(path: Path, run_id: str, spec: Mapping[str, Any]) -> Mapping[str, Any]:
     repo = _repo_from_db(path)
     book = recipes.load(repo / ".arbiter" / "recipes.yaml")
@@ -279,6 +290,7 @@ def _run_recipe(path: Path, run_id: str, spec: Mapping[str, Any]) -> Mapping[str
     # restored disk) structurally cannot observe. The worker runs the digest-verified
     # embedded engine, so an in-match player cannot tamper with this hashing itself.
     frozen_digests = _hash_frozen(repo, spec.get("frozen", []))
+    facts_cfg = _facts_config(repo)
     result = gtest.run_target(
         repo,
         book,
@@ -286,6 +298,8 @@ def _run_recipe(path: Path, run_id: str, spec: Mapping[str, Any]) -> Mapping[str
         run_id=run_id,
         tests=spec.get("tests", []),
         profiles=profiles,
+        facts_key_flags=facts_cfg.index_on_build.key_flags,
+        facts_pool=facts_cfg.index_on_build.pool,
     )
     payload = result.to_json()
     payload["isError"] = False

@@ -8,7 +8,7 @@ Identity / Inherits / Public surface / Design / Invariants / Tests / Done.
 
 | Doc | Module | One line |
 |---|---|---|
-| [go-referee.md](go-referee.md) | `internal/{match,verify,playbook,journal}` | the deterministic referee: state machine, typed predicate evaluation, journal |
+| [go-referee.md](go-referee.md) | `internal/{match,verify,playbook,journal,guard}` | the deterministic referee: state machine, typed predicate evaluation, journal, PreToolUse path fence |
 | [go-seat.md](go-seat.md) | `internal/seat` | per-seat MCP servers, constructive RBAC, engine-child lifecycle |
 | [go-engineclient.md](go-engineclient.md) | `internal/engineclient` | minimal JSON-RPC stdio client + golden-transcript contract tests |
 | [go-interpose.md](go-interpose.md) | `internal/interpose` (`arbiter cc`) | per-TU compiler shim: journal, enqueue, exec-through |

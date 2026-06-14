@@ -96,7 +96,7 @@ arbiter adopt                 # migrate a legacy chess/crun/cipher deployment
 arbiter status [--json]       # compose-on-read deployment & match status
 arbiter report [--json] [id]  # journal + run evidence for a match
 arbiter serve <seat>          # player | curator | executor MCP server (stdio)
-arbiter hook stop             # Claude Code Stop-hook gate
+arbiter hook stop|guard|subagent-stop  # Claude Code hook gates (Stop / PreToolUse / subagent)
 arbiter cc -- <compiler> ...  # compile interposer (installed automatically)
 ```
 

@@ -129,14 +129,14 @@ The facts store has no standalone lifecycle: no `cipher2 init`, no user-facing i
   .claude/settings.json            # deny: Read(.arbiter/playbook/**), Read(.arbiter/match/**),
                                    #       Read(.claude/agents/arbiter-*.md);
                                    # Stop hook claimed by EXACT command match
-  .claude/agents/arbiter-curator.md / arbiter-executor.md   # init-written, key-injected, 0600, gitignored
+  .claude/agents/arbiter-{curator,executor,implementer,test-author,debugger}.md  # init-written, key-injected, 0600, gitignored
   .claude/skills/arbiter-play/  arbiter-intro/  playbook-create/    # the three user-facing verbs
   .arbiter/
     config.yml                     # COMMITTED. strict YAML-subset. sections:
                                    #   facts:{extractor, incremental, index_on_build:{pool, key_flags}}
                                    #   runs:{harness defaults}
                                    #   match:{goal_memo: false}        engine:{}
-    playbook/*.md                  # COMMITTED — steps, [CheckList], [Branch], [Gotcha], [Verify], [SetGoal]
+    playbook/*.md                  # COMMITTED — steps, [CheckList], [Branch], [Gotcha], [Verify], [SetGoal], [Submit], [Checkpoint]
     recipes.yaml                   # COMMITTED — RecipeBook v2:
                                    #   vars,
                                    #   profiles:{debug,asan,coverage,…: flag/env overlays on compile stages},
@@ -174,9 +174,9 @@ The three stores **coexist as subtrees** with their own lifecycles (facts: conte
 ### CLI (`arbiter`, Go)
 | Command | Who | Purpose |
 |---|---|---|
-| `arbiter init [--openings] [--no-executor] [--remove]` | user | the one shell-side init: engine resolution → engines.json, seat key, agents (curator **and** executor, key-injected), skills, structured merges of .mcp.json/settings/.gitignore; idempotent, non-interactive, **seconds — never builds or indexes** |
+| `arbiter init [--no-executor] [--remove] [--embedded-engine]` | user | the one shell-side init: engine resolution → engines.json, seat key, agents (curator, executor, implementer, test-author, debugger; key-injected), skills, structured merges of .mcp.json/settings/.gitignore; idempotent, non-interactive, **seconds — never builds or indexes** |
 | `arbiter adopt` | user | migrate `.chess/.cipher/.crun-mcp` committed knowledge into `.arbiter/`; deletes/regenerates derived state; emits a **manual checklist** of files containing legacy whole-token tool names (no automated prose rewriting — constitution forbids it) |
-| `arbiter index [--rebuild] [--compile-database P]` | CI/recovery only | headless batch extraction for CI bots and disaster recovery; **not part of the interactive path** — gear-up builds own indexing |
+| `arbiter index [--rebuild] [--compile-database P]` | CI/recovery only | **planned — not yet a CLI subcommand**; headless batch extraction for CI bots and disaster recovery; **not part of the interactive path** — gear-up builds own indexing |
 | `arbiter status [--json]` | user | compose-on-read aggregation: match (from status.json) + facts + runs (queried from engine) |
 | `arbiter report [match_id]` | user | post-match digest joining journal + run rows |
 | `arbiter serve <player\|curator\|executor>` / `arbiter hook stop` | host | seats and the fail-open Stop gate |
@@ -195,13 +195,13 @@ Beyond these four verbs the session is stock Claude Code — no recipe ceremony,
 
 ### MCP tools by seat (constructive RBAC: unregistered = nonexistent)
 
-**player** (.mcp.json, session-resident, no credential) — 9 tools:
-`ShowStepJob`, `CreateTask{request, fact_refs?≤8, verify?}`, `CheckStepJob`, `ListTask`, `ReviewTask` (now incl. briefing, evidence, expect_report), `NotePlaybook`, `AddPlayBook`, plus proxied **`search`**, **`detail`** (cipher's exact two tools — the frozen surface, unchanged names/schemas; gold-digger already mandates fact-first hunting by the player).
+**player** (.mcp.json, session-resident, no credential) — 10 tools:
+`ShowStepJob`, `CreateTask{request, fact_refs?≤8}`, `CheckStepJob`, `SubmitCheckpoint{decision}`, `ListTask`, `ReviewTask` (now incl. briefing, evidence, expect_report), `NotePlaybook`, `AddPlayBook`, plus proxied **`search`**, **`detail`** (cipher's exact two tools — the frozen surface, unchanged names/schemas; gold-digger already mandates fact-first hunting by the player).
 
 **curator** (inline frontmatter, `ARBITER_SEAT_KEY`) — 4 tools: `ReadPlayBook`, `LoadPlayBook`, `ListTask`, `ReviewTask`.
 
-**executor** (inline frontmatter, credential) — 7 base + 3 gated:
-`SubmitTask{task_id, summary≤1024B, report, result:ResultSpec}`, `ListTask`, `ReviewTask`, `search`, `detail`, `run{tests, options{harness_options.gtest.*, fail_fast, timeout_s, force_recompile}}`, `recipe_search{query}` (renamed from crun `search` — the only name collision); **`register`/`import_recipes`/`scan`** registered only when the loaded playbook declares `capabilities:[recipes]`. Edge semantics fail-closed: no active match at seat birth ⇒ gated tools not registered; every gated call re-checks under flock that the granting match is still current, else `capability_revoked`.
+**executor** (inline frontmatter, credential) — 8 base + 3 gated:
+`SubmitTask{task_id, summary≤1024B, report, result:ResultSpec}`, `RegisterTest{paths}`, `ListTask`, `ReviewTask`, `search`, `detail`, `run{tests, options{harness_options.gtest.{fail_fast,timeout_s}}}`, `recipe_search{query}` (renamed from crun `search` — the only name collision); **`register`/`import_recipes`/`scan`** registered only when the loaded playbook declares `capabilities:[recipes]`. Edge semantics fail-closed: no active match at seat birth ⇒ gated tools not registered; every gated call re-checks under flock that the granting match is still current, else `capability_revoked`.
 
 **Companion diagnostics (ADR-0010, bundled, not seats):** `gdb-mcp` and `perf-mcp` ship inside `arbiter-engine` as `arbiter_engine.gdbmcp`/`arbiter_engine.perfmcp` — delivering arbiter delivers them. They remain FOREIGN stdio servers in the ADR-0006 sense: `.mcp.json` launches them via the resolved engine interpreter (`python3 -m …`), never via the arbiter binary, so the deny-self guard is never in play. `arbiter init` probes the engine, add-if-missing merges the two entries, and writes the `arbiter-debugger` executor-agent variant wired with them. Executors use their tools for crash/perf evidence; adjudication consumes their `structuredContent` only through mcp-kind `expect[]` clauses. The seat RBAC boundary is untouched — companions are host-level capabilities like Bash, never arbiter tools.
 

@@ -81,6 +81,7 @@ def run_target(
     timeout_s: Optional[int] = None,
     facts_extractor: Optional[pipeline.Extractor] = None,
     facts_key_flags: Sequence[str] = (),
+    facts_pool: Optional[int] = None,
 ) -> RunResult:
     root = Path(repo_root)
     arbiter_bin = runner.resolve_arbiter_bin(arbiter_bin)
@@ -109,6 +110,7 @@ def run_target(
         arbiter_bin=arbiter_bin,
         facts_extractor=facts_extractor,
         facts_key_flags=facts_key_flags,
+        facts_pool=facts_pool,
     )
     if facts.get("compile_failed"):
         return RunResult(
@@ -321,6 +323,7 @@ def _run_compile_stages(
     arbiter_bin: str,
     facts_extractor: Optional[pipeline.Extractor],
     facts_key_flags: Sequence[str],
+    facts_pool: Optional[int],
 ) -> dict[str, object]:
     facts: Optional[Mapping[str, object]] = None
     for stage_name in ("src_compile", "test_compile"):
@@ -336,6 +339,7 @@ def _run_compile_stages(
                 build_succeeded=result.exit_code == 0,
                 facts_extractor=facts_extractor,
                 facts_key_flags=facts_key_flags,
+                facts_pool=facts_pool,
             )
         if result.exit_code != 0:
             return {
@@ -356,6 +360,7 @@ def _publish_compile_facts(
     build_succeeded: bool,
     facts_extractor: Optional[pipeline.Extractor],
     facts_key_flags: Sequence[str],
+    facts_pool: Optional[int],
 ) -> Optional[Mapping[str, object]]:
     if book.compile_db is None:
         return None
@@ -377,6 +382,7 @@ def _publish_compile_facts(
         build_succeeded=build_succeeded,
         extractor=facts_extractor,
         key_flags=facts_key_flags,
+        pool=facts_pool,
     )
     return result.to_json()
 

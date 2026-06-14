@@ -53,6 +53,7 @@ def publish_after_build(
     *,
     extractor: Optional[Extractor] = None,
     key_flags: Iterable[str] = (),
+    pool: Optional[int] = None,
     build_succeeded: bool = True,
     lock_timeout_s: float = 30.0,
     cpu_count: Callable[[], Optional[int]] = os.cpu_count,
@@ -93,7 +94,7 @@ def publish_after_build(
     extracted, warnings = _extract_pending(
         pending,
         extractor or _default_extractor,
-        max_workers=pool_width(cpu_count() or 1, compiler_active=False),
+        max_workers=pool_width(cpu_count() or 1, compiler_active=False, cap=pool),
         key_flags=tuple(key_flags),
     )
     extract_ms = _elapsed_ms(extract_start, monotonic)
@@ -121,11 +122,12 @@ def publish_after_build(
     )
 
 
-def pool_width(cpu_total: int, *, compiler_active: bool) -> int:
+def pool_width(cpu_total: int, *, compiler_active: bool, cap: Optional[int] = None) -> int:
     cpu_total = max(1, int(cpu_total))
-    if compiler_active:
-        return max(1, cpu_total // 4)
-    return cpu_total
+    width = max(1, cpu_total // 4) if compiler_active else cpu_total
+    if cap is not None and cap > 0:
+        width = min(width, cap)
+    return width
 
 
 def _read_records(journals: Sequence[Path | str]) -> list[Mapping[str, Any]]:
