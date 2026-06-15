@@ -510,11 +510,22 @@ def _facts_error_result(exc: "facts_query.FactQueryError") -> Mapping[str, Any]:
 
 def _search_text(structured: Mapping[str, Any]) -> str:
     snapshot = structured.get("base_snapshot_id") or "none"
-    return (
+    line = (
         f"snapshot {snapshot} view_state={structured.get('view_state')}: "
         f"search returned {structured.get('result_count')} fact results "
         f"for query kind {structured.get('query_kind')}"
     )
+    parts = [line]
+    # Append result ids + guidance message only when present, so the empty-result path
+    # (conformance corpus + empty-repo transcripts) stays byte-identical to the terse line.
+    results = structured.get("results") or []
+    ids = [r.get("object_id") for r in results if isinstance(r, Mapping) and r.get("object_id")]
+    if ids:
+        parts.append("results: " + ", ".join(ids))
+    message = structured.get("message")
+    if message:
+        parts.append(str(message))
+    return "\n".join(parts)
 
 
 def _detail_text(structured: Mapping[str, Any]) -> str:
