@@ -15,6 +15,13 @@ Identity / Inherits / Public surface / Design / Invariants / Tests / Done.
 | [go-deploy.md](go-deploy.md) | `internal/deploy` | `arbiter init` / `arbiter adopt`: the one deployment |
 | [go-cli.md](go-cli.md) | `cmd/arbiter` | subcommands, status composition, report |
 
+Two helper packages have no doc of their own — they are folded under the owners above:
+
+| Package | Folded under | Role |
+|---|---|---|
+| `internal/embeddedengine` | go-deploy.md (used by `internal/deploy` + `internal/engineclient`) | the `go:embed` engine unpacker / digest-verifier |
+| `internal/shared` | go-referee.md (used by `internal/match`) | the `LockSpec` lock inventory (match/snapshot/overlay/state/build ordering) |
+
 ## Python engine (`arbiter-engine`)
 
 | Doc | Module | One line |

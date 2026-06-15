@@ -12,7 +12,7 @@ Everything heavy lives in `internal/*`; this module stays thin.
 | `arbiter hook stop\|guard\|subagent-stop` | Claude Code hooks | go-referee + internal/guard (gate checks; fail-open) |
 | `arbiter cc -- …` | build systems via recipes | go-interpose |
 | `arbiter status [--json]` | user (spectating) | this module |
-| `arbiter report [match_id]` | user (spectating) | this module |
+| `arbiter report [--json] [match_id]` | user (spectating) | this module |
 | `arbiter index [--rebuild] [--compile-database P]` | CI/recovery (planned) | engine batch mode — **not yet wired as a Go subcommand** |
 
 ## Design
@@ -33,11 +33,14 @@ Everything heavy lives in `internal/*`; this module stays thin.
 
 ## Invariants
 No business logic in `cmd/`; every subcommand's output has a `--json` form with a frozen schema
-(documented in this file as they land); exit codes: 0 ok, 1 typed operational error, 2 usage.
+(documented in this file as they land); exit codes: the Go subcommand router exits 1 for every
+error — both typed operational errors and usage errors (`cmd/arbiter/main.go`). Exit 2 on usage is
+specific to the `arbiter cc` shim (`internal/interpose/cc.go`), not a router-wide contract.
 
 ## Tests
-CLI golden tests (args → exit code + stdout schema) with a fake engine; status composition with
-each subsystem absent/stale; report join correctness on a fixture journal+sqlite pair.
+Status composition with each subsystem absent/stale; report join correctness on a fixture
+journal+sqlite pair. *(Planned: CLI golden tests for cmd/arbiter — args → exit code + stdout
+schema — against a fake engine; not yet implemented.)*
 
 ## Done
 Skeleton in M1 (serve/hook), status/report in M7, cc in M6, index in M4.

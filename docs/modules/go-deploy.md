@@ -1,4 +1,4 @@
-# go-deploy — `internal/deploy`
+# go-deploy — `internal/deploy` (+ `internal/embeddedengine`, the `go:embed` engine unpacker)
 
 ## Identity
 The one deployment. Collapses the documented 5-step manual ritual (three inits, three
@@ -41,7 +41,11 @@ Writes/merges, all idempotent and atomic (temp+rename), merge-preserving for for
   dead entries (first-token basename `arbiter` + ` hook stop` suffix + the binary no longer
   exists on disk) — a live foreign hook is never hijacked.
 - `.gitignore`: `.arbiter/` derived-state entries.
-- `.arbiter/config.yml` + empty `playbook/`/`recipes.yaml` scaffolds with commented schema headers.
+- `.arbiter/config.yml` + `recipes.yaml` scaffolds with commented schema headers (write-if-missing,
+  user state). The `.arbiter/playbook/` directory is **not** empty: init refreshes `FORMAT.md` plus
+  the 8 deploy-owned starter openings (ADR-0012) to the latest shipped templates on every run, so an
+  upgraded binary re-seeds the newest playbooks; user-authored playbooks (names outside the starter
+  set) are never touched.
 - Filesystem probe: refuse network mounts with a typed error (flock/WAL need a local FS,
   ADR-0009). `--remove` reverses everything init wrote and nothing else.
 
