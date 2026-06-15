@@ -125,8 +125,12 @@ re-run init (digest change re-materializes); `.gitignore` gains `.arbiter/engine
 Owner verdict on the playbook library: names were pattern-chaos, content was generic prose a
 capable model could ignore, and nothing actually shipped. Three fixes, all binding:
 (1) **Delivery** — four starter openings are embedded in the binary and written by
-`arbiter init` into `.arbiter/match/playbook/` write-if-missing (user edits are sacred). This
-complements, not replaces, the M7 intro's repo-specific openings (gear-up, gold-digger,
+`arbiter init` into `.arbiter/playbook/`, **refreshed to the shipped template on every init** so a
+binary upgrade re-seeds the latest openings into existing repos; to customize, fork an opening to a
+new name — own-named books outside the shipped `baseOpenings` set are never touched. (Corrects this
+clause's original wording, "`.arbiter/match/playbook/` write-if-missing (user edits are sacred)":
+the path has no `match/` segment and shipped openings are refreshed, not preserved — see ADR-0019.)
+This complements, not replaces, the M7 intro's repo-specific openings (gear-up, gold-digger,
 recipe-derivation — those need facts/runs).
 (2) **Naming convention** (FORMAT.md, CI-linted) — a playbook name is the USER INTENT as an
 imperative phrase: verb-first, kebab-case, ≤3 segments, file stem == name; the description
