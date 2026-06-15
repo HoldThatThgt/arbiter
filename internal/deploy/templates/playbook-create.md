@@ -37,6 +37,11 @@ Every generated playbook must follow this contract:
   run/fact spec, or a curated `[Verify]` name. Encode laws as machine checks
   (test untouchability = `git diff --quiet -- <paths> && …`, determinism = a
   5x loop, measured gain = expect-clause measurements vs a recorded noise band).
+- Any checklist line that says "Submit X" in prose MUST be paired with a
+  `[Submit] X` binding line on the step (placed after `[CheckList]`, before
+  `[Branch]`), where `X` is a curated `[Verify]` name. An unbound prose
+  "Submit X" can be gamed by any trivially-true predicate (FORMAT.md:102-111);
+  the binding line forbids substituting a weaker or inline spec.
 - Checklists must be fact- or run-groundable; never ask a model to decide success.
 - Gotchas are one-line, step-scoped, append-only notes.
 
@@ -47,6 +52,7 @@ Use this scaffold and adapt only the names, descriptions, branches, predicates, 
 name: new-opening
 description: One sentence describing the request class this opening handles.
 max_steps: 32
+verify_policy: named
 ---
 
 [Verify] gear-up-published
@@ -70,6 +76,7 @@ Choose the profile and run src_compile before any source edits.
 [CheckList]
 - Submit gear-up-published with the selected profile
 - Record the published snapshot or typed publication failure
+[Submit] gear-up-published
 [Branch]
 success: work
 failure: gear-up
@@ -80,6 +87,7 @@ Do the smallest fact-informed implementation work for the request.
 [CheckList]
 - Submit primary-proof
 - Attach relevant fact_refs to executor tasks
+[Submit] primary-proof
 [Branch]
 success: END
 failure: gear-up
