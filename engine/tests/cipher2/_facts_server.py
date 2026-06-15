@@ -60,10 +60,15 @@ class _AttrView:
 
     def __getattr__(self, name):
         data = object.__getattribute__(self, "_data")
-        try:
+        if isinstance(data, dict) and name in data:
             return _wrap(data[name])
-        except (KeyError, TypeError):
+        if name.startswith("__") and name.endswith("__"):
             raise AttributeError(name)
+        # cipher-2 responses are dataclasses: list fields default to [], other optional
+        # fields to None. to_json() omits empties, so restore the dataclass default here.
+        if name in getattr(type(self), "_LIST_FIELDS", frozenset()):
+            return []
+        return None
 
     def __getitem__(self, key):
         return _wrap(self._data[key])
@@ -91,6 +96,10 @@ class _AttrView:
 
 class _SearchResponse(_AttrView):
     """structuredContent of a successful search call as an attribute/index view."""
+
+    _LIST_FIELDS = frozenset(
+        {"results", "anchor_candidates", "available_filters", "examples", "top_by_salience", "path"}
+    )
 
 
 class _DetailResponse(_AttrView):
