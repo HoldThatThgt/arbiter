@@ -45,7 +45,11 @@ corpus. Only the owner-signed deltas below are permitted; everything else is a r
 1. Paths: `.cipher/` → `.arbiter/facts/`; config → `config.yml facts:` section.
 2. Chassis: served by engine-core's multi-namespace loop; `_meta` handled outside tool schemas.
 3. Reconcile becomes lazy (first fact access, not spawn) and **writer-gated** (player-QUERY
-   only); overlay publish takes `overlay.lock`; poll thread + `overlay_ttl_seconds` deleted.
+   only); overlay publish takes `overlay.lock`. The poll thread and `overlay_ttl_seconds` are
+   **retained** as the owner-mandated **live background index** (ADR-0018), not deleted: the
+   session-resident daemon poll thread keeps the published overlay warm between reconciles, and
+   `overlay_ttl_seconds` is a live, validated overlay-GC knob (`0` = GC disabled) — revived from
+   cipher-2's never-started skeleton.
 4. Inventory hashing factored to `shared/census` (facts keeps a thin wrapper).
 5. cipher's CLI/init/`.mcp.json` writer dropped (go-deploy owns wiring; batch mode via core).
 
