@@ -32,18 +32,30 @@ openings, never runtime content.
    src_compile predicate with `facts:{published:true}`), and encourages `[Verify]` named
    predicates + a run-kind or fact-kind `[SetGoal]`.
 
-## Starter openings (ADR-0012; embedded in the binary, written by `arbiter init` write-if-missing)
+## Starter openings (ADR-0012; embedded in the binary, refreshed to the shipped version on every `arbiter init`)
+The shipped openings are **not** write-if-missing: every `arbiter init` re-writes them to the
+current shipped template (atomicWrite), so upgrading arbiter and re-running init delivers the new
+versions — to customize one, fork it to a new name via `AddPlayBook` (your own-named books are
+never touched by init).
 Repo-agnostic, referee-native, convention-linted in CI:
-- **fix-reported-bug** — known misbehavior: deterministic repro contract (5x all-fail shell
-  predicate), GDB crash signature, fix accepted only via `git diff --quiet` repro-untouched +
-  5x green + suite green in ONE predicate, triage classifies by signature.
+- **fix-reported-bug** — known misbehavior: a test-author writes a deterministic repro that
+  asserts CORRECT behavior (red while the bug lives) and RegisterTest-freezes it. Two plain
+  `src_compile` run predicates gate the loop: `repro-runs-red` (expect `overall:failed`) and
+  `suite-green` (expect `overall:passed`, `max_failed:0`). The fix is accepted only when the
+  frozen repro flips to green with the suite intact; untouchability comes from the
+  RegisterTest freeze (the referee re-hashes the test before the verdict), not from a diff
+  check.
 - **hunt-latent-bugs** — unknown defects: ONE falsifiable hypothesis per round, SYMPTOM-test
   polarity (test passes iff bug exists ⇒ `<build> && <run>` exit 0 == bug machine-proven),
   watchpoint strengthening, reachability qualification, anti-loop history discipline.
 - **build-feature** — scenario-first TDD: `build && ! run` proves red-for-the-right-reason,
   user approval gates, test untouchability as a predicate clause at every later step.
-- **fix-slow-path** — measured perf: expect-clause `perf.measure_command` predicates, double
-  baseline defines the noise band, one bounded change per round, gain must beat the band.
+- **fix-slow-path** — measured perf: a test-author writes a frozen COMPLEXITY-RATIO test —
+  workload at N and 2N, asserting `time(2N)/time(N)` stays under a fixed bound K — gated by the
+  same two plain `src_compile` run predicates (`ratio-runs-red` expect `overall:failed`,
+  `suite-green` expect `overall:passed`/`max_failed:0`). perf-mcp's noise-band measurement
+  (`perf.measure_command`, double baseline) is analysis-only — it finds WHERE to optimize; the
+  verdict is the frozen ratio test moving toward green, never the measurement.
 
 ## Intro-authored openings (M7; committed, repo-specific)
 - **freeplay** — the generic loop: gear-up → orient → plan → execute/verify → learn.

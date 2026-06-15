@@ -23,7 +23,8 @@ PROCESS.md).
 - **gdbmcp** (server name `gdb-mcp`, 12 tools): `gdb_start`, `gdb_exec`, `gdb_breakpoint`,
   `gdb_select`, `gdb_stack`, `gdb_snapshot`, `gdb_eval`, `gdb_memory`, `gdb_command`,
   `gdb_sessions`, `gdb_stop`, `gdb_diagnostics`. Attach/remote/outside-root/dangerous console
-  commands are opt-in serve flags, denied by default. State + audit under repo-local `.gdb-mcp/`.
+  commands are opt-in serve flags, denied by default; `--no-audit` disables the redacted
+  `.gdb-mcp/audit.jsonl` log. State + audit under repo-local `.gdb-mcp/`.
 - **perfmcp** (server name `perf-mcp`, 4 tools): `perf.scan_c`, `perf.explain_finding`,
   `perf.measure_command` (argv arrays only — shell strings rejected), `perf.toolchain_probe`.
   Results are schema-versioned (`perf-mcp.scan.v1`, …) with stable rule ids.
