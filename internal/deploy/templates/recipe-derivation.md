@@ -16,8 +16,12 @@ run: src_compile
 tests: ["src_compile"]
 expect: {"overall":"passed","facts":{"published":true}}
 
+[Verify] tests-enumerated
+fact: TestBody
+expect: {"complete":true,"min_results":1}
+
 [SetGoal]
-verify: gear-up-published
+verify: tests-enumerated
 
 [STEP] derive
 [StepJob]
@@ -58,9 +62,17 @@ failure: derive
 [StepJob]
 Run the proven src_compile recipe so arbiter cc journals every translation unit and the engine
 publishes the first facts snapshot. Only a real cc-interposed green build publishes facts; if it
-does not publish, cc is not actually interposed — go back and wire it.
+does not publish, cc is not actually interposed — go back and wire it. The snapshot carries one
+TestBody function fact per gtest case, so this build is what makes the project's *complete* test
+set machine-knowable. Call scan {"scope": "*"} to pull that facts-derived TestBody inventory and
+use it as the authoritative test list for the recipe's `tests` and for what you report — do not
+hand-list tests or recall the suite from memory. The match's goal is `tests-enumerated`: after
+this round the referee re-runs the TestBody index query itself and checkmates only when that set
+is complete and non-empty, so an enumeration you assert but the index does not contain cannot
+finish the bootstrap.
 [CheckList]
 - Submit gear-up-published for the proven recipe
+- Call scan {"scope": "*"} and treat its facts-derived TestBody set as the authoritative test inventory
 - Record any instrumentation macro key_flags recommendation for user confirmation
 [Submit] gear-up-published
 [Branch]
