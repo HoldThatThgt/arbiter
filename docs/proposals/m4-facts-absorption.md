@@ -36,10 +36,10 @@ Two de-risking facts already hold in arbiter:
    field reads (`internal/verify`) already expect `result_count`/`total`/`complete`/`reachable`/
    `base_snapshot_id`. We are filling a prepared socket, not redesigning it.
 2. Arbiter already owns the **harder halves of incremental** — `view.py` (writer-gate via real
-   `flock`, atomic overlay-state publish, content-addressed overlay id), `shared/census.py`
-   (mtime+sha dirty detection), `facts/extract_cache.py` (semantic key over TU content +
-   include-closure + flags + toolchain, plus `changed_sources`). These are *stronger* than
-   cipher-2's equivalents.
+   `flock`, atomic overlay-state publish, content-addressed overlay id) and `shared/census.py`
+   (mtime+sha dirty detection). (The placeholder-era `facts/extract_cache.py` was removed in
+   Phase 1.5b — cipher-2's absorbed extractor brings its own dirty re-extraction
+   (`extractor.extract_dirty_sources`), so the old per-TU semantic-key cache is superseded.)
 
 ## 3. The integration contract (frozen — the port conforms to this, not vice-versa)
 
@@ -93,7 +93,7 @@ function_pointer_slot}`.
 | Go fact-evidence mapping | ✅ correct | keep; add populated-snapshot tests |
 | `view.py` writer-gate / overlay-state / locks | ✅ present, strong | keep as Phase-2 skeleton |
 | `census` dirty detection | ✅ present | reuse in Phase 2 |
-| `extract_cache` semantic key + `changed_sources` | ✅ present | reuse in Phase 2 |
+| ~~`extract_cache` semantic key~~ | ❌ removed (Phase 1.5b) | superseded by cipher-2 `extract_dirty_sources` |
 | **AST extractor** (libclang) | ❌ placeholder | **port** `extractor/code/*` (~8.3k LOC) |
 | **fact store + SQLite read-index** | ❌ manifest only | **port** `storage/*` (~7.6k LOC focused) |
 | **search/detail query engine** | ❌ hard-coded empty | **port** `storage/search.py`+`read_index.py`, rewire handlers |
@@ -136,9 +136,10 @@ Forced first (incremental overlays merge over a base store).
 
 ## 6. Phase 2 — `incremental.*`
 
-- **2.1 Dirty plan**: census `changed_sources` + `extract_cache.include_closure` header fanout
-  (port `_plan_dirty_sources`; arbiter's semantic key already subsumes cipher-2's
-  content/compile/toolchain "reasons").
+- **2.1 Dirty plan**: census `changed_sources` feeds cipher-2's own dirty re-extraction
+  (`extractor.extract_dirty_sources` + its header/include-closure fanout). The placeholder-era
+  arbiter `extract_cache` was removed in Phase 1.5b, so Phase 2 uses the absorbed extractor's
+  incremental path rather than reimplementing a semantic-key cache.
 - **2.2 Overlay build**: re-extract the dirty set via the Phase-1 extractor; write an overlay
   patchset (`facts.upsert/tombstone.jsonl`, `relatives.upsert/tombstone.jsonl` + manifest) under
   `.arbiter/facts/overlay/<id>/`; endpoint-closed validation; content-addressed overlay id (arbiter

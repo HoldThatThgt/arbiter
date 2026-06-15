@@ -149,9 +149,9 @@ The facts store has no standalone lifecycle: no `cipher2 init`, no user-facing i
                                    #     sources:[globs],            # cache/memo census scope
                                    #     requires, notes, src_compile/test_compile/test_run}]
     match/                         # DERIVED: state.json (0600), seat.key — chess layout, relocated
-    facts/                         # DERIVED: snapshots/{current,<id>/...}, run/{mapreduce,incremental},
-                                   #   extract-cache/ (semantic-key per-TU cache)
-                                   #   — cipher v5/v6 layout verbatim, relocated
+    facts/                         # DERIVED: snapshots/{current ptr, <id>/{facts,relatives,
+                                   #   source_inventory}.jsonl.gz + read_index.sqlite + manifest/stats},
+                                   #   run/{mapreduce,incremental} — cipher v5/v6 layout verbatim, relocated
     runs/                          # DERIVED: state.sqlite (WAL: scanned_test, run(+match_id,task_id,round),
                                    #   run_test(+occurrence), run_payload, target_state,
                                    #   compile_cache{key, sources_digest, binary, built_at}),

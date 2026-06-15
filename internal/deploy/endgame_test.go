@@ -149,7 +149,11 @@ func runIntroRecipeProbe(t *testing.T, root string) recipeProbe {
 	cmd := exec.CommandContext(ctx, "python3", script, root)
 	cmd.Dir = root
 	env := os.Environ()
-	env = append(env, "PYTHONPATH="+filepath.Join(module, "engine")+string(os.PathListSeparator)+os.Getenv("PYTHONPATH"))
+	// engine/ for arbiter_engine, engine/tests for the c2 test package (importing it installs the
+	// in-process JSON libclang backend so the probe extracts hermetically, no real libclang in CI).
+	enginePath := filepath.Join(module, "engine")
+	testsPath := filepath.Join(module, "engine", "tests")
+	env = append(env, "PYTHONPATH="+enginePath+string(os.PathListSeparator)+testsPath+string(os.PathListSeparator)+os.Getenv("PYTHONPATH"))
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -173,8 +177,8 @@ func runFreeplayFix(t *testing.T, root string) ([]string, string) {
 		command string
 		before  func()
 	}{
-		{"gear up from the proven src_compile snapshot", "test -f .arbiter/facts/snapshots/current/manifest.json", nil},
-		{"orient on the broken fixture and snapshot evidence", "grep -q 'int broken' src/bug.c && grep -q 'snapshot_id' .arbiter/facts/snapshots/current/manifest.json", nil},
+		{"gear up from the proven src_compile snapshot", "test -f .arbiter/facts/snapshots/current", nil},
+		{"orient on the broken fixture and snapshot evidence", "grep -q 'int broken' src/bug.c && grep -q 'sha256-' .arbiter/facts/snapshots/current", nil},
 		{"plan one refereed fixture edit", "test -f .arbiter/playbook/freeplay.md && test -f .arbiter/recipes.yaml", nil},
 		{"fix broken fixture return value", "grep -q 'return 1;' src/bug.c", func() {
 			writeText(t, filepath.Join(root, "src", "bug.c"), "int broken(void) { return 1; }\n")
@@ -273,6 +277,10 @@ from pathlib import Path
 from arbiter_engine.runs import gtest
 from arbiter_engine.runs import recipes
 
+# Importing the c2 test package installs the in-process JSON libclang backend; write_fake_toolchain
+# returns an ExtractorConfig pointing at a fake clang/gcc so extraction needs no real libclang.
+from c2.toolchain_helpers import write_fake_toolchain
+
 root = Path(sys.argv[1])
 fake_arbiter = root / "fake_arbiter.py"
 fake_cc = root / "fake_cc.sh"
@@ -346,22 +354,24 @@ targets:
       cmd: [{fake_gtest}]
 """, encoding="utf-8")
 book = recipes.load(recipe_path)
-extracted = []
+# A fake clang/gcc + the in-process JSON libclang backend (installed by importing c2) make the
+# build-driven extraction hermetic; the compile-db the extractor reads is the journaled one.
+config = write_fake_toolchain(root, compile_database_path=root / "compile_commands.json")
 
-def extractor(unit):
-    extracted.append(unit.source)
-    return {"warnings": []}
-
-plain = gtest.run_target(root, book, "src_compile", run_id="plain", arbiter_bin=str(fake_arbiter), facts_extractor=extractor)
-asan = gtest.run_target(root, book, "src_compile", run_id="asan", profiles=["asan"], arbiter_bin=str(fake_arbiter), facts_extractor=extractor)
+plain = gtest.run_target(root, book, "src_compile", run_id="plain", arbiter_bin=str(fake_arbiter), extractor_config=config)
+asan = gtest.run_target(root, book, "src_compile", run_id="asan", profiles=["asan"], arbiter_bin=str(fake_arbiter), extractor_config=config)
 plain_facts = plain.to_json()["facts"]
 asan_facts = asan.to_json()["facts"]
+# A sanitizer profile is semantic (it changes preprocessor state), so the asan build must publish its
+# own content-addressed snapshot instead of reusing the plain build's. Two distinct snapshot ids ==
+# two real extractions (the source id hashes the profile, so default != asan).
+distinct_snapshots = {plain_facts["snapshot_id"], asan_facts["snapshot_id"]}
 print(json.dumps({
     "plain_published": bool(plain_facts["published"]),
     "asan_published": bool(asan_facts["published"]),
     "same_snapshot": plain_facts["snapshot_id"] == asan_facts["snapshot_id"],
     "snapshot_id": asan_facts["snapshot_id"],
-    "extractions": len(extracted),
+    "extractions": len(distinct_snapshots),
     "tail_ms": int(asan_facts["tail_ms"]),
     "plain_overall": plain.overall,
     "plain_failure": plain.failure or "",

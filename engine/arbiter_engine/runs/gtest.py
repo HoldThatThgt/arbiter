@@ -11,6 +11,7 @@ from typing import Mapping, Optional, Sequence, Tuple
 from arbiter_engine import errors
 from arbiter_engine.runs import guidance
 from arbiter_engine.runs import recipes
+from arbiter_engine.facts.extractor.code._shim import ExtractorConfig
 from arbiter_engine.runs import runner
 from arbiter_engine.runs.guidance import GuidanceEntry
 from arbiter_engine.shared import pipeline
@@ -79,7 +80,7 @@ def run_target(
     arbiter_bin: Optional[str] = None,
     fail_fast: bool = False,
     timeout_s: Optional[int] = None,
-    facts_extractor: Optional[pipeline.Extractor] = None,
+    extractor_config: Optional[ExtractorConfig] = None,
     facts_key_flags: Sequence[str] = (),
     facts_pool: Optional[int] = None,
 ) -> RunResult:
@@ -108,7 +109,7 @@ def run_target(
         target,
         profiles=profiles,
         arbiter_bin=arbiter_bin,
-        facts_extractor=facts_extractor,
+        extractor_config=extractor_config,
         facts_key_flags=facts_key_flags,
         facts_pool=facts_pool,
     )
@@ -321,7 +322,7 @@ def _run_compile_stages(
     *,
     profiles: Sequence[str],
     arbiter_bin: str,
-    facts_extractor: Optional[pipeline.Extractor],
+    extractor_config: Optional[ExtractorConfig],
     facts_key_flags: Sequence[str],
     facts_pool: Optional[int],
 ) -> dict[str, object]:
@@ -337,9 +338,10 @@ def _run_compile_stages(
                 target,
                 stage_name,
                 build_succeeded=result.exit_code == 0,
-                facts_extractor=facts_extractor,
+                extractor_config=extractor_config,
                 facts_key_flags=facts_key_flags,
                 facts_pool=facts_pool,
+                profiles=profiles,
             )
         if result.exit_code != 0:
             return {
@@ -358,9 +360,10 @@ def _publish_compile_facts(
     stage_name: str,
     *,
     build_succeeded: bool,
-    facts_extractor: Optional[pipeline.Extractor],
+    extractor_config: Optional[ExtractorConfig],
     facts_key_flags: Sequence[str],
     facts_pool: Optional[int],
+    profiles: Sequence[str],
 ) -> Optional[Mapping[str, object]]:
     if book.compile_db is None:
         return None
@@ -380,9 +383,10 @@ def _publish_compile_facts(
         journals,
         root / book.compile_db.path,
         build_succeeded=build_succeeded,
-        extractor=facts_extractor,
         key_flags=facts_key_flags,
         pool=facts_pool,
+        profile="+".join(profiles) if profiles else "default",
+        extractor_config=extractor_config,
     )
     return result.to_json()
 

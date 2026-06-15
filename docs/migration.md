@@ -58,13 +58,15 @@ ported tests green; run-kind predicates adjudicate real fixture runs; stale-bina
 
 ## M6 — Build-driven indexing
 `arbiter cc` (Go, `internal/interpose`): journal argv+cwd, enqueue, exec-through; adversarial
-argv matrix FIRST. Engine `shared/`: journal consumer, bounded extraction pool (cores/4 during
-build, full width after), publish barrier, extract-cache (semantic keys per ADR-0005),
-`facts:{published, snapshot_id, extract_ms, hidden_ms, tail_ms}` on src_compile verdicts,
-`profiles:` overlays, typed `no_snapshot` error. **Exit:** on a fixture repo: clean build
-publishes a snapshot inside the run verdict; asan-profile rebuild re-extracts ZERO TUs;
-feature-flag change re-extracts exactly the affected closure; shim-miss test shows
-`facts:{published:false}` failing the gear-up predicate closed.
+argv matrix FIRST. Engine `shared/`: journal consumer → compile-db → `CodeFactExtractor.collect`
+over the compiled TU set (bounded extraction pool: cores/4 during build, full width after) →
+`FileFactStore.replace_snapshot` (content-addressed; the profile is part of each source id, so a
+sanitizer profile publishes its own snapshot), `facts:{published, snapshot_id, extract_ms,
+hidden_ms, tail_ms}` on src_compile verdicts, `profiles:` overlays, typed `no_snapshot` error.
+**Exit:** on a fixture repo: clean build publishes a snapshot inside the run verdict; asan-profile
+rebuild publishes its OWN content-addressed snapshot (distinct id, not the plain build's);
+shim-miss / non-green / incapable-toolchain all show `facts:{published:false}` failing the gear-up
+predicate closed.
 
 ## M7 — Deploy, seats, skills: the four verbs
 `internal/deploy` rewrite: `arbiter init` (engines.json + verification, seat key, curator AND

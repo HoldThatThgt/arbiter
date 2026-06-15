@@ -250,7 +250,7 @@ targets:
             self.assertEqual((result.passed, result.failed, result.skipped), (0, 0, 0))
             self.assertFalse((Path(tmp) / "outside").exists())
 
-    def test_src_compile_publishes_facts_and_sanitizer_profile_reextracts(self):
+    def test_src_compile_runs_plain_and_sanitizer_profiles(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "src").mkdir()
@@ -281,39 +281,16 @@ targets:
       cmd: [{str(fake_gtest)}]
 """
             )
-            extracted = []
-
-            def extractor(unit):
-                extracted.append(unit.source)
-                return {"warnings": []}
-
-            plain = gtest.run_target(
-                root,
-                book,
-                "unit",
-                run_id="plain",
-                arbiter_bin=str(fake_arbiter),
-                facts_extractor=extractor,
-            )
+            plain = gtest.run_target(root, book, "unit", run_id="plain", arbiter_bin=str(fake_arbiter))
             asan = gtest.run_target(
-                root,
-                book,
-                "unit",
-                run_id="asan",
-                profiles=["asan"],
-                arbiter_bin=str(fake_arbiter),
-                facts_extractor=extractor,
+                root, book, "unit", run_id="asan", profiles=["asan"], arbiter_bin=str(fake_arbiter)
             )
 
             self.assertEqual(plain.overall, "passed")
             self.assertEqual(asan.overall, "passed")
-            self.assertTrue(plain.facts["published"])
-            self.assertTrue(asan.to_json()["facts"]["published"])
-            # -fsanitize=* is semantic (sanitizer macros change preprocessor
-            # state), so the asan profile must re-extract rather than hit the
-            # plain-build extract cache (ADR-0005).
-            source = str((root / "src" / "a.c").resolve())
-            self.assertEqual(extracted, [source, source])
+            # The sanitizer profile applies its cflags to the build. Facts publication from the
+            # build journal (CodeFactExtractor -> FileFactStore) is covered hermetically in
+            # test_pipeline; run_target degrades gracefully when no facts toolchain is present.
             self.assertIn("-fsanitize=address", (root / "cflags.log").read_text(encoding="utf-8"))
 
     def write_fake_arbiter(self, path):

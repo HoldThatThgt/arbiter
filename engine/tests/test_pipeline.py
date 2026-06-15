@@ -1,227 +1,126 @@
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
+from arbiter_engine.facts.extractor.code import (
+    _clear_test_libclang_backend,
+    _install_json_test_libclang_backend,
+)
+from arbiter_engine.facts.store import open_fact_store
 from arbiter_engine.shared import pipeline
 
+# Importing the cipher2 test package installs the JSON libclang backend + provides the fake
+# toolchain helper, so the build-driven seam extracts hermetically (no real libclang in CI).
+from c2.toolchain_helpers import write_fake_toolchain
 
-class PipelineTest(unittest.TestCase):
-    def test_green_build_drains_and_publishes_snapshot_accounting(self):
+
+def _write_journal(path, *entries):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "".join(json.dumps(entry, separators=(",", ":")) + "\n" for entry in entries),
+        encoding="utf-8",
+    )
+
+
+class PipelineSeamTest(unittest.TestCase):
+    """The build-driven seam: a green build's compile journal -> compile-db -> CodeFactExtractor
+    -> FileFactStore snapshot. (The old per-unit placeholder pipeline + its extract-cache were
+    removed when the real cipher-2 extractor was absorbed.)"""
+
+    def setUp(self):
+        _install_json_test_libclang_backend()
+
+    def test_green_build_extracts_and_publishes_real_facts(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            work = root / "repo"
-            (work / "src").mkdir(parents=True)
-            source = work / "src" / "a.c"
-            source.write_text("int a(void) { return 1; }\n", encoding="utf-8")
+            (root / "src").mkdir()
+            (root / "src" / "a.c").write_text(
+                "int helper(void){return 1;}\nint entry(void){return helper();}\n", encoding="utf-8"
+            )
+            cdb = root / "compile_commands.json"
+            config = write_fake_toolchain(root, compile_database_path=cdb)
             journal = root / ".arbiter" / "facts" / "run" / "compile-journal.b1.jsonl"
-            self.write_journal(
+            _write_journal(
                 journal,
-                {
-                    "argv": ["clang", "-Iinclude", "-O2", "-c", "src/a.c", "-o", "build/a.o"],
-                    "cwd": str(work),
-                    "src": "src/a.c",
-                    "out": "build/a.o",
-                },
+                {"argv": ["clang", "-c", "src/a.c", "-o", "build/a.o"], "cwd": str(root), "src": "src/a.c", "out": "build/a.o"},
             )
-            extracted = []
 
-            def extractor(unit):
-                extracted.append((unit.source, unit.key()))
-                return {"warnings": [{"file": unit.source, "message": "stub warning"}]}
-
-            result = pipeline.publish_after_build(
-                root,
-                [journal],
-                root / "compile_commands.json",
-                extractor=extractor,
-                cpu_count=lambda: 8,
-            )
+            result = pipeline.publish_after_build(root, [journal], cdb, extractor_config=config)
 
             self.assertTrue(result.published)
+            self.assertIsNotNone(result.snapshot_id)
             self.assertEqual(result.files, 1)
-            self.assertEqual([item[0] for item in extracted], [str(source)])
-            self.assertEqual(result.warnings, [{"file": str(source), "message": "stub warning"}])
+            self.assertEqual(result.warnings, [])
             self.assertGreaterEqual(result.extract_ms, 0)
             self.assertGreaterEqual(result.tail_ms, 0)
-            self.assertGreaterEqual(result.hidden_ms, 0)
-
-            manifest = json.loads(
-                (root / ".arbiter" / "facts" / "snapshots" / "current" / "manifest.json").read_text(
-                    encoding="utf-8"
-                )
-            )
-            self.assertEqual(manifest["snapshot_id"], result.snapshot_id)
-            self.assertEqual(manifest["files"], [str(source)])
-            self.assertEqual(manifest["warnings"], result.warnings)
+            # Read the store while the temp repo still exists (assertions stay inside the block).
+            stats = open_fact_store(root, mode="r").stats()
+            self.assertGreater(stats.total_facts, 0)
+            self.assertEqual(stats.snapshot_id, result.snapshot_id)
+            # The snapshot is published where view._base_snapshot_id + the query layer read it.
+            self.assertTrue((root / ".arbiter" / "facts" / "snapshots" / "current").exists())
 
     def test_miss_marker_fails_closed_without_snapshot_publish(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            work = root / "repo"
-            (work / "src").mkdir(parents=True)
             journal = root / ".arbiter" / "facts" / "run" / "compile-journal.b1.jsonl"
-            self.write_journal(
+            _write_journal(
                 journal,
-                {
-                    "argv": ["clang", "-c", "src/miss.c", "-o", "build/miss.o"],
-                    "cwd": str(work),
-                    "src": "src/miss.c",
-                    "out": "build/miss.o",
-                    "miss": True,
-                },
+                {"argv": ["clang", "-c", "src/miss.c", "-o", "build/miss.o"], "cwd": str(root), "src": "src/miss.c", "out": "build/miss.o", "miss": True},
             )
-            calls = []
+
+            result = pipeline.publish_after_build(root, [journal], root / "compile_commands.json")
+
+            self.assertFalse(result.published)
+            self.assertIsNone(result.snapshot_id)
+            self.assertEqual(result.warnings[0]["kind"], "journal_miss")
+            self.assertFalse((root / ".arbiter" / "facts" / "snapshots" / "current").exists())
+
+    def test_build_not_green_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            journal = root / ".arbiter" / "facts" / "run" / "compile-journal.b1.jsonl"
+            _write_journal(
+                journal,
+                {"argv": ["clang", "-c", "src/a.c", "-o", "build/a.o"], "cwd": str(root), "src": "src/a.c", "out": "build/a.o"},
+            )
 
             result = pipeline.publish_after_build(
-                root,
-                [journal],
-                root / "compile_commands.json",
-                extractor=lambda unit: calls.append(unit.source),
+                root, [journal], root / "compile_commands.json", build_succeeded=False
             )
 
             self.assertFalse(result.published)
             self.assertIsNone(result.snapshot_id)
-            self.assertEqual(calls, [])
-            self.assertEqual(result.files, 0)
-            self.assertEqual(result.warnings[0]["kind"], "journal_miss")
-            self.assertFalse((root / ".arbiter" / "facts" / "snapshots" / "current").exists())
+            self.assertEqual(result.warnings[0]["kind"], "build_failed")
 
-    def test_header_edit_invalidates_extract_cache_and_snapshot_id(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            work = root / "repo"
-            (work / "src").mkdir(parents=True)
-            (work / "include").mkdir()
-            source = work / "src" / "a.c"
-            header = work / "include" / "util.h"
-            source.write_text('#include "util.h"\nint a(void) { return U; }\n', encoding="utf-8")
-            header.write_text("#define U 1\n", encoding="utf-8")
-            journal = root / ".arbiter" / "facts" / "run" / "compile-journal.b1.jsonl"
-            self.write_journal(
-                journal,
-                {
-                    "argv": ["clang", "-Iinclude", "-c", "src/a.c", "-o", "build/a.o"],
-                    "cwd": str(work),
-                    "src": "src/a.c",
-                    "out": "build/a.o",
-                },
-            )
-            calls = []
-
-            def extractor(unit):
-                calls.append(unit.source)
-                return {"warnings": []}
-
-            def publish():
-                return pipeline.publish_after_build(
-                    root,
-                    [journal],
-                    root / "compile_commands.json",
-                    extractor=extractor,
-                    cpu_count=lambda: 2,
+    def test_missing_toolchain_degrades_to_not_published(self):
+        # No capable clang -> a typed not-published signal (builds/runs keep working), never a crash.
+        _clear_test_libclang_backend()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "src").mkdir()
+                (root / "src" / "a.c").write_text("int a(void){return 1;}\n", encoding="utf-8")
+                cdb = root / "compile_commands.json"
+                config = replace(
+                    write_fake_toolchain(root, compile_database_path=cdb),
+                    clang_executable=str(root / "bin" / "nonexistent-clang"),
+                )
+                journal = root / ".arbiter" / "facts" / "run" / "compile-journal.b1.jsonl"
+                _write_journal(
+                    journal,
+                    {"argv": ["clang", "-c", "src/a.c", "-o", "build/a.o"], "cwd": str(root), "src": "src/a.c", "out": "build/a.o"},
                 )
 
-            first = publish()
-            self.assertEqual(calls, [str(source)])
+                result = pipeline.publish_after_build(root, [journal], cdb, extractor_config=config)
 
-            unchanged = publish()
-            self.assertEqual(calls, [str(source)])
-            self.assertEqual(unchanged.snapshot_id, first.snapshot_id)
-
-            header.write_text("#define U 2\n", encoding="utf-8")
-            edited = publish()
-            self.assertEqual(calls, [str(source), str(source)])
-            self.assertNotEqual(edited.snapshot_id, first.snapshot_id)
-
-    def test_failed_extraction_is_not_cached_and_is_retried_next_build(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            work = root / "repo"
-            (work / "src").mkdir(parents=True)
-            source = work / "src" / "a.c"
-            source.write_text("int a(void) { return 1; }\n", encoding="utf-8")
-            journal = root / ".arbiter" / "facts" / "run" / "compile-journal.b1.jsonl"
-            self.write_journal(
-                journal,
-                {
-                    "argv": ["clang", "-c", "src/a.c", "-o", "build/a.o"],
-                    "cwd": str(work),
-                    "src": "src/a.c",
-                    "out": "build/a.o",
-                },
-            )
-
-            def failing_extractor(unit):
-                raise RuntimeError("boom")
-
-            first = pipeline.publish_after_build(
-                root,
-                [journal],
-                root / "compile_commands.json",
-                extractor=failing_extractor,
-                cpu_count=lambda: 2,
-            )
-            self.assertEqual(first.warnings[0]["kind"], "extract_failed")
-
-            cache_path = root / ".arbiter" / "facts" / "extract-cache" / "index.json"
-            self.assertEqual(json.loads(cache_path.read_text(encoding="utf-8")), {})
-
-            retried = []
-            second = pipeline.publish_after_build(
-                root,
-                [journal],
-                root / "compile_commands.json",
-                extractor=lambda unit: retried.append(unit.source) or {"warnings": []},
-                cpu_count=lambda: 2,
-            )
-            self.assertEqual(retried, [str(source)])
-            self.assertEqual(second.warnings, [])
-            stored = json.loads(cache_path.read_text(encoding="utf-8"))
-            self.assertEqual(len(stored), 1)
-            self.assertFalse(next(iter(stored.values()))["failed"])
-
-    def test_store_merges_with_concurrently_written_cache_entries(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            work = root / "repo"
-            (work / "src").mkdir(parents=True)
-            source = work / "src" / "a.c"
-            source.write_text("int a(void) { return 1; }\n", encoding="utf-8")
-            journal = root / ".arbiter" / "facts" / "run" / "compile-journal.b1.jsonl"
-            self.write_journal(
-                journal,
-                {
-                    "argv": ["clang", "-c", "src/a.c", "-o", "build/a.o"],
-                    "cwd": str(work),
-                    "src": "src/a.c",
-                    "out": "build/a.o",
-                },
-            )
-            cache_path = root / ".arbiter" / "facts" / "extract-cache" / "index.json"
-
-            def extractor(unit):
-                # Simulate a concurrent publisher storing its entry between
-                # this publish's initial cache load and its store.
-                cache_path.parent.mkdir(parents=True, exist_ok=True)
-                cache_path.write_text(
-                    json.dumps({"extract:concurrent": {"source": "other/b.c", "failed": False}}),
-                    encoding="utf-8",
-                )
-                return {"warnings": []}
-
-            result = pipeline.publish_after_build(
-                root,
-                [journal],
-                root / "compile_commands.json",
-                extractor=extractor,
-                cpu_count=lambda: 2,
-            )
-
-            self.assertTrue(result.published)
-            stored = json.loads(cache_path.read_text(encoding="utf-8"))
-            self.assertIn("extract:concurrent", stored)
-            self.assertEqual(len(stored), 2)
+                self.assertFalse(result.published)
+                self.assertIsNone(result.snapshot_id)
+                self.assertTrue(result.warnings)
+        finally:
+            _install_json_test_libclang_backend()
 
     def test_pool_width_uses_quarter_width_during_build_then_full_width(self):
         self.assertEqual(pipeline.pool_width(16, compiler_active=True), 4)
@@ -229,22 +128,12 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(pipeline.pool_width(3, compiler_active=True), 1)
 
     def test_pool_width_honors_config_cap(self):
-        # facts.index_on_build.pool caps the build-tail extraction width.
+        # facts.index_on_build.pool caps the extraction worker width.
         self.assertEqual(pipeline.pool_width(16, compiler_active=False, cap=4), 4)
-        # A cap above the computed width is a no-op.
         self.assertEqual(pipeline.pool_width(2, compiler_active=False, cap=8), 2)
-        # None / non-positive caps are ignored (default behavior preserved).
         self.assertEqual(pipeline.pool_width(8, compiler_active=False, cap=None), 8)
         self.assertEqual(pipeline.pool_width(8, compiler_active=False, cap=0), 8)
-        # The cap never drives the width below 1.
         self.assertEqual(pipeline.pool_width(8, compiler_active=False, cap=1), 1)
-
-    def write_journal(self, path, *entries):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            "".join(json.dumps(entry, separators=(",", ":")) + "\n" for entry in entries),
-            encoding="utf-8",
-        )
 
 
 if __name__ == "__main__":

@@ -20,7 +20,7 @@ Identity / Inherits / Public surface / Design / Invariants / Tests / Done.
 | Doc | Module | One line |
 |---|---|---|
 | [engine-core.md](engine-core.md) | `engine/arbiter_engine/{rpc,config,log}` | stdlib JSON-RPC loop, namespaces, config, errors, logging |
-| [engine-facts.md](engine-facts.md) | `engine/arbiter_engine/facts/` | cipher-2 absorbed: extraction, snapshots, overlay, search/detail, extract-cache |
+| [engine-facts.md](engine-facts.md) | `engine/arbiter_engine/facts/` | cipher-2 absorbed: extraction, content-addressed snapshots, overlay, search/detail |
 | [engine-runs.md](engine-runs.md) | `engine/arbiter_engine/runs/` | recipes, gtest-first adapters, build cache, proven lifecycle, guidance |
 | [engine-shared.md](engine-shared.md) | `engine/arbiter_engine/shared/` | census, lock inventory, compile-db journal, build-driven indexing pipeline |
 | [engine-companions.md](engine-companions.md) | `engine/arbiter_engine/{gdbmcp,perfmcp}` | bundled diagnostic MCP servers: structured GDB debugging, C perf triage (ADR-0010) |

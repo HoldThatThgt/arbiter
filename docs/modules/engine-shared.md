@@ -29,13 +29,15 @@ journals (interrupted builds) idempotently. Falls back to the recipe's explicit 
 stage when interposition is off.
 
 ### pipeline (build-driven indexing, ADR-0004)
-Orchestrates: tail journal during src_compile → semantic-key lookup in facts extract-cache →
-schedule misses on the bounded extraction pool (cores/4 while compiler activity is detected,
-full width after) → on build green: drain queue → facts merge + snapshot publish under
-`snapshot.lock` → return `facts:{published, snapshot_id, files, warnings, extract_ms,
+Orchestrates: tail journal during src_compile → on build green, emit the compile-db from the
+journal → `CodeFactExtractor(root, config).collect(None, profile)` over exactly the compiled TU
+set (bounded extraction pool: cores/4 while compiler activity is detected, full width after) →
+`FileFactStore.replace_snapshot(...)` publishes a content-addressed snapshot (the store owns its
+own write lock) → return `facts:{published, snapshot_id, files, warnings, extract_ms,
 hidden_ms, tail_ms}` to the runner for the verdict. Failure honesty: per-file extraction
-failures follow cipher policy and surface as `warnings`; a journal miss marker forces
-`published:false` — the gear-up predicate fails closed.
+failures follow cipher policy and surface as `warnings`; a journal miss marker or non-green build
+forces `published:false`, and a missing/incapable toolchain degrades to a typed not-published
+signal — the gear-up predicate fails closed, builds and runs keep working.
 
 ## Invariants
 stdlib-only; no daemon (pipeline lives within the EXEC engine's run call / startRun worker);

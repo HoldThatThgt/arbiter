@@ -49,15 +49,21 @@ corpus. Only the owner-signed deltas below are permitted; everything else is a r
 4. Inventory hashing factored to `shared/census` (facts keeps a thin wrapper).
 5. cipher's CLI/init/`.mcp.json` writer dropped (go-deploy owns wiring; batch mode via core).
 
-## New capability (M6): extract-cache + build-driven consumption
-- `extract-cache/`: per-TU cache keyed `(TU content sha, include-closure content sha,
-  allowlist-cleaned semantic flags, toolchain id)` (ADR-0005). The key is **defined as the flags
-  the parser actually sees** — the allowlist strips codegen-only flags, so the cache is
-  profile-invariant by construction. `facts.key_flags` re-admits configured flags (the
-  instrumentation-macro opt-in).
-- Consumes the build journal queue (engine-shared pipeline): re-extract changed TUs during the
-  build, merge + publish behind the barrier, report `{published, snapshot_id, files, warnings,
-  extract_ms, hidden_ms, tail_ms}` to the runs verdict.
+## Build-driven consumption (M4 absorption)
+- The absorbed cipher-2 extractor publishes **content-addressed snapshots**:
+  `snapshots/<sha256-…>/` holds `facts.jsonl.gz`, `relatives.jsonl.gz`,
+  `source_inventory.jsonl.gz`, a SQLite `read_index.sqlite`, `manifest.json`, and `stats.json`,
+  with a `snapshots/current` pointer file naming the live id. The snapshot id is the sha256 of the
+  fact content; the **profile is part of every source id** (`source:hash(profile:rel_path)`), so a
+  sanitizer profile (e.g. `asan`) re-extracts under its own snapshot rather than reusing the plain
+  build's — there is no separate per-TU extract-cache. `facts.key_flags` is the
+  instrumentation-macro opt-in (re-admits configured flags into the parser's view).
+- Build-driven seam (engine-shared pipeline): tail the compile journal during `src_compile` →
+  emit the compile-db → `CodeFactExtractor(root, config).collect(None, profile)` over exactly the
+  compiled TU set → `FileFactStore.replace_snapshot(...)`; report `{published, snapshot_id, files,
+  warnings, extract_ms, hidden_ms, tail_ms}` to the runs verdict. A miss-marked or non-green build
+  fails closed (no publish); a missing/incapable toolchain degrades to a typed not-published
+  signal, never a crash.
 - Typed `no_snapshot{hint:"run the gear-up step"}` before first publish.
 - Fact-predicate evidence: `{snapshot_id, overlay_id, view_state}` on every adjudicated query.
 
@@ -70,10 +76,12 @@ graph projection / concepts / git facts); ctypes runtime libclang loading stays.
 cipher's 74 test files green unmodified (M4 exit, ported with the absorption); the recorded
 facts-conformance corpus (ADR-0013) replayed byte-exact against the engine — the in-tree
 cipher-2 reference is retired, and new corpus scenarios are cross-checked against upstream
-cipher-2 out-of-tree before their lines become the pin; extract-cache key property tests (profile switch → 0 re-extracts;
-`-DWITH_X` flip → exactly the closure cone; key_flags opt-in restores sensitivity); single-writer
-enforcement (executor engine attempting reconcile → typed refusal).
+cipher-2 out-of-tree before their lines become the pin; build-driven seam tests (a green build
+round-trips journal → compile-db → snapshot; a sanitizer profile publishes its own
+content-addressed snapshot; miss-marker / non-green / incapable-toolchain all fail closed);
+single-writer enforcement (executor engine attempting reconcile → typed refusal).
 
 ## Done
-M4 (absorption + deltas) → M6 (extract-cache + pipeline). Any diff inside the verbatim-kept
-subtrees beyond the signed deltas is `needs-human`.
+M4 (absorption + deltas) delivered the build-driven pipeline seam directly — the absorbed
+extractor publishes content-addressed snapshots, so no separate per-TU extract-cache exists. Any
+diff inside the verbatim-kept subtrees beyond the signed deltas is `needs-human`.
