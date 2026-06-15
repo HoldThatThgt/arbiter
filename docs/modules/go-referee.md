@@ -28,7 +28,8 @@ semantics are **not redesigned**.
  expect?:[{path, op: eq|ne|ge|le|exists, value}]}         # FOREIGN servers only; ≤8 clauses,
                                                           # scalars, closed ops, no wildcards
 {kind:"run", recipe?, tests:[...], options?,
- expect:{overall: enum|one_of[...], max_failed?, min_passed?, test?:{name,result}}}
+ expect:{overall: enum|one_of[...], max_failed?, min_passed?, test?:{name,result},
+         facts?:{published}}}
 {kind:"fact", query:"<search mini-language>",
  expect:{min_results?, max_results?, complete?, reachable?, total_at_least?}}
 + timeout_s (default 600, max 3600), output_lines
@@ -85,7 +86,7 @@ semantics are **not redesigned**.
 tools are checked by resolved path, Bash and glob/grep patterns by literal occurrence of a
 guarded path. `guard.Decide` fails open on malformed input and denies on a hit, every denial
 naming the sanctioned route (ShowStepJob / ReadPlayBook / AddPlayBook / NotePlaybook / ListTask /
-ReviewTask). The `settings.json` deny rules remain as defense in depth; the human-typed shell and
+ReviewTask / CheckStepJob). The `settings.json` deny rules remain as defense in depth; the human-typed shell and
 editors are unaffected (hooks fire on model tool calls only).
 
 ### Fixes carried from the audit
