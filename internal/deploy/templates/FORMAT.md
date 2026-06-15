@@ -76,6 +76,11 @@ Rules:
 - Frontmatter must include `name` and `description`; optional `max_steps`
   is the round budget (default 256, max 1024) — the match aborts with
   `steps_exhausted` once spent.
+- Optional frontmatter `capabilities` is a list whose only legal value is
+  `recipes`; it capability-gates the recipe-authoring tools
+  (`register` / `import_recipes` / `scan`) so they are exposed only while a
+  playbook that opts in is the active match. Any unknown value, a
+  non-`recipes` entry, or a duplicate is a parse error.
 - Optional `[SetGoal]` (before the first `[STEP]`, at most once) declares the
   checkmate predicate: `shell: <command>`, `mcp: <server> <tool>` plus
   optional `arguments: {...json}`, `run: <recipe>` with `tests`/`expect`,
@@ -91,9 +96,12 @@ Rules:
   Usually you do not write these by hand — the player model appends them at
   run time via NotePlaybook as it discovers pitfalls.
 - A step is either a TASK step (`[CheckList]`) or a CHECKPOINT step
-  (`[Checkpoint]`) — exactly one, never both. A `[Checkpoint] <question>` step has
+  (`[Checkpoint]`) — exactly one, never both. A `[Checkpoint]` step has
   no executor predicate: it is a human-confirmation gate, adjudicated by the user's
-  pass/fail on the question. The player must put the question to the user with
+  pass/fail on the question. Write a bare `[Checkpoint]` token and put the question
+  on the following body line(s) — unlike `[STEP]`/`[Verify]`/`[Submit]`, an inline
+  `[Checkpoint] <question>` on the same line is a `stray_content` parse error. The
+  player must put the question to the user with
   AskUserQuestion and relay the answer via SubmitCheckpoint (pass → success branch,
   fail → failure branch); CreateTask is refused on it, and it cannot carry `[Submit]`.
   Use it for the one thing the referee cannot machine-check — a person's approval
