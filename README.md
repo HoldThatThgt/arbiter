@@ -33,6 +33,9 @@ Arbiter removes the judgment from the model entirely:
 
 Requirements: Go 1.25+, Python ≥ 3.9 (the engine has zero dependencies), Linux
 or macOS, and [Claude Code](https://claude.com/claude-code) for the agent loop.
+LLVM Clang ≥ 16 / Apple Clang ≥ 15 (facts index only; builds and matches work
+without it — but `/arbiter-intro` publishes a facts snapshot as part of gear-up,
+so capable Clang is needed to complete it).
 
 The repository is self-contained: Go dependencies are vendored under `vendor/`
 and the Python engine is embedded in the binary, so both the build and the
@@ -53,6 +56,11 @@ debugging) + **perf-mcp** (C perf triage) diagnostic servers are delivered with
 it. `arbiter --help` and `arbiter init --help` state exactly what each command
 does.
 
+`arbiter init` writes the skills (`.claude/skills/`) and MCP servers (`.mcp.json`)
+into the repository. Open Claude Code in that repository (or restart it if it was
+already running) so the new session picks them up — the slash commands and the
+player/curator/executor servers appear only after Claude Code loads them.
+
 Then, inside Claude Code in that repository:
 
 | When | Verb |
@@ -69,7 +77,9 @@ Your repo keeps building with **its own compiler** (gcc/g++ of any version) —
 arbiter never swaps it. Only the facts index needs LLVM Clang ≥ 16 (or Apple
 Clang ≥ 15) for its own AST extraction, isolated from your build toolchain;
 without it you lose facts, never builds. Live debugging additionally wants a
-working host `gdb` (`python3 -m arbiter_engine.gdbmcp doctor --root .` tells you). See the **[User Guide](docs/user-guide.md)** for the full
+working host `gdb` (`PYTHONPATH=.arbiter/engine python3 -m arbiter_engine.gdbmcp doctor --root .`
+tells you; the bare `python3 -m arbiter_engine.gdbmcp ...` form works once you
+`pip install ./engine`). See the **[User Guide](docs/user-guide.md)** for the full
 walkthrough.
 
 ## How it works
