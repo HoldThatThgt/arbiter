@@ -31,7 +31,7 @@ from typing import Dict, List, Optional, Sequence, Union
 
 from arbiter_engine.facts.store import StorageError, open_fact_store
 from arbiter_engine.facts.extractor.code import CodeFactExtractor
-from arbiter_engine.facts.extractor.code._log import LogError, LogEvent, open_log
+from arbiter_engine.facts.log import LogError, LogEvent, open_log
 from arbiter_engine.facts.extractor.code._shim import ExtractorConfig, InitError, InitProgressSink
 
 

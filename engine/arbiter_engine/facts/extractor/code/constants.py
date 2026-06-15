@@ -37,7 +37,7 @@ from arbiter_engine.facts.store import (
     StoredFactLine,
     StoredRelativeLine,
 )
-from ._log import LogError, LogEvent, open_log
+from arbiter_engine.facts.log import LogError, LogEvent, open_log
 
 SOURCE_EXTENSIONS = {".c", ".h", ".cc", ".cpp", ".cxx", ".hh", ".hpp", ".hxx"}
 HEADER_EXTENSIONS = {".h", ".hh", ".hpp", ".hxx"}

@@ -122,7 +122,9 @@ class IncrementalCoordinator:
         self.worker_count = max(1, int(worker_count))
         self.profile = profile
         self.log_enabled = log_enabled
-        self.log: JsonlLog = open_log(self.target_repo)
+        # The coordinator's audit trail lives under run/log/ (beside the rest of run/ state),
+        # isolated from the extractor's facts/log/ stream; channel "incremental".
+        self.log: JsonlLog = open_log(self.target_repo, base_parts=("facts", "run", "log"))
         self.generation = 0
         self._extractor = extractor
         self._extractor_config = extractor_config

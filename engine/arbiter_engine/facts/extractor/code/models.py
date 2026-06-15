@@ -37,7 +37,7 @@ from arbiter_engine.facts.store import (
     StoredFactLine,
     StoredRelativeLine,
 )
-from ._log import LogError, LogEvent, open_log
+from arbiter_engine.facts.log import LogError, LogEvent, open_log
 
 from .constants import *
 
