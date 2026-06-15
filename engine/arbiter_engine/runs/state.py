@@ -8,7 +8,7 @@ import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterator, Mapping, Optional
+from typing import Any, Callable, Iterable, Iterator, Mapping, Optional
 
 
 BUSY_TIMEOUT_MS = 30000
@@ -25,6 +25,15 @@ class TargetState:
     doc_digest: str
     proven: bool
     proof_run_id: Optional[str]
+
+
+@dataclass(frozen=True)
+class ScannedTest:
+    target_id: str
+    suite: str
+    name: str
+    file: str
+    line: int
 
 
 def init(path: Path | str) -> None:
@@ -213,6 +222,73 @@ def _write_target_state(conn: sqlite3.Connection, state: TargetState) -> None:
             time.time(),
         ),
     )
+
+
+def replace_scanned_tests(
+    path: Path | str,
+    target_id: str,
+    candidates: Iterable[ScannedTest],
+) -> tuple[ScannedTest, ...]:
+    """Persist the scan result for ``target_id``, replacing any prior rows.
+
+    A scan is a full snapshot of the candidates discovered for a scope, so the
+    previous rows for the same ``target_id`` are cleared before the new set is
+    inserted. Returns the persisted candidates in the deterministic
+    (suite, name) order used by the round-trip reader.
+    """
+    rows = _dedupe_scanned(target_id, candidates)
+    with transaction(path) as conn:
+        conn.execute("DELETE FROM scanned_test WHERE target_id = ?", (target_id,))
+        conn.executemany(
+            """
+            INSERT INTO scanned_test (target_id, suite, name, file, line)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            [(row.target_id, row.suite, row.name, row.file, row.line) for row in rows],
+        )
+    return rows
+
+
+def read_scanned_tests(path: Path | str, target_id: str) -> tuple[ScannedTest, ...]:
+    """Read back the persisted scan candidates for ``target_id``."""
+    init(path)
+    conn = connect(path)
+    try:
+        rows = conn.execute(
+            """
+            SELECT target_id, suite, name, file, line
+            FROM scanned_test
+            WHERE target_id = ?
+            ORDER BY suite, name
+            """,
+            (target_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return tuple(
+        ScannedTest(target_id=row[0], suite=row[1], name=row[2], file=row[3], line=int(row[4]))
+        for row in rows
+    )
+
+
+def _dedupe_scanned(
+    target_id: str,
+    candidates: Iterable[ScannedTest],
+) -> tuple[ScannedTest, ...]:
+    # scanned_test PK is (target_id, suite, name); a scope can surface the same
+    # (suite, name) twice (e.g. parameterized instantiations), so collapse on the
+    # key and keep deterministic order so the round-trip is stable.
+    by_key: dict[tuple[str, str], ScannedTest] = {}
+    for candidate in candidates:
+        row = ScannedTest(
+            target_id=target_id,
+            suite=candidate.suite,
+            name=candidate.name,
+            file=candidate.file,
+            line=candidate.line,
+        )
+        by_key[(row.suite, row.name)] = row
+    return tuple(by_key[key] for key in sorted(by_key))
 
 
 def _create_schema(conn: sqlite3.Connection) -> None:

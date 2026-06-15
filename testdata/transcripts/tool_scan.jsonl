@@ -1,2 +1,2 @@
 {"type":"request","message":{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"scan","arguments":{"scope":"tests"}}}}
-{"type":"response","message":{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"runs.scan stub"}],"isError":false,"namespace":"runs","tool":"scan"}},"allow_volatile":[]}
+{"type":"response","message":{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"0 test candidates"}],"isError":false,"scope":"tests","targets":[]}},"allow_volatile":[]}

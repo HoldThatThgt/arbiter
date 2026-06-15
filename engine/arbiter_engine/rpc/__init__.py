@@ -18,6 +18,7 @@ from arbiter_engine.facts import query as facts_query
 from arbiter_engine.facts import store as facts_store
 from arbiter_engine.facts import view as facts_view
 from arbiter_engine.runs import async_runs
+from arbiter_engine.runs import discovery
 from arbiter_engine.runs import gtest
 from arbiter_engine.runs import recipes
 from arbiter_engine.shared import census
@@ -445,6 +446,8 @@ def _handler(namespace: str, name: str) -> Callable[[Context, Mapping[str, Any]]
             return _register_tool
         if name == "import_recipes":
             return _import_recipes_tool
+        if name == "scan":
+            return _scan_tool
     return _stub_handler(namespace, name)
 
 
@@ -623,6 +626,23 @@ def _import_recipes_tool(context: Context, arguments: Mapping[str, Any]) -> Mapp
     del context
     book = _load_recipe_book_arg(arguments)
     return _recipe_book_summary(book, "imported")
+
+
+def _scan_tool(context: Context, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+    del context
+    scope = arguments.get("scope")
+    if not isinstance(scope, str):
+        raise RPCError(-32602, "invalid arguments", {"kind": "invalid_args", "field": "scope"})
+    # Capability-gating happens at the seat layer; the handler just returns real,
+    # facts-derived candidates (fail-closed to an empty list when no snapshot exists).
+    candidates = discovery.scan(Path.cwd(), scope)
+    targets = [candidate.to_json() for candidate in candidates]
+    return {
+        "content": [{"type": "text", "text": f"{len(targets)} test candidates"}],
+        "isError": False,
+        "scope": scope,
+        "targets": targets,
+    }
 
 
 def _recipe_book_summary(book: recipes.RecipeBook, verb: str) -> Mapping[str, Any]:

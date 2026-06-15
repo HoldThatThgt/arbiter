@@ -1,11 +1,19 @@
-"""Failure guidance from a stub facts read_index."""
+"""Failure guidance resolved against the real facts read_index.
+
+On a failed run, each failing gtest case is resolved against the published facts
+read_index (the same TestBody function facts ``runs.scan`` discovers) to hand the
+model a copy-paste ``detail``/``search`` next-query with the test's file:line — the
+red-test -> facts loop. Fail-closed: when no snapshot exists (the index is absent or
+empty) there is nothing to resolve, so guidance is empty rather than a crash.
+"""
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence, Tuple
+from typing import Any, Dict, Mapping, Tuple
+
+from arbiter_engine.runs import discovery
 
 
 MAX_GUIDANCE = 4
@@ -41,7 +49,7 @@ def for_result(repo_root: Path | str, result: Any) -> Tuple[GuidanceEntry, ...]:
         hit = index.get(test_name)
         if hit is None:
             continue
-        detail_id = hit.get("detail_id")
+        detail_id = hit.get("fact_id")
         queries = []
         if isinstance(detail_id, str) and detail_id:
             queries.append(f"detail {detail_id}")
@@ -60,27 +68,16 @@ def for_result(repo_root: Path | str, result: Any) -> Tuple[GuidanceEntry, ...]:
 
 
 def _load_index(root: Path) -> Mapping[str, Mapping[str, Any]]:
-    path = root / ".arbiter" / "facts" / "read_index.json"
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    tests = payload.get("tests") if isinstance(payload, dict) else None
-    if not isinstance(tests, list):
-        return {}
-    index = {}
-    for item in tests:
-        if not isinstance(item, dict):
-            continue
-        suite = item.get("suite")
-        name = item.get("name")
-        file = item.get("file")
-        line = item.get("line")
-        if not isinstance(suite, str) or not isinstance(name, str):
-            continue
-        if not isinstance(file, str) or not isinstance(line, int):
-            continue
-        index[_test_name(suite, name)] = item
+    # Resolve failing-test symbols against the real facts read_index (TestBody
+    # function facts), not a side-loaded JSON stub. discover_test_candidates is
+    # itself fail-closed, so a cold repo yields an empty mapping here.
+    index: Dict[str, Mapping[str, Any]] = {}
+    for candidate in discovery.discover_test_candidates(root):
+        index[candidate.test] = {
+            "file": candidate.file,
+            "line": candidate.line,
+            "fact_id": candidate.fact_id,
+        }
     return index
 
 
