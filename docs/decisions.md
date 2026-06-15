@@ -248,6 +248,30 @@ config tests migrate as acceptance (`engine/tests/c2`); the user-guide reserved-
 [m4-facts-absorption.md](proposals/m4-facts-absorption.md) §6 are updated. Full plan + decisions:
 the M4 proposal §8.
 
+## ADR-0019 — Review-driven doc/feature reconciliation (2026-06-15, accepted)
+A code/docs review surfaced three classes of drift this batch reconciles, recorded here because the
+relevant prose lives in append-only ADRs (0012, 0018) that must not be rewritten. **(1) Starter
+openings are refresh-on-init, not write-if-missing.** `arbiter init` `atomicWrite`s every shipped
+opening into `.arbiter/playbook/` on every run, so a binary upgrade re-seeds the latest templates —
+correcting ADR-0012's "write-if-missing (user edits are sacred)" wording and its
+`.arbiter/match/playbook/` path; the real path is `.arbiter/playbook/`. User customization is by
+forking to a new name (`AddPlayBook`): own-named books are not in the `baseOpenings` list and `init`
+never touches them. (`config.yml`/`recipes.yaml` remain write-if-missing — they hold user state.)
+**(2) The four absorption gaps the review flagged are being wired in this batch**, completing what
+ADR-0018 / the M4 proposal described: overlay-TTL GC (`overlay_ttl_seconds` is now consumed in the
+incremental poll loop rather than a no-op), build-cache integration into the run path, the real
+`runs.scan` handler, and facts-derived `TestBody` discovery. **(3) The accurate mechanisms of the
+four starter openings** are recorded so future docs match the shipped templates:
+`fix-reported-bug` = two plain `run` predicates (repro-runs-red, expect overall `failed`; suite-green,
+expect overall `passed` / `max_failed` 0) plus a `RegisterTest` freeze — *not* a 5×-loop,
+`git diff --quiet`, or a single predicate; `fix-slow-path` = a frozen complexity-ratio test
+(`time(2N)/time(N)` under bound K), with the perf-mcp noise-band analysis-only; `hunt-latent-bugs` =
+symptom-test polarity; `build-feature` = `build && ! run`. **Consequences:** ADR-0012 and ADR-0018
+prose are superseded only where this entry states (path, refresh semantics, gap closure) and are
+otherwise unchanged; `docs/design.md` seat-tool counts and the M4 proposals' test-dir path
+(`engine/tests/c2/`) and headline total (24 files / 233 tests) are corrected in the same batch; the
+four gap fixes land as their own reviewed PRs.
+
 ---
 
 *Template for new entries:*

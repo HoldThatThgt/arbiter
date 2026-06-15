@@ -10,7 +10,7 @@ log shim and the `_StorageCompatModule` setattr fan-out (needed by `mock.patch.o
 the wire schema is frozen in `facts/descriptors.py`; `facts/view.py` owns the flock writer-gate. The
 extractor package (`facts/extractor/`) does **not** exist yet.
 
-> Convention note: migrated tests live in `engine/tests/cipher2/` (a unittest-discovered subpackage),
+> Convention note: migrated tests live in `engine/tests/c2/` (a unittest-discovered subpackage),
 > keeping the upstream filenames. The JSON test libclang backend installer is re-homed into that
 > package's `__init__.py` (the unittest equivalent of cipher-2's `tests/__init__.py`).
 
@@ -20,7 +20,7 @@ extractor package (`facts/extractor/`) does **not** exist yet.
 
 ### 1.1 Where migrated tests live
 `make test-py` → `PYTHONPATH=engine python -m unittest discover -s engine/tests` recurses into
-subpackages with an `__init__.py`. Migrated tests live in **`engine/tests/cipher2/`** keeping their
+subpackages with an `__init__.py`. Migrated tests live in **`engine/tests/c2/`** keeping their
 cipher-2 names; the package `__init__.py` is also the home for the JSON libclang backend installer
 (§1.3). The stdlib-import gate scans `arbiter_engine/` only, so migrated tests may import
 `unittest`/`tempfile`/`unittest.mock` freely — but the **ported engine code** they exercise stays
@@ -37,7 +37,7 @@ stdlib-only.
 | `from cipher2.config import load_config, write_default_config` | **no analog** — 6-field extractor-config shim builder |
 | `from cipher2.tools.log import open_log` | `arbiter_engine.facts.store._common.open_log` (no-op) — drop log assertions (except extractor/incremental, which get a real log) |
 | `from cipher2.incremental import …` | `arbiter_engine.facts.incremental.…` (Phase 2) |
-| `from tests.toolchain_helpers import …` | `from cipher2.toolchain_helpers import …` (re-homed into the test subpackage) |
+| `from tests.toolchain_helpers import …` | `from c2.toolchain_helpers import …` (re-homed into the test subpackage) |
 
 The `store/__init__.py` `_StorageCompatModule` makes `mock.patch.object(storage_module, …)` fan out
 to submodule globals — already wired, so the file-store/relative-store mocks port unchanged.
@@ -47,11 +47,11 @@ cipher-2's `tests/__init__.py` calls `_install_json_test_libclang_backend()` at 
 tests run against a JSON-subprocess AST oracle. Reproduce in arbiter as test infrastructure: Phase 1.5
 ports `_install_json_test_libclang_backend`/`_JsonSubprocessTestBackend`/`_clear_test_libclang_backend`
 + the `_TEST_AST_BACKEND_FACTORY` hook under `arbiter_engine.facts.extractor.code`, and the install
-side-effect goes in `engine/tests/cipher2/__init__.py`. Keep the probe AST node identifiers
+side-effect goes in `engine/tests/c2/__init__.py`. Keep the probe AST node identifiers
 (`PROBE_FUNCTION_NAME`) byte-aligned.
 
 ### 1.4 Shared helpers & fixtures
-`toolchain_helpers.py` re-homes to `engine/tests/cipher2/toolchain_helpers.py` (its `write_default_config`
+`toolchain_helpers.py` re-homes to `engine/tests/c2/toolchain_helpers.py` (its `write_default_config`
 tail → the 6-field extractor-config shim builder). No external on-disk fixtures: every store/extractor/mcp
 test builds records inline into a `tempfile.TemporaryDirectory`.
 
@@ -121,7 +121,7 @@ coordinator needs a **real** jsonl log. `worker_count`→`facts.index_on_build.p
 
 ## 4. Totals & risks
 
-**Totals:** 16 included files (165 tests), 10 partial (70 tests), 33 excluded. recordCount 61.
+**Totals:** 24 included files (233 tests) across both phases (Phase 1: 16 files / 165 tests; Phase 2 adds the incremental/config files of §2), 10 partial (70 tests), 33 excluded. recordCount 61.
 
 **Risks**
 1. **Store lock-surface drift** — mitigated: cipher-2's mkdir-lock (`store_events`/`recovery`) was ported verbatim, so `test_storage_path_safety` ports cleanly; `recovery.py:11` `.cipher` bug fixed.
