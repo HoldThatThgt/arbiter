@@ -1,6 +1,9 @@
 # Proposal: M4 — absorb the cipher-2 facts engine (real extraction, search/detail, incremental)
 
-Status: **approved** — owner decisions recorded 2026-06-15 (see §8); executing.
+Status: **landed** — owner decisions recorded 2026-06-15 (see §8); all phases implemented and
+`make test`-green on `m4/facts-absorption` (Phase 1.5 seam + extractor/initializer acceptance +
+Phase 2 incremental engine, live overlay reconcile/merge, and the background-index daemon). The
+prose below is the as-built plan; ADR-0018 records completion.
 Relates to: ADR-0002 (polyglot, cipher-2 absorbed verbatim), ADR-0004 (build-driven indexing),
 ADR-0005 (two caches/keys), ADR-0013 (in-tree cipher-2 retired; recorded corpus is the pin),
 ADR-0015. Supersedes the "reserved" disposition of `facts.extractor`/`facts.incremental`
