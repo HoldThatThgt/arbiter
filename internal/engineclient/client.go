@@ -125,7 +125,14 @@ func Spawn(ctx context.Context, role EngineRole, repo string) (*Engine, error) {
 		return nil, fmt.Errorf("engine role %q is invalid", role)
 	}
 
-	python := os.Getenv("PYTHON")
+	// Honor the documented interpreter precedence:
+	// ARBITER_ENGINE_PYTHON -> PYTHON -> python3. This mirrors
+	// deploy.ResolvePython; it is replicated inline here because deploy imports
+	// engineclient (importing it back would create a cycle).
+	python := os.Getenv("ARBITER_ENGINE_PYTHON")
+	if python == "" {
+		python = os.Getenv("PYTHON")
+	}
 	if python == "" {
 		python = "python3"
 	}
