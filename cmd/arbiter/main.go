@@ -49,7 +49,7 @@ func main() {
 
 func run() error {
 	if len(os.Args) < 2 {
-		return fmt.Errorf("usage: arbiter init [flags] | adopt | status [--json] | report [--json] [match_id] | serve <seat> | hook stop | cc [--root DIR] -- <real-compiler> [args...]")
+		return fmt.Errorf("usage: arbiter init [flags] | adopt | status [--json] | report [--json] [match_id] | serve <seat> | hook <stop|guard|subagent-stop> | cc [--root DIR] -- <real-compiler> [args...]")
 	}
 	root, err := os.Getwd()
 	if err != nil {
@@ -127,12 +127,20 @@ func run() error {
 		fmt.Print(cli.FormatReport(report))
 		return nil
 	case "serve":
+		if wantsHelp(os.Args[2:]) {
+			fmt.Println("usage: arbiter serve <player|curator|executor> [--root DIR]")
+			return nil
+		}
 		seatName, seatRoot, err := parseRootArgs(os.Args[2:], root, 1)
 		if err != nil {
 			return fmt.Errorf("usage: arbiter serve <player|curator|executor> [--root DIR]")
 		}
 		return seat.Run(context.Background(), seatRoot, seatName)
 	case "hook":
+		if wantsHelp(os.Args[2:]) {
+			fmt.Println("usage: arbiter hook <stop|guard|subagent-stop> [--root DIR]")
+			return nil
+		}
 		sub, hookRoot, err := parseRootArgs(os.Args[2:], root, 1)
 		if err != nil || (sub != "stop" && sub != "guard" && sub != "subagent-stop") {
 			return fmt.Errorf("usage: arbiter hook <stop|guard|subagent-stop> [--root DIR]")
@@ -200,7 +208,7 @@ func run() error {
 		}
 		return nil
 	default:
-		return fmt.Errorf("usage: arbiter init [flags] | adopt | status [--json] | report [--json] [match_id] | serve <seat> | hook stop | cc [--root DIR] -- <real-compiler> [args...]")
+		return fmt.Errorf("usage: arbiter init [flags] | adopt | status [--json] | report [--json] [match_id] | serve <seat> | hook <stop|guard|subagent-stop> | cc [--root DIR] -- <real-compiler> [args...]")
 	}
 }
 
@@ -220,7 +228,7 @@ Commands:
   report   Journal + run evidence for a finished match (--json supported).
   serve    Run a seat MCP server (player|curator|executor). Spawned by Claude
            Code from .mcp.json and the agent files — not run by hand.
-  hook     The Stop-hook gate (arbiter hook stop). Wired by init — not run by hand.
+  hook     The hook gates (arbiter hook <stop|guard|subagent-stop>). Wired by init — not run by hand.
   cc       The per-TU compiler shim (arbiter cc [--root DIR] -- <real-cc> ...). Installed
            into recipes by /arbiter-intro — not run by hand.
   help     Show this help. init also accepts -h / --help.

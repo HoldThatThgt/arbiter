@@ -1079,6 +1079,7 @@ func guidance(replacedMCP, noExecutor, embedded bool, staleInstalled, expectedVe
 	if replacedMCP {
 		msg += "提示:.mcp.json 中既有 arbiter 服务器指向不同命令,已覆盖为当前二进制。\n"
 	}
+	msg += "下一步:在本仓库打开或重启 Claude Code,使其加载新写入的 skills 与 MCP 服务器(斜杠命令需会话拾取 .claude/skills/ 后才出现)。\n"
 	return msg
 }
 
