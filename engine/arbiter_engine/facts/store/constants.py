@@ -17,6 +17,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Set, Tuple
 
+from ._common import JSONValue
+from ._common import LogError, LogEvent, open_log
+
 SCHEMA_VERSION = 5
 SNAPSHOT_FORMAT = "compact-jsonl-gzip"
 SNAPSHOT_COMPRESSION = "gzip-1"

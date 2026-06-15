@@ -1,7 +1,65 @@
-"""Content-addressed fact store + query engine, absorbed from cipher-2 (M4).
+"""FACT and relative file snapshot store for cipher-2."""
 
-Near-verbatim import of cipher-2's `storage/` namespace, adapted at two seams: the
-`cipher2.common.JSONValue` type and the `cipher2.tools.log` sink are replaced by the
-local `._common` shim (see docs/proposals/m4-facts-absorption.md). Stdlib + sqlite3 +
-hashlib only — passes the engine stdlib-import gate.
-"""
+from __future__ import annotations
+
+import sys
+import types
+
+from .constants import *
+from .models import *
+from .views import *
+from .search import *
+from .store import FileFactStore, open_fact_store
+
+_COMPAT_MODULES = (
+    "constants",
+    "models",
+    "utils",
+    "search",
+    "views",
+    "serialization",
+    "read_index",
+    "snapshot_reader",
+    "snapshot_writer",
+    "store_events",
+    "store",
+)
+
+
+class _StorageCompatModule(types.ModuleType):
+    def __setattr__(self, name: str, value: object) -> None:
+        super().__setattr__(name, value)
+        package = __name__
+        for module_name in _COMPAT_MODULES:
+            module = sys.modules.get(f"{package}.{module_name}")
+            if module is not None and hasattr(module, name):
+                types.ModuleType.__setattr__(module, name, value)
+
+
+sys.modules[__name__].__class__ = _StorageCompatModule
+
+__all__ = [
+    "FactRecord",
+    "FactRelative",
+    "FactView",
+    "EncodedFactLine",
+    "EncodedRelativeLine",
+    "FileFactStore",
+    "RelationSearchAnchorCandidate",
+    "RelationSearchMatch",
+    "RelationSearchMatchedRelation",
+    "RelationSearchPathNode",
+    "RelationSearchQuery",
+    "RelationSearchResult",
+    "RelativeCondition",
+    "SourceInventoryEntry",
+    "StorageError",
+    "StorageManifest",
+    "StorageStats",
+    "StoredFactLine",
+    "StoredRelativeLine",
+    "StoredSourceInventoryLine",
+    "TemporaryOverlay",
+    "open_fact_store",
+    "parse_relation_search_query",
+]
