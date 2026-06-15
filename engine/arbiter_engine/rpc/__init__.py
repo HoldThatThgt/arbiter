@@ -85,22 +85,28 @@ def main() -> int:
 
 def serve(stdin: TextIO, stdout: TextIO, router: Optional[Router] = None) -> None:
     active_router = router or default_router()
-    for line in stdin:
-        if len(line.encode("utf-8")) > MAX_LINE_BYTES:
-            response = _error(
-                None,
-                -32600,
-                "invalid request",
-                {"kind": "line_too_large", "limit": MAX_LINE_BYTES},
-            )
-        elif not line.strip():
-            continue
-        else:
-            response = _dispatch_line(line, active_router)
-        if response is None:
-            continue
-        stdout.write(json.dumps(response, separators=(",", ":")) + "\n")
-        stdout.flush()
+    # Owner-required automatic background index (ADR-0018): the player QUERY engine warms the
+    # incremental overlay between refreshes. No-op for non-writers / when disabled; stopped on EOF.
+    background = facts_view.start_background_index(Path.cwd(), _facts_context(_context({})))
+    try:
+        for line in stdin:
+            if len(line.encode("utf-8")) > MAX_LINE_BYTES:
+                response = _error(
+                    None,
+                    -32600,
+                    "invalid request",
+                    {"kind": "line_too_large", "limit": MAX_LINE_BYTES},
+                )
+            elif not line.strip():
+                continue
+            else:
+                response = _dispatch_line(line, active_router)
+            if response is None:
+                continue
+            stdout.write(json.dumps(response, separators=(",", ":")) + "\n")
+            stdout.flush()
+    finally:
+        background.stop()
 
 
 def default_router() -> Router:

@@ -16,6 +16,7 @@ from arbiter_engine.facts.store import (
 )
 
 from ._facts_server import open_facts_server
+from .incremental_support import publish_overlay
 
 
 def _fact(object_id: str, name: str, *, kind: str = "function", source: str = "src/main.c:1", **payload) -> FactRecord:
@@ -483,7 +484,6 @@ class McpRelationSearchTest(unittest.TestCase):
         self.assertEqual(response.anchor_candidates[0].payload_preview["resolution_tier"], 3)
         self.assertEqual(response.anchor_candidates[0].payload_preview["anchor_match"], "fuzzy")
 
-    @unittest.skip("overlay fact_view_provider injection — Phase 2 incremental (cwd-bound rpc handler has no overlay hook yet)")
     def test_relation_search_sees_overlay_facts_and_relatives(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp)
@@ -493,13 +493,15 @@ class McpRelationSearchTest(unittest.TestCase):
             base_relative = _relative("rel:base", base_reader.object_id, field.object_id)
             overlay_relative = _relative("rel:overlay", overlay_reader.object_id, field.object_id)
             store = open_fact_store(target, mode="w", log_enabled=False)
-            store.replace_snapshot([field, base_reader], [base_relative])
+            manifest = store.replace_snapshot([field, base_reader], [base_relative])
             overlay = TemporaryOverlay(
                 overlay_id="relation-search",
                 fact_upserts=[overlay_reader],
                 relative_upserts=[overlay_relative],
             )
-            server = open_facts_server(target, fact_view_provider=lambda: store.open_view(overlay))
+            # Publish the overlay to disk so the cwd-bound rpc reader merges it (Phase 2).
+            publish_overlay(target, overlay, base_snapshot_id=manifest.snapshot_id)
+            server = open_facts_server(target, role="QUERY", seat="executor")
 
             response = server.search("readers:List.length file:overlay.c", limit=20)
 

@@ -2,6 +2,8 @@ import io
 import json
 import os
 import tempfile
+import threading
+import time
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
@@ -119,6 +121,46 @@ class FactsReconcileTest(unittest.TestCase):
             fact_view = view.read_published(root)
 
             self.assertEqual(fact_view.base_snapshot_id, "current")
+
+    def test_background_index_starts_for_writer_ticks_and_stops_cleanly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "a.c").write_text("int a;\n", encoding="utf-8")
+            (root / ".arbiter").mkdir()
+            (root / ".arbiter" / "config.yml").write_text(
+                "facts:\n  incremental:\n    poll_interval_ms: 60\n", encoding="utf-8"
+            )
+            state_path = root / ".arbiter" / "facts" / "run" / "incremental" / "state.json"
+
+            background = view.start_background_index(root, view.AccessContext(role="QUERY", seat="player"))
+            try:
+                self.assertTrue(background.active)
+                deadline = time.time() + 2.0
+                while time.time() < deadline and not state_path.exists():
+                    time.sleep(0.02)
+                self.assertTrue(state_path.exists())  # the daemon ticked and reconciled
+            finally:
+                background.stop()
+
+            # No orphan thread survives the stop (torture invariant, like the seat children).
+            self.assertFalse(
+                any(t.name == "arbiter-facts-bg-index" and t.is_alive() for t in threading.enumerate())
+            )
+
+    def test_background_index_is_inactive_for_non_writer_and_when_disabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            non_writer = view.start_background_index(root, view.AccessContext(role="QUERY", seat="executor"))
+            self.assertFalse(non_writer.active)
+            non_writer.stop()  # safe no-op
+
+            (root / ".arbiter").mkdir()
+            (root / ".arbiter" / "config.yml").write_text(
+                "facts:\n  incremental:\n    enabled: false\n", encoding="utf-8"
+            )
+            disabled = view.start_background_index(root, view.AccessContext(role="QUERY", seat="player"))
+            self.assertFalse(disabled.active)
+            disabled.stop()
 
     def test_refresh_is_writer_only_and_ttl_knob_is_deleted(self):
         with tempfile.TemporaryDirectory() as tmp, working_dir(tmp), engine_env(role="EXEC", seat="player"):

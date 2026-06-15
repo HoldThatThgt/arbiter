@@ -2,8 +2,9 @@
 # Adaptations: open_mcp_server -> open_facts_server; cipher2 -> arbiter_engine.facts.{store}; the
 # "relations" tool rejection is an arbiter PROTOCOL error (RPCError -32601 tool_not_found); the
 # cipher2.tools.log mcp.detail/mcp.relations event assertions are dropped (store runs log-disabled);
-# the three tests that inject a fact_view_provider over an UNPOPULATED store are skipped (the cwd-bound
-# rpc handler has no overlay/provider hook — Phase 2 incremental).
+# the overlay-equivalence test publishes the overlay to disk and merges it via a reader query
+# (Phase 2); the two missing-endpoint preview tests stay skipped because arbiter's store + overlay
+# enforce endpoint closure, so a relative with a dangling endpoint is unreachable here.
 import json
 import tempfile
 import unittest
@@ -13,6 +14,7 @@ from arbiter_engine.errors import RPCError
 from arbiter_engine.facts.store import FactRecord, FactRelative, RelativeCondition, TemporaryOverlay, open_fact_store
 
 from ._facts_server import open_facts_server
+from .incremental_support import publish_overlay
 
 
 def _fact(object_id: str, name: str, *, source: str = "src/main.c:1", profile: str = "default") -> FactRecord:
@@ -310,7 +312,7 @@ class McpRelationsTest(unittest.TestCase):
         self.assertEqual(buckets["incoming_defines"]["relatives"][0]["relation_kind"], "defines")
         # dropped: event.counts["relative_rollup_group_count"/"relative_collapsed_instance_count"] (log-only)
 
-    @unittest.skip("fact_view_provider injection over an unpopulated store — Phase 2 incremental")
+    @unittest.skip("dangling relative endpoints are unreachable in arbiter — store + overlay enforce endpoint closure")
     def test_detail_preview_uses_source_diversity_and_missing_endpoint_defaults(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp)
@@ -341,7 +343,7 @@ class McpRelationsTest(unittest.TestCase):
             detail = server.call_tool("detail", {"fact_id": "fact:target", "budget": "small"})
         self.assertFalse(detail.is_error)
 
-    @unittest.skip("fact_view_provider injection over an unpopulated store — Phase 2 incremental")
+    @unittest.skip("dangling relative endpoints are unreachable in arbiter — store + overlay enforce endpoint closure")
     def test_detail_preview_missing_endpoint_profile_is_null(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp)
@@ -351,7 +353,6 @@ class McpRelationsTest(unittest.TestCase):
             detail = server.call_tool("detail", {"fact_id": "fact:target", "budget": "normal"})
         self.assertFalse(detail.is_error)
 
-    @unittest.skip("overlay fact_view_provider equivalence — Phase 2 incremental")
     def test_detail_preview_rollup_and_selection_are_identical_for_overlay_view(self):
         facts = [
             _fact("fact:target", "target", source="src/target.c:1"),
@@ -369,17 +370,21 @@ class McpRelationsTest(unittest.TestCase):
             base_detail = open_facts_server(base_target).call_tool("detail", {"fact_id": "fact:target", "budget": "normal"})
             overlay_target = Path(overlay_tmp)
             store = open_fact_store(overlay_target, mode="w", log_enabled=False)
-            store.replace_snapshot([facts[0]], [])
+            manifest = store.replace_snapshot([facts[0]], [])
             overlay = TemporaryOverlay(
                 overlay_id="overlay-rel-preview",
                 view_state="overlay",
                 fact_upserts=facts[1:],
                 relative_upserts=relatives,
             )
-            overlay_server = open_facts_server(overlay_target, fact_view_provider=lambda: store.open_view(overlay))
+            # Publish the overlay to disk; a reader query merges base + overlay (Phase 2).
+            publish_overlay(overlay_target, overlay, base_snapshot_id=manifest.snapshot_id)
+            overlay_server = open_facts_server(overlay_target, role="QUERY", seat="executor")
             overlay_detail = overlay_server.call_tool("detail", {"fact_id": "fact:target", "budget": "normal"})
         self.assertFalse(base_detail.is_error)
         self.assertFalse(overlay_detail.is_error)
+        # The overlay-merged preview is identical to the same facts published as one base snapshot.
+        self.assertEqual(overlay_detail.structured_content["relative_preview"], base_detail.structured_content["relative_preview"])
 
 
 if __name__ == "__main__":

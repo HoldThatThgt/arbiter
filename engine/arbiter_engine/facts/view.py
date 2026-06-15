@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -113,17 +114,70 @@ def _facts_config(repo: Path) -> "config.FactsConfig":
         return config.FactsConfig()
 
 
-def _reconcile_extractor_config(repo: Path, worker_count: int) -> Optional[ExtractorConfig]:
+def _reconcile_extractor_config(repo: Path, worker_count: int) -> ExtractorConfig:
+    # The last build's compile-db (if any) gives the dirty re-extraction the build's exact flags;
+    # without it the extractor still parses dirty sources with default flags + an auto-detected
+    # toolchain. No capable toolchain at all -> the coordinator reports a typed error (base view).
     compile_db = relocation.persisted_compile_db_path(repo)
-    if not compile_db.exists():
-        # No build has published a compile-db: a dirty set can't be re-extracted (the coordinator
-        # reports a typed error instead of guessing flags). Clean repos reconcile to "base" fine.
-        return None
-    return ExtractorConfig(compile_database_path=compile_db, extractor_worker_count=worker_count)
+    return ExtractorConfig(
+        compile_database_path=compile_db if compile_db.exists() else None,
+        extractor_worker_count=worker_count,
+    )
 
 
 def _is_writer(context: AccessContext) -> bool:
     return context.role == "QUERY" and context.seat == "player"
+
+
+class BackgroundIndex:
+    """Handle for the owner-required automatic background index (ADR-0018).
+
+    A poll thread that keeps the incremental overlay warm between the referee's synchronous
+    ``arbiter/refresh`` reconciles; adjudication stays never-stale on the synchronous path, so the
+    daemon is a pure optimization. It shares the OVERLAY flock with the synchronous reconcile (each
+    tick calls the same disk-idempotent ``reconcile``), so the two never race. Hosted by the player
+    QUERY engine's serve loop: started at engine startup, stopped on stdin EOF (no orphan thread).
+    """
+
+    def __init__(self, thread: Optional[threading.Thread], stop_event: Optional[threading.Event]) -> None:
+        self._thread = thread
+        self._stop = stop_event
+
+    @property
+    def active(self) -> bool:
+        return self._thread is not None
+
+    def stop(self) -> None:
+        if self._stop is not None:
+            self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+
+
+def start_background_index(repo: Path, context: AccessContext) -> BackgroundIndex:
+    if not _is_writer(context):
+        return BackgroundIndex(None, None)
+    repo = Path(repo)
+    incremental_config = _facts_config(repo).incremental
+    if not incremental_config.enabled:
+        return BackgroundIndex(None, None)
+    stop = threading.Event()
+    thread = threading.Thread(
+        target=_background_loop,
+        args=(repo, context, max(0.05, incremental_config.poll_interval_ms / 1000.0), stop),
+        name="arbiter-facts-bg-index",
+        daemon=True,
+    )
+    thread.start()
+    return BackgroundIndex(thread, stop)
+
+
+def _background_loop(repo: Path, context: AccessContext, interval: float, stop: threading.Event) -> None:
+    while not stop.wait(interval):
+        try:
+            reconcile(repo, context, timeout_s=2.0)
+        except Exception:  # noqa: BLE001 - a busy OVERLAY lock or transient extract error just skips this tick.
+            pass
 
 
 def _base_snapshot_id(repo: Path) -> Optional[str]:
@@ -159,10 +213,12 @@ def _manifest_snapshot_id(manifest_path: Path) -> Optional[str]:
 
 __all__ = [
     "AccessContext",
+    "BackgroundIndex",
     "FactView",
     "access",
     "overlay_state_path",
     "read_published",
     "reconcile",
     "refresh",
+    "start_background_index",
 ]

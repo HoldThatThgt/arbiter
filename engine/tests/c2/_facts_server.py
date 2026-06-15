@@ -31,8 +31,12 @@ def working_dir(path):
 
 
 @contextmanager
-def engine_env(role="QUERY", seat="player"):
-    with mock.patch.dict(os.environ, {"ARBITER_ENGINE_ROLE": role, "ARBITER_ENGINE_SEAT": seat}):
+def engine_env(role="QUERY", seat="player", *, extra_path=None):
+    overrides = {"ARBITER_ENGINE_ROLE": role, "ARBITER_ENGINE_SEAT": seat}
+    if extra_path:
+        # Prepend a dir (e.g. a fake-toolchain bin/) so the writer's reconcile finds clang on PATH.
+        overrides["PATH"] = extra_path + os.pathsep + os.environ.get("PATH", "")
+    with mock.patch.dict(os.environ, overrides):
         yield
 
 
@@ -107,10 +111,11 @@ class _DetailResponse(_AttrView):
 
 
 class _FactsServer:
-    def __init__(self, repo, role="QUERY", seat="player", *, fact_view_provider=None, log_enabled=True):
+    def __init__(self, repo, role="QUERY", seat="player", *, fact_view_provider=None, log_enabled=True, extra_path=None):
         self.target_repo = Path(repo)
         self.log_enabled = log_enabled
         self._role, self._seat = role, seat
+        self._extra_path = extra_path
         self._fact_view_provider = fact_view_provider  # accepted for signature-compat; unused
 
     def call_tool(self, name: str, args: Mapping[str, Any]) -> ToolCallResult:
@@ -119,7 +124,7 @@ class _FactsServer:
              "params": {"name": name, "arguments": dict(args)}},
             separators=(",", ":"),
         ) + "\n"
-        with working_dir(self.target_repo), engine_env(self._role, self._seat):
+        with working_dir(self.target_repo), engine_env(self._role, self._seat, extra_path=self._extra_path):
             out = io.StringIO()
             rpc.serve(io.StringIO(line), out)
             resp = json.loads(out.getvalue())
@@ -140,6 +145,6 @@ class _FactsServer:
         return _DetailResponse(self.call_tool("detail", {"fact_id": fact_id, "budget": budget}).structured_content)
 
 
-def open_facts_server(repo, *, role="QUERY", seat="player", fact_view_provider=None, log_enabled=True) -> _FactsServer:
+def open_facts_server(repo, *, role="QUERY", seat="player", fact_view_provider=None, log_enabled=True, extra_path=None) -> _FactsServer:
     return _FactsServer(Path(repo), role=role, seat=seat,
-                        fact_view_provider=fact_view_provider, log_enabled=log_enabled)
+                        fact_view_provider=fact_view_provider, log_enabled=log_enabled, extra_path=extra_path)
