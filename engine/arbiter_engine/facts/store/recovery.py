@@ -6,9 +6,13 @@ import json
 import os
 from pathlib import Path
 
+from ..relocation import facts_dir
+
 
 def force_unlock(target_repo: Path) -> bool:
-    lock_dir = Path(target_repo) / ".arbiter" / "facts" / "run" / "storage.lock"
+    # Single source of truth for the store root (same helper FileFactStore uses),
+    # so this can never drift from the live lock again (was a stale cipher-2 ".cipher").
+    lock_dir = facts_dir(target_repo) / "run" / "storage.lock"
     if not lock_dir.exists():
         return False
     owner_path = lock_dir / "owner.json"

@@ -31,13 +31,15 @@ from .snapshot_reader import *
 from .snapshot_writer import *
 from .store_events import *
 
+from ..relocation import facts_dir
+
 
 class FileFactStore:
     def __init__(self, target_repo: Path, mode: str = "r", *, log_enabled: bool = True) -> None:
         if mode not in {"r", "w"}:
             raise StorageError("invalid_mode", "mode must be 'r' or 'w'")
         self.target_repo = Path(target_repo)
-        self.cipher_dir = self.target_repo / ".arbiter" / "facts"  # M4: cipher-2 used .cipher
+        self.cipher_dir = facts_dir(self.target_repo)  # M4: arbiter store root (was cipher-2 ".cipher")
         self.mode = mode
         self.log_enabled = log_enabled
         self._log_write_failures = 0
