@@ -1,6 +1,6 @@
 # Proposal: M4 — absorb the cipher-2 facts engine (real extraction, search/detail, incremental)
 
-Status: **proposed** (awaiting owner approval before any code lands)
+Status: **approved** — owner decisions recorded 2026-06-15 (see §8); executing.
 Relates to: ADR-0002 (polyglot, cipher-2 absorbed verbatim), ADR-0004 (build-driven indexing),
 ADR-0005 (two caches/keys), ADR-0013 (in-tree cipher-2 retired; recorded corpus is the pin),
 ADR-0015. Supersedes the "reserved" disposition of `facts.extractor`/`facts.incremental`
@@ -146,9 +146,17 @@ Forced first (incremental overlays merge over a base store).
 - **2.3 Overlay merge at query time**: port `storage/views.py` merge so `FactView.search/get_fact/
   relatives` union base (SQLite) + upserts and subtract tombstones (the Python query twin already
   ships in `search.py`). Wire into `view.access` (writer→reconcile, reader→read_published).
-- **2.4 Toggle**: `facts.incremental` flips from reserved → **live**. On-demand reconcile on writer
-  access (matches how cipher-2's own MCP host drives it). **Drop** cipher-2's vestigial poll thread,
-  `worker_count`, and `overlay_ttl_seconds` (deferred — note in docs). Update
+- **2.4 Background coordinator (owner-required)**: `facts.incremental` flips from reserved →
+  **live**, driving an **automatic background index**. Port cipher-2's `IncrementalCoordinator`
+  poll loop as a session-resident daemon thread hosted **inside the player's QUERY engine** (the
+  facts single-writer, ADR-0009): started on first writer access, stopped on stdin EOF / engine
+  shutdown (torture-tested for no orphan, like the seat children). Make the config knobs **live**:
+  `poll_interval_ms`, `debounce_ms`, `worker_count` (parallel dirty re-extraction — = the unified
+  `pool`), `overlay_ttl_seconds` (overlay GC — cipher-2 left this a no-op; we implement it),
+  `max_dirty_files`. The thread shares the `OVERLAY` flock with synchronous `reconcile` and never
+  races the base publisher (overlays live in a disjoint dir). The referee's `arbiter/refresh` still
+  forces a synchronous reconcile before fact predicates, so **adjudication is never stale**; the
+  background thread only keeps the index warm between refreshes. Update
   [[facts-config-keys-disposition]] and the user-guide reserved-key note.
 
 ## 7. Pins & regeneration (must-not-break)
@@ -169,17 +177,19 @@ Forced first (incremental overlays merge over a base store).
 4. **Go + verify tests**: add populated-snapshot fact-predicate tests (`min_results≥1`, `reachable`,
    `total_at_least`) so the adjudication path is exercised, not just the empty path.
 
-## 8. Decisions (defaults proposed — flag any to change)
+## 8. Decisions — resolved by the owner (2026-06-15)
 
-1. **Package layout**: `facts/store/` + `facts/extractor/` (vs a flat `facts/`). *Proposed: nested.*
-2. **Worker count**: unify cipher-2 `extractor_worker_count` with the already-wired
-   `facts.index_on_build.pool`. *Proposed: yes — one knob.*
-3. **Drop incremental's poll-loop / `worker_count` / `overlay_ttl_seconds`**: on-demand reconcile
-   only (matches cipher-2's real usage). *Proposed: drop, note as deferred.*
-4. **Query grammar scope**: full grammar in Phase 1 (recommended) vs a minimal first cut. *Proposed:
-   full — it's a near-verbatim port, the corpus pins it anyway.*
-5. **Record M4 completion as an ADR** (acceptance of the absorption + flipping `facts.incremental`
-   live). *Proposed: add ADR-0018 when Phase 2 lands.*
+1. **Package layout** — nested `facts/store/` + `facts/extractor/`. ✅
+2. **Worker count** — unified: one knob, `facts.index_on_build.pool`, drives both the build-tail
+   extraction and incremental dirty re-extraction. ✅
+3. **Incremental** — **automatic background index is REQUIRED** (not on-demand only; *changed from
+   the proposed default*). Keep cipher-2's poll loop and make every knob live
+   (`poll_interval_ms`/`debounce_ms`/`worker_count`/`overlay_ttl_seconds`/`max_dirty_files`),
+   including overlay TTL/GC which cipher-2 never implemented. Host the daemon thread in the player
+   QUERY engine; see §6.2.4. ✅
+4. **Query grammar** — full grammar in Phase 1. ✅
+5. **ADR** — record M4 completion + `facts.incremental` going live as **ADR-0018** when Phase 2
+   lands. ✅
 
 ## 9. Risks & mitigations
 
@@ -198,12 +208,16 @@ Forced first (incremental overlays merge over a base store).
   returns hits with `result_count/total`; `callers:`/`reachable:` work; `detail(object_id)` returns
   the record + source context; `fact`-predicates with `min_results≥1`/`reachable` pass; empty-corpus
   conformance lines byte-identical; transcripts regenerated; stdlib-only + full suite green.
-- **Phase 2**: editing a source (or a header, via fanout) without a rebuild surfaces updated facts
-  through an overlay view; `facts.incremental` toggles it; base+overlay query results match the
-  pure-base results after a full rebuild; suite green.
+- **Phase 2**: with `facts.incremental` enabled, editing a source (or a header, via fanout)
+  surfaces updated facts through an overlay **automatically within ~`poll_interval_ms`** (no
+  explicit refresh needed); `arbiter/refresh` also forces it synchronously; the background thread
+  starts with the player QUERY engine and exits cleanly on EOF (no orphan); overlays past
+  `overlay_ttl_seconds` are GC'd; base+overlay results match the pure-base results after a full
+  rebuild; suite green.
 
 ## 11. Out of scope / deferred
 
 cipher-2's `doc`/`git` extractors (only `code` is implemented upstream); pg_regress/TAP harnesses;
-background poll-loop + overlay TTL/GC; multi-language relation vocabularies. The `source_inventory`
-machinery is ported only insofar as Phase 2 needs `included_by` for header fanout.
+multi-language relation vocabularies. (Background poll-loop + overlay TTL/GC are now **in scope** per
+§6.2.4, decision #3.) The `source_inventory` machinery is ported in full — Phase 2 needs
+`included_by` for header fanout and `sha256/mtime_ns` for dirty detection.
