@@ -46,8 +46,18 @@ class ServerTest(unittest.TestCase):
 
     def test_diagnostics_tool_returns_checks(self):
         response = self.server.handle(request("tools/call", {"name": "gdb_diagnostics", "arguments": {}}))
-        self.assertIn("checks", response["result"]["structuredContent"])
-        self.assertIn("gdb", {check["name"] for check in response["result"]["structuredContent"]["checks"]})
+        self.assertFalse(response["result"].get("isError", False))
+        structured = response["result"]["structuredContent"]
+        self.assertIn("checks", structured)
+        checks = structured["checks"]
+        self.assertTrue(checks)
+        # Assert the SHAPE of each check, not its value: ok-ness is environment-dependent
+        # (the gdb_run local-inferior probe self-skips on macOS Homebrew gdb and reports
+        # not-ok on a slow/contended host) — diagnostics must always REPORT, never crash.
+        for check in checks:
+            self.assertEqual({"name", "ok", "detail"}, set(check))
+            self.assertIsInstance(check["ok"], bool)
+        self.assertIn("gdb", {check["name"] for check in checks})
 
     def test_call_tool_structured_content(self):
         response = self.server.handle(
