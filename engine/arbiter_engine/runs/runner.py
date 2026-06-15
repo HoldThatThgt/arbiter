@@ -9,12 +9,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Optional, Sequence
 
+from arbiter_engine.runs import build_cache
 from arbiter_engine.runs import recipes
 from arbiter_engine.shared import locks
 
 
 TAIL_BYTES = 4096
 COMPILE_STAGES = {"src_compile", "test_compile"}
+STATE_DB_REL = Path(".arbiter") / "runs" / "state.sqlite"
 SECRET_NAME = re.compile(r"(^|_)(SECRET|TOKEN|PASSWORD|API_KEY|ACCESS_KEY|PRIVATE_KEY)(_|$)")
 DEFAULT_ARBITER_BIN = "arbiter"
 
@@ -70,7 +72,19 @@ def run_stage(
     stage_spec = target.stages[stage]
     env = _stage_env(os.environ, target, stage_spec, book, profiles, stage, arbiter_bin)
 
+    cache_eligible = stage in COMPILE_STAGES and target.binary is not None
+    db_path = root / STATE_DB_REL
+    cache_key = _cache_key(target_id, stage, profiles) if cache_eligible else ""
+
     with locks.acquire(root, [locks.build_lock(workdir)], timeout_s=lock_timeout_s):
+        # A census-validated cache hit (matching stage key, clean census over the
+        # recipe's sources globs, and the expected binary still present) lets us
+        # skip the compile entirely and reuse the prior binary. Recipes without
+        # `sources:` never hit cross-process — build_cache.lookup enforces that.
+        if cache_eligible and build_cache.lookup(
+            db_path, root, key=cache_key, sources=target.sources
+        ) is not None:
+            return StageResult(target_id, stage, 0)
         if stage in COMPILE_STAGES:
             _reset_compile_journal(root, workdir, env["ARBITER_BUILD_ID"])
         for command in stage_spec.pre:
@@ -84,6 +98,17 @@ def run_stage(
             result = _run_command(command, workdir, env, stage_spec.timeout_s)
             if result.exit_code != 0:
                 return _with_identity(result, target_id, stage)
+        # The compile (and any pre/post) succeeded: record the census-bound binary
+        # so an identical future build can be skipped. store() writes an empty
+        # digest when there are no sources, which lookup() never treats as a hit.
+        if cache_eligible:
+            build_cache.store(
+                db_path,
+                root,
+                key=cache_key,
+                binary=target.binary,
+                sources=target.sources,
+            )
     return _with_identity(result, target_id, stage)
 
 
@@ -134,6 +159,18 @@ def _append_flags(env: dict[str, str], name: str, flags: Sequence[str]) -> None:
 def _inject_cc(env: dict[str, str], name: str, arbiter_bin: Optional[str], default: str) -> None:
     real = env.get(name, default)
     env[name] = f"{resolve_arbiter_bin(arbiter_bin)} cc -- {real}"
+
+
+def _cache_key(target_id: str, stage: str, profiles: Sequence[str]) -> str:
+    """Stable build-cache key for a compile stage.
+
+    The key binds the target, the compile stage, and the active profile overlay:
+    profiles change CFLAGS/CXXFLAGS/LDFLAGS and therefore the produced binary, so
+    a debug build must never satisfy an asan lookup. Profiles are applied as an
+    unordered set by _stage_env, so the key sorts them to stay order-insensitive.
+    """
+    profile_key = "+".join(sorted(profiles)) if profiles else "default"
+    return f"{profile_key}:{target_id}:{stage}"
 
 
 def _reset_compile_journal(root: Path, workdir: Path, build_id: str) -> None:
