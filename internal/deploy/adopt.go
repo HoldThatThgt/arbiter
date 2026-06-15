@@ -138,7 +138,11 @@ func renderFactsConfig(legacy string) string {
 	pool := sectionInt(doc, "extractor", "worker_count")
 	incremental, hasIncremental := sectionBool(doc, "incremental", "enabled")
 	var b strings.Builder
-	b.WriteString("# Migrated from .cipher/config.yml.\nfacts:\n  extractor: \"cipher-2\"\n")
+	b.WriteString("# Migrated from .cipher/config.yml.\n")
+	b.WriteString("# cipher-2's extractor.worker_count maps to index_on_build.pool (the live knob);\n")
+	b.WriteString("# facts.incremental is carried as a reserved key — the cipher-2 incremental\n")
+	b.WriteString("# overlay-reconcile lands in the M4 facts absorption, no effect today (ADR-0004/0013).\n")
+	b.WriteString("facts:\n")
 	if hasIncremental {
 		fmt.Fprintf(&b, "  incremental: %t\n", incremental)
 	}

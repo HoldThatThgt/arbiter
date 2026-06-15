@@ -386,10 +386,13 @@ match:
   goal_memo: false     # memoize goal passes per workspace digest (default off)
 ```
 
-`facts.extractor` and `facts.incremental` are also accepted (and written by
-`arbiter adopt` when migrating a cipher-2 deployment), but are currently **reserved**:
-they parse and validate, yet no runtime behavior keys off them. The `runs:` and
-`engine:` sections must be empty when present — any sub-key is rejected as unknown.
+`pool` is the same knob cipher-2 exposed as `extractor.worker_count`, so `arbiter adopt`
+migrates that value straight into it. The `facts.extractor` (string) and `facts.incremental`
+(bool) keys are also accepted but **reserved pending the M4 cipher-2 facts absorption** —
+extractor selection and the incremental overlay-reconcile subsystem (ADR-0013). They parse
+and validate today but drive no behavior: indexing is build-driven (ADR-0004), and arbiter
+ships a single Clang extractor. The `runs:` and `engine:` sections must be empty when present
+— any sub-key is rejected as unknown.
 
 Environment variables:
 

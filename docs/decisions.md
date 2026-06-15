@@ -199,8 +199,8 @@ the guard cannot see; tool descriptions and error messages across the seat surfa
 rewritten in the same change to carry next-action guidance — the deny reasons are part of
 that same teaching contract.
 
-## ADR-0016 — `[Checkpoint]` step type: a human-confirmation gate (2026-06-15, proposed)
-*Records a spec change already shipped (PR #105); awaiting owner signature.* A `[Checkpoint]`
+## ADR-0016 — `[Checkpoint]` step type: a human-confirmation gate (2026-06-15, accepted)
+*Records a spec change already shipped (PR #105), ratified after the fact.* A `[Checkpoint]`
 step pauses the match for an explicit human pass/fail instead of dispatching executor work: the
 player relays the step's question to the user (AskUserQuestion) and submits the result via the
 player-seat tool `SubmitCheckpoint{decision:"pass"|"fail"}`. Pass advances the round, fail loops
@@ -208,8 +208,8 @@ the step, and the model cannot self-approve. A step carries tasks or a checkpoin
 (parser-enforced). **Consequences:** playbook tokens `[Checkpoint]`; player gains
 `SubmitCheckpoint`; FORMAT.md and user-guide §5 document the gate.
 
-## ADR-0017 — Result integrity: curated & step-bound predicates, frozen tests, subagent-stop gate (2026-06-15, proposed)
-*Records a spec change already shipped (PRs #106–#109); awaiting owner signature.* To remove the
+## ADR-0017 — Result integrity: curated & step-bound predicates, frozen tests, subagent-stop gate (2026-06-15, accepted)
+*Records a spec change already shipped (PRs #106–#109), ratified after the fact.* To remove the
 submitter's ability to choose its own verdict, verifications live in the playbook trust domain.
 `[Verify] <name>` predicates are snapshotted into match state at load; `[Submit] <name>` binds a
 step to one (the executor must finish with `{verify:"<name>"}`), and `verify_policy: named`
