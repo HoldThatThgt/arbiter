@@ -156,17 +156,17 @@ func TestBaseOpeningTemplatesParse(t *testing.T) {
 		t.Fatalf("goal expect %s != suite-green expect %s", goal.Expect, book.Verify["suite-green"].Expect)
 	}
 
-	// recipe-derivation 的 checkmate 现在是 tests-enumerated —— 一个 fact: TestBody 谓词,
-	// 裁判对已发布快照自行重跑 TestBody 索引查询。它比旧的 gear-up-published goal 更严:
-	// TestBody facts 只可能存在于已发布的快照,所以它传递性地保留了"facts 必须真发布"的
-	// 反作弊保证(弱内联谓词蒙混不过裁判自查的快照),并额外强制项目的完整测试集由索引
-	// 枚举得出、而非取信于模型转录(scan 走的也是 store.search("TestBody"))。走到 END 仍
-	// 枚举不出完整且非空的测试集 ⇒ 败局。
+	// recipe-derivation 的 checkmate 是 tests-enumerated —— 一个 fact: _Test 谓词,裁判对已
+	// 发布快照自行重跑测试枚举查询。libclang 抽取器记录的是 gtest 生成的 fixture 类型
+	// `Suite_Name_Test`(并非宏展开的 ::TestBody 方法),所以索引按 _Test 类型名枚举测试,
+	// scan(discovery.py)走的也是 store.search("_Test")。这些 _Test facts 只可能存在于已发布
+	// 的快照,所以它传递性地保留了"facts 必须真发布"的反作弊保证,并额外强制项目测试集由
+	// 索引枚举得出、而非取信于模型转录。走到 END 仍枚举不出测试集 ⇒ 败局。
 	rd, issues := playbook.ParseBytes("recipe-derivation.md", []byte(mustTemplate("templates/recipe-derivation.md")))
 	if len(issues) != 0 {
 		t.Fatalf("recipe-derivation issues = %#v", issues)
 	}
-	if rd.Goal == nil || rd.Goal.Kind != "fact" || rd.Goal.Query != "TestBody" {
+	if rd.Goal == nil || rd.Goal.Kind != "fact" || rd.Goal.Query != "_Test" {
 		t.Fatalf("recipe-derivation goal = %#v", rd.Goal)
 	}
 	if string(rd.Goal.Expect) != string(rd.Verify["tests-enumerated"].Expect) {

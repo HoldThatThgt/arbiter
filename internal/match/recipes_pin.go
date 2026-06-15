@@ -4,8 +4,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/HoldThatThgt/arbiter/internal/playbook"
 
@@ -76,7 +79,29 @@ func (s *Store) checkRecipePin(m *Match, spec playbook.ResultSpec) error {
 	// recipes 对局则可能漂移过 —— 两种情况都只需回答 recipe 是否存在于当前书中。
 	if _, ok := current.Targets[spec.Recipe]; !ok {
 		s.journalRecipePinMismatch(m, spec, pinned, current)
-		return &ToolError{Code: playbook.CodeRecipePinMismatch, Message: "recipe pin mismatch"}
+		// A bare "recipe pin mismatch" left weak executors guessing; the real cause here is
+		// almost always that the registered recipe's target id does not match the id the
+		// step's predicate runs (e.g. a target named after the binary instead of the run id).
+		// Name the expected id and what the book actually defines so the fix is mechanical.
+		available := make([]string, 0, len(current.Targets))
+		for id := range current.Targets {
+			available = append(available, id)
+		}
+		sort.Strings(available)
+		have := "none"
+		if len(available) > 0 {
+			have = strings.Join(available, ", ")
+		}
+		return &ToolError{
+			Code: playbook.CodeRecipePinMismatch,
+			Message: fmt.Sprintf(
+				"no recipe target named %q. This step's predicate runs target id %q, but your "+
+					"recipes.yaml defines target id(s): [%s]. The predicate's run id IS the target id "+
+					"— set your target's `id:` to %q (do not name the target after the binary or a "+
+					"stage), then register and submit again.",
+				spec.Recipe, spec.Recipe, have, spec.Recipe),
+			Data: map[string]any{"expected_target": spec.Recipe, "found_targets": available},
+		}
 	}
 	return nil
 }

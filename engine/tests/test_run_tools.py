@@ -52,9 +52,9 @@ class RunToolsTest(unittest.TestCase):
 
             result = response["result"]
             self.assertFalse(result["isError"])
-            self.assertEqual(result["overall"], "passed")
-            self.assertEqual(result["passed"], 1)
-            self.assertEqual(result["per_test"][0]["name"], "Pass")
+            self.assertEqual(result["structuredContent"]["overall"], "passed")
+            self.assertEqual(result["structuredContent"]["passed"], 1)
+            self.assertEqual(result["structuredContent"]["per_test"][0]["name"], "Pass")
             self.assertIn("--gtest_filter=Suite.Pass", (root / "args.log").read_text(encoding="utf-8"))
 
     def test_recipe_search_and_register_are_real_handlers(self):
@@ -66,8 +66,8 @@ class RunToolsTest(unittest.TestCase):
             registered = response_for(tool_call("register", {"path": str(recipe)}), root)
             found = response_for(tool_call("recipe_search", {"query": "unit"}), root)
 
-            self.assertEqual(registered["result"]["targets"], ["unit"])
-            self.assertEqual(found["result"]["matches"][0]["id"], "unit")
+            self.assertEqual(registered["result"]["structuredContent"]["targets"], ["unit"])
+            self.assertEqual(found["result"]["structuredContent"]["matches"][0]["id"], "unit")
 
     def test_run_options_are_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -165,8 +165,8 @@ targets:
             )
 
             result = response["result"]
-            self.assertEqual(result["overall"], "errored")
-            self.assertEqual(result["failure"], "timeout")
+            self.assertEqual(result["structuredContent"]["overall"], "errored")
+            self.assertEqual(result["structuredContent"]["failure"], "timeout")
 
     def write_recipe(self, root):
         recipe = root / ".arbiter" / "recipes.yaml"

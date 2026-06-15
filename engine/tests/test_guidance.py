@@ -17,15 +17,16 @@ FAILED_XML = """
 
 
 def _test_body_fact(suite, name, file, line, fact_id):
-    # gtest TEST(Suite, Name) expands to the Suite_Name_Test::TestBody method, which
-    # the facts extractor records as a `function` fact — the discovery primary key.
+    # gtest TEST(Suite, Name) makes the libclang extractor record the generated
+    # fixture TYPE `Suite_Name_Test` (not the macro-expanded `::TestBody` method) —
+    # the discovery primary key.
     return FactRecord(
         object_id=fact_id,
-        object_name=f"{suite}_{name}_Test::TestBody",
-        object_description=f"gtest body {suite}.{name}",
+        object_name=f"{suite}_{name}_Test",
+        object_description=f"gtest fixture {suite}.{name}",
         object_source=f"{file}:{line}",
         object_profile="debug",
-        payload={"fact_kind": "function"},
+        payload={"fact_kind": "type"},
     )
 
 

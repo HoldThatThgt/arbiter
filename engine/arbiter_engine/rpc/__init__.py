@@ -580,9 +580,15 @@ def _run_tool(context: Context, arguments: Mapping[str, Any]) -> Mapping[str, An
             "invalid arguments",
             {"kind": "invalid_args", "field": "recipe", "detail": f"unknown recipe {recipe_id!r}"},
         ) from exc
+    # The run fields stay at the TOP LEVEL because the referee's run-predicate path
+    # raw-parses them there (internal/verify/verify.go reads overall/passed/per_test/
+    # facts off the JSON-RPC result, NOT structuredContent). structuredContent mirrors
+    # them for the MCP client, which (via the seat) only ever sees content +
+    # structuredContent — without it the model gets a null-structuredContent rejection.
     payload = result.to_json()
     payload["isError"] = False
     payload["content"] = [{"type": "text", "text": f"{recipe_id}: {result.overall}"}]
+    payload["structuredContent"] = result.to_json()
     return payload
 
 
@@ -612,7 +618,7 @@ def _recipe_search_tool(context: Context, arguments: Mapping[str, Any]) -> Mappi
     return {
         "content": [{"type": "text", "text": f"{len(matches)} recipe matches"}],
         "isError": False,
-        "matches": matches,
+        "structuredContent": {"matches": matches},
     }
 
 
@@ -640,8 +646,7 @@ def _scan_tool(context: Context, arguments: Mapping[str, Any]) -> Mapping[str, A
     return {
         "content": [{"type": "text", "text": f"{len(targets)} test candidates"}],
         "isError": False,
-        "scope": scope,
-        "targets": targets,
+        "structuredContent": {"scope": scope, "targets": targets},
     }
 
 
@@ -650,8 +655,7 @@ def _recipe_book_summary(book: recipes.RecipeBook, verb: str) -> Mapping[str, An
     return {
         "content": [{"type": "text", "text": f"{verb} {len(targets)} recipes"}],
         "isError": False,
-        "targets": targets,
-        "profiles": sorted(book.profiles),
+        "structuredContent": {"targets": targets, "profiles": sorted(book.profiles)},
     }
 
 
