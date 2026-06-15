@@ -13,6 +13,7 @@ from typing import Any, Callable, Mapping, Optional, TextIO
 from arbiter_engine import __version__
 from arbiter_engine.errors import RPCError, briefing_unresolved, engine_stale, internal_error
 from arbiter_engine.facts import descriptors as facts_descriptors
+from arbiter_engine.facts import incremental as facts_incremental
 from arbiter_engine.facts import query as facts_query
 from arbiter_engine.facts import store as facts_store
 from arbiter_engine.facts import view as facts_view
@@ -453,16 +454,18 @@ def _facts_search_tool(context: Context, arguments: Mapping[str, Any]) -> Mappin
     evidence = view.evidence()
     try:
         store = facts_store.open_fact_store(Path.cwd(), mode="r")
-        response = facts_query.run_search(store.open_view(), query, limit)
+        # access() above already reconciled (writer) or read the published overlay (reader); load it
+        # from disk and merge it so search reflects edits made since the base snapshot.
+        overlay = facts_incremental.load_active_overlay(Path.cwd())
+        response = facts_query.run_search(store.open_view(overlay), query, limit)
     except facts_query.FactQueryError as exc:
         return _facts_error_result(exc)
     except facts_store.StorageError as exc:
         return _facts_error_result(
             facts_query.FactQueryError("storage_error", str(exc), {"storage_code": exc.code})
         )
-    # Option A merge: response carries placeholder view-state; the authoritative
-    # facts/view.py evidence is spread LAST so its 5 keys win (the Go referee reads
-    # base_snapshot_id from here).
+    # The merged response and facts/view.py evidence now describe the same overlay; evidence is
+    # spread LAST so its 5 view-state keys are authoritative (the Go referee reads them from here).
     structured = {**response.to_json(), **evidence}
     return {
         "content": [{"type": "text", "text": _search_text(structured)}],
@@ -479,8 +482,9 @@ def _facts_detail_tool(context: Context, arguments: Mapping[str, Any]) -> Mappin
     evidence = view.evidence()
     try:
         store = facts_store.open_fact_store(Path.cwd(), mode="r")
+        overlay = facts_incremental.load_active_overlay(Path.cwd())
         response = facts_query.run_detail(
-            store.open_view(), Path.cwd(), fact_id, arguments.get("budget", "normal")
+            store.open_view(overlay), Path.cwd(), fact_id, arguments.get("budget", "normal")
         )
     except facts_query.FactQueryError as exc:
         # Tool-domain errors (not_found / invalid_budget / storage_error) are in-band,

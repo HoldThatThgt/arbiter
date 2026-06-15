@@ -1,4 +1,10 @@
-"""Lazy writer-gated facts overlay view state."""
+"""Writer-gated facts overlay view state, backed by the incremental coordinator.
+
+The writer (player QUERY engine, ADR-0009) reconciles synchronously so adjudication is never
+stale; readers report the coordinator's published overlay. The evidence view_state is "overlay"
+only when a real fact overlay is active (sources are dirty vs the snapshot) — otherwise "base".
+This replaced the Phase-1 placeholder that reported a census-digest overlay on every writer access.
+"""
 
 from __future__ import annotations
 
@@ -6,11 +12,13 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, Optional
 
+from arbiter_engine import config
 from arbiter_engine import errors
+from arbiter_engine.facts import incremental
 from arbiter_engine.facts import relocation
-from arbiter_engine.shared import census
+from arbiter_engine.facts.extractor.code._shim import ExtractorConfig
 from arbiter_engine.shared import locks
 
 
@@ -39,7 +47,7 @@ class FactView:
 
 
 def overlay_state_path(repo: Path) -> Path:
-    return relocation.facts_dir(repo) / "overlay" / "current.json"
+    return incremental.overlay_pointer_path(Path(repo))
 
 
 def access(repo: Path, context: AccessContext) -> FactView:
@@ -58,56 +66,64 @@ def reconcile(repo: Path, context: AccessContext, *, timeout_s: float = 30.0) ->
     if not _is_writer(context):
         raise errors.capability_revoked()
     repo = Path(repo)
+    # The OVERLAY flock is the single-writer gate (ADR-0009): only the player QUERY engine
+    # reconciles, and the synchronous reconcile shares the flock with the background poll thread.
     with locks.acquire(repo, [locks.OVERLAY], timeout_s=timeout_s):
-        current = census.scan(repo, ["*", "**/*"])
-        base_snapshot_id = _base_snapshot_id(repo)
-        view = FactView(
-            view_state="overlay",
-            base_snapshot_id=base_snapshot_id,
-            overlay_id="overlay:" + current.digest[:16],
-        )
-        _write_overlay_state(repo, view, current.digest)
-        return view
+        coordinator = _build_coordinator(repo)
+        status = coordinator.reconcile_current_sources()
+        return _view_from_status(repo, status)
 
 
 def read_published(repo: Path) -> FactView:
-    path = overlay_state_path(Path(repo))
+    repo = Path(repo)
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return FactView(view_state="base", base_snapshot_id=_base_snapshot_id(Path(repo)), overlay_id=None)
-    overlay_id = raw.get("overlay_id")
-    base_snapshot_id = raw.get("base_snapshot_id")
-    if not isinstance(overlay_id, str) or not overlay_id:
-        return FactView(view_state="base", base_snapshot_id=_base_snapshot_id(Path(repo)), overlay_id=None)
-    if base_snapshot_id is not None and not isinstance(base_snapshot_id, str):
-        base_snapshot_id = None
-    return FactView(view_state="overlay", base_snapshot_id=base_snapshot_id, overlay_id=overlay_id)
+        status = incremental.read_incremental_status(repo)
+    except incremental.IncrementalError:
+        return FactView(view_state="base", base_snapshot_id=_base_snapshot_id(repo), overlay_id=None)
+    return _view_from_status(repo, status)
+
+
+def _view_from_status(repo: Path, status: "incremental.IncrementalStatus") -> FactView:
+    overlay_active = status.state == "overlay" and bool(status.overlay_id)
+    return FactView(
+        view_state="overlay" if overlay_active else "base",
+        base_snapshot_id=status.base_snapshot_id or _base_snapshot_id(repo),
+        overlay_id=status.overlay_id if overlay_active else None,
+        stale_source_count=status.stale_source_count,
+        pending_task_count=status.pending_task_count,
+    )
+
+
+def _build_coordinator(repo: Path) -> "incremental.IncrementalCoordinator":
+    facts_config = _facts_config(repo)
+    worker_count = facts_config.index_on_build.pool or (os.cpu_count() or 1)
+    return incremental.IncrementalCoordinator(
+        repo,
+        facts_config.incremental,
+        extractor_config=_reconcile_extractor_config(repo, worker_count),
+        worker_count=worker_count,
+        log_enabled=True,
+    )
+
+
+def _facts_config(repo: Path) -> "config.FactsConfig":
+    try:
+        return relocation.load_config(repo)
+    except (OSError, config.ConfigError):
+        return config.FactsConfig()
+
+
+def _reconcile_extractor_config(repo: Path, worker_count: int) -> Optional[ExtractorConfig]:
+    compile_db = relocation.persisted_compile_db_path(repo)
+    if not compile_db.exists():
+        # No build has published a compile-db: a dirty set can't be re-extracted (the coordinator
+        # reports a typed error instead of guessing flags). Clean repos reconcile to "base" fine.
+        return None
+    return ExtractorConfig(compile_database_path=compile_db, extractor_worker_count=worker_count)
 
 
 def _is_writer(context: AccessContext) -> bool:
     return context.role == "QUERY" and context.seat == "player"
-
-
-def _write_overlay_state(repo: Path, view: FactView, digest: str) -> None:
-    path = overlay_state_path(repo)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(
-        json.dumps(
-            {
-                "base_snapshot_id": view.base_snapshot_id,
-                "overlay_id": view.overlay_id,
-                "view_state": view.view_state,
-                "digest": digest,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    os.replace(tmp, path)
 
 
 def _base_snapshot_id(repo: Path) -> Optional[str]:

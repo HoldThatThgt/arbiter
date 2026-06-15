@@ -1,2 +1,2 @@
 {"type":"request","message":{"jsonrpc":"2.0","id":1,"method":"arbiter/refresh","params":{"scope":{"paths":["src"]},"_meta":{"match_id":"m1"}}}}
-{"type":"response","message":{"jsonrpc":"2.0","id":1,"result":{"refreshed":true,"scope":{"paths":["src"]},"view_state":"overlay","base_snapshot_id":null,"overlay_id":"<volatile>","stale_source_count":0,"pending_task_count":0}},"allow_volatile":["result.overlay_id"]}
+{"type":"response","message":{"jsonrpc":"2.0","id":1,"result":{"refreshed":true,"scope":{"paths":["src"]},"view_state":"base","base_snapshot_id":null,"overlay_id":"<volatile>","stale_source_count":0,"pending_task_count":0}},"allow_volatile":["result.overlay_id"]}

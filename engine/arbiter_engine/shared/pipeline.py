@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
+from arbiter_engine.facts import relocation
 from arbiter_engine.facts.extractor.code import CodeFactExtractor
 from arbiter_engine.facts.extractor.code._shim import ExtractorConfig, InitError
 from arbiter_engine.facts.store import FileFactStore
@@ -112,6 +113,10 @@ def publish_after_build(
     manifest = FileFactStore(root, mode="w", log_enabled=False).replace_snapshot(
         facts, result.relatives, result.source_inventory
     )
+    # Persist the published compile-db at a stable, recipe-independent location so the incremental
+    # coordinator's reconcile (facts/view.py, facts/incremental.py) can re-extract dirty sources with
+    # the same flags the build used — the recipe's compile_db.path is not visible to the facts layer.
+    _persist_compile_db(root, Path(compile_db_path))
     return PipelineResult(
         published=True,
         snapshot_id=manifest.snapshot_id,
@@ -121,6 +126,18 @@ def publish_after_build(
         hidden_ms=min(extract_ms, tail_ms),
         tail_ms=tail_ms,
     )
+
+
+def _persist_compile_db(root: Path, compile_db_path: Path) -> None:
+    try:
+        data = Path(compile_db_path).read_bytes()
+    except OSError:
+        return
+    dest = relocation.persisted_compile_db_path(root)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(".tmp")
+    tmp.write_bytes(data)
+    tmp.replace(dest)
 
 
 def _extract_error_warning(error: Exception) -> Mapping[str, Any]:

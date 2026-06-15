@@ -52,7 +52,8 @@ class FactsReconcileTest(unittest.TestCase):
     def test_first_fact_access_reconciles_lazily_under_overlay_lock(self):
         with tempfile.TemporaryDirectory() as tmp, working_dir(tmp), engine_env():
             Path("a.c").write_text("int a;\n", encoding="utf-8")
-            state_path = view.overlay_state_path(Path(tmp))
+            # The coordinator writes its run state under the OVERLAY lock on the first writer access.
+            state_path = Path(tmp) / ".arbiter" / "facts" / "run" / "incremental" / "state.json"
 
             response_for(request("tools/list"))
             self.assertFalse(state_path.exists())
@@ -64,26 +65,23 @@ class FactsReconcileTest(unittest.TestCase):
             self.assertIn([locks.OVERLAY], acquired)
             self.assertTrue(state_path.exists())
             content = response["result"]["structuredContent"]
-            self.assertEqual(content["view_state"], "overlay")
-            self.assertIsNotNone(content["overlay_id"])
+            # No published snapshot -> the writer reconciles to a clean base view, not an overlay.
+            self.assertEqual(content["view_state"], "base")
+            self.assertIsNone(content["overlay_id"])
 
-    def test_non_writer_reads_published_overlay_without_reconcile(self):
+    def test_non_writer_does_not_reconcile_or_take_the_overlay_lock(self):
         with tempfile.TemporaryDirectory() as tmp, working_dir(tmp):
-            source = Path("a.c")
-            source.write_text("int a;\n", encoding="utf-8")
+            Path("a.c").write_text("int a;\n", encoding="utf-8")
 
-            with engine_env():
-                first = response_for(call_tool("search", {"query": "a"}))["result"]["structuredContent"]
-            source.write_text("int b;\n", encoding="utf-8")
-
+            # A non-writer (executor) reads the published view; it must never reconcile, so it
+            # never takes the OVERLAY lock (the single-writer rule, ADR-0009).
             with engine_env(role="QUERY", seat="executor"):
-                executor = response_for(call_tool("search", {"query": "a"}))["result"]["structuredContent"]
-            with engine_env():
-                second = response_for(call_tool("search", {"query": "a"}))["result"]["structuredContent"]
+                with mock.patch("arbiter_engine.facts.view.locks.acquire", wraps=locks.acquire) as acquire:
+                    executor = response_for(call_tool("search", {"query": "a"}))["result"]["structuredContent"]
 
-            self.assertEqual(executor["overlay_id"], first["overlay_id"])
-            self.assertEqual(executor["view_state"], "overlay")
-            self.assertNotEqual(second["overlay_id"], first["overlay_id"])
+            self.assertEqual([call.args[1] for call in acquire.call_args_list], [])
+            self.assertEqual(executor["view_state"], "base")
+            self.assertIsNone(executor["overlay_id"])
 
     def test_refresh_reports_published_snapshot_id_not_directory_name(self):
         with tempfile.TemporaryDirectory() as tmp:

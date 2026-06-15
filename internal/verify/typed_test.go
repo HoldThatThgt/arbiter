@@ -361,8 +361,10 @@ func TestExecuteFactPredicateUsesEngineSearchAndRefresh(t *testing.T) {
 	if err := json.Unmarshal(result.Evidence, &evidence); err != nil {
 		t.Fatal(err)
 	}
-	if evidence.ViewState != "overlay" || evidence.OverlayID == "" {
-		t.Fatalf("evidence missing refreshed overlay: %#v", evidence)
+	// The source repo has no published facts snapshot, so refresh reconciles to a clean base
+	// view (an overlay is published only when sources are dirty vs a snapshot, ADR-0018).
+	if evidence.ViewState != "base" || evidence.OverlayID != "" {
+		t.Fatalf("expected clean base view from refresh: %#v", evidence)
 	}
 	if evidence.ResultCount != 0 || !evidence.Complete {
 		t.Fatalf("evidence counters = %#v", evidence)
