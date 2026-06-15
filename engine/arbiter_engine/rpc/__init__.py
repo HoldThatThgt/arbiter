@@ -13,6 +13,8 @@ from typing import Any, Callable, Mapping, Optional, TextIO
 from arbiter_engine import __version__
 from arbiter_engine.errors import RPCError, briefing_unresolved, engine_stale, internal_error
 from arbiter_engine.facts import descriptors as facts_descriptors
+from arbiter_engine.facts import query as facts_query
+from arbiter_engine.facts import store as facts_store
 from arbiter_engine.facts import view as facts_view
 from arbiter_engine.runs import async_runs
 from arbiter_engine.runs import gtest
@@ -440,6 +442,7 @@ def _handler(namespace: str, name: str) -> Callable[[Context, Mapping[str, Any]]
 
 
 def _facts_search_tool(context: Context, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+    # facts/view.py owns view-state + the writer-gate; the store is the record source.
     view = facts_view.access(Path.cwd(), _facts_context(context))
     query = arguments.get("query")
     if not isinstance(query, str):
@@ -447,17 +450,20 @@ def _facts_search_tool(context: Context, arguments: Mapping[str, Any]) -> Mappin
     limit = arguments.get("limit", 20)
     if not isinstance(limit, int) or isinstance(limit, bool):
         raise RPCError(-32602, "invalid arguments", {"kind": "invalid_args", "field": "limit"})
-    query_kind = _query_kind(query)
-    structured = {
-        **view.evidence(),
-        "status": "ok",
-        "query_kind": query_kind,
-        "query": query,
-        "limit": limit,
-        "result_count": 0,
-        "truncated": False,
-        "results": [],
-    }
+    evidence = view.evidence()
+    try:
+        store = facts_store.open_fact_store(Path.cwd(), mode="r")
+        response = facts_query.run_search(store.open_view(), query, limit)
+    except facts_query.FactQueryError as exc:
+        return _facts_error_result(exc)
+    except facts_store.StorageError as exc:
+        return _facts_error_result(
+            facts_query.FactQueryError("storage_error", str(exc), {"storage_code": exc.code})
+        )
+    # Option A merge: response carries placeholder view-state; the authoritative
+    # facts/view.py evidence is spread LAST so its 5 keys win (the Go referee reads
+    # base_snapshot_id from here).
+    structured = {**response.to_json(), **evidence}
     return {
         "content": [{"type": "text", "text": _search_text(structured)}],
         "structuredContent": structured,
@@ -466,38 +472,40 @@ def _facts_search_tool(context: Context, arguments: Mapping[str, Any]) -> Mappin
 
 
 def _facts_detail_tool(context: Context, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
-    facts_view.access(Path.cwd(), _facts_context(context))
+    view = facts_view.access(Path.cwd(), _facts_context(context))
     fact_id = arguments.get("fact_id")
     if not isinstance(fact_id, str) or not fact_id:
         raise RPCError(-32602, "invalid arguments", {"kind": "invalid_args", "field": "fact_id"})
-    message = (
-        f"FACT id not found: {fact_id}.\n"
-        "This id is not in the current snapshot; it may be stale or mistyped.\n"
-        "Re-run search('<symbol name>') to obtain a valid object_id."
-    )
+    evidence = view.evidence()
+    try:
+        store = facts_store.open_fact_store(Path.cwd(), mode="r")
+        response = facts_query.run_detail(
+            store.open_view(), Path.cwd(), fact_id, arguments.get("budget", "normal")
+        )
+    except facts_query.FactQueryError as exc:
+        # Tool-domain errors (not_found / invalid_budget / storage_error) are in-band,
+        # with NO view-state keys — the conformance corpus pins this error envelope.
+        return _facts_error_result(exc)
+    except facts_store.StorageError as exc:
+        return _facts_error_result(
+            facts_query.FactQueryError("storage_error", str(exc), {"storage_code": exc.code})
+        )
+    structured = {**response.to_json(), **evidence}
     return {
-        "content": [{"type": "text", "text": "not_found: " + message}],
-        "structuredContent": {
-            "error": {
-                "code": "not_found",
-                "message": message,
-                "details": {"fact_id": fact_id},
-            }
-        },
-        "isError": True,
+        "content": [{"type": "text", "text": _detail_text(structured)}],
+        "structuredContent": structured,
+        "isError": False,
     }
 
 
-def _query_kind(query: str) -> str:
-    if not query.strip():
-        return "empty"
-    if query.startswith("reachable:"):
-        return "relation_reachable"
-    if "depth:" in query:
-        return "relation_transitive"
-    if ":" in query:
-        return "relation"
-    return "terms"
+def _facts_error_result(exc: "facts_query.FactQueryError") -> Mapping[str, Any]:
+    return {
+        "content": [{"type": "text", "text": f"{exc.code}: {exc.message}"}],
+        "structuredContent": {
+            "error": {"code": exc.code, "message": exc.message, "details": exc.details}
+        },
+        "isError": True,
+    }
 
 
 def _search_text(structured: Mapping[str, Any]) -> str:
@@ -507,6 +515,15 @@ def _search_text(structured: Mapping[str, Any]) -> str:
         f"search returned {structured.get('result_count')} fact results "
         f"for query kind {structured.get('query_kind')}"
     )
+
+
+def _detail_text(structured: Mapping[str, Any]) -> str:
+    # Deterministic human line for detail-success. Unpinned: the conformance corpus only
+    # exercises detail not_found (the error envelope), and migrated tests read structuredContent.
+    snapshot = structured.get("base_snapshot_id") or "none"
+    fact = structured.get("fact")
+    fact_id = fact.get("object_id") if isinstance(fact, Mapping) else None
+    return f"snapshot {snapshot} view_state={structured.get('view_state')}: detail {fact_id}"
 
 
 def _run_tool(context: Context, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
