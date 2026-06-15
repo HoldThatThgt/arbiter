@@ -676,7 +676,31 @@ class IncrementalCoordinator:
     def _poll_loop(self) -> None:
         interval = self.config.poll_interval_ms / 1000.0
         while not self._stop_event.wait(interval):
+            self._gc_aged_overlay()
             self._scan_once()
+
+    def _gc_aged_overlay(self) -> None:
+        """Reap a published overlay once its ``created_at`` ages past the TTL (ADR-0018).
+
+        ``overlay_ttl_seconds == 0`` means "never GC" (user-guide §9). The age is read back
+        from the overlay manifest the publish path already stamps, against ``time.time()``;
+        teardown reuses ``_drop_overlay`` to keep the single-writer drop semantics ('stop' /
+        'reverted_to_base') and the overlay lock discipline (ADR-0009) intact.
+        """
+        ttl = self.config.overlay_ttl_seconds
+        if ttl <= 0:
+            return
+        with self._notify_lock:
+            overlay = self._active_overlay
+            if overlay is None:
+                return
+            manifest = self._run_path("overlays", overlay.overlay_id, "manifest.json")
+            created_at = _read_overlay_created_at(manifest)
+            if created_at is None or time.time() - created_at < ttl:
+                return
+            self._drop_overlay("overlay_ttl_expired")
+            self._status = IncrementalStatus("ready", self.active_view.base_snapshot_id)
+            self._write_state(self._status)
 
     def _scan_once(self) -> None:
         if not self.config.enabled:
@@ -889,6 +913,29 @@ def _dirty_source_priority(reason: str) -> int:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _read_overlay_created_at(manifest_path: Path) -> Optional[float]:
+    """Return the overlay's ``created_at`` as a POSIX timestamp, or None if unreadable.
+
+    Mirrors the inverse of ``_utc_now``: the manifest stamps an ISO-8601 UTC string with a
+    trailing ``Z`` (``datetime.fromisoformat`` only accepts ``Z`` on Python >= 3.11, so the
+    suffix is normalized to ``+00:00`` first). A timezone-naive value is treated as UTC.
+    """
+    try:
+        raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    created_at = raw.get("created_at") if isinstance(raw, dict) else None
+    if not isinstance(created_at, str) or not created_at:
+        return None
+    try:
+        parsed = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
 
 
 def _is_relative_to(path: Path, base: Path) -> bool:
