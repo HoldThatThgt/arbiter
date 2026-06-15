@@ -16,6 +16,7 @@ src_compile recipe and produces fresh facts before any implementation work start
 [CheckList]
 - Submit gear-up-published with the selected profile and any request-named feature flags
 - Record the published snapshot or the typed reason publication failed
+[Submit] gear-up-published
 [Branch]
 success: orient
 failure: gear-up
