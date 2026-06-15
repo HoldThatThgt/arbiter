@@ -53,12 +53,16 @@ silently assumed, never used to fail a repo that is otherwise wired correctly.
    only because the host lacks a capable Clang (LLVM ≥ 16 / Apple ≥ 15) — not because the build
    failed — report the typed publication reason on the checklist rather than looping; builds,
    matches, and shell/mcp predicates still work without facts.
-7. Reconcile the **query surface** (hard gate). A snapshot that published is not proven usable
-   until it answers a query — publication is not searchability. Use `search`/`detail` to pick a
-   symbol the proven suite exercises, then dispatch a task whose result is
-   `{"kind":"fact","query":"<that symbol>","expect":{"min_results":1}}`. A snapshot that
-   returns zero results for a symbol visible in the source is a broken index, not a pass. (Skip
-   only when step 6 reported no snapshot at all — there is nothing to query.)
+7. Reconcile the **query surface and the project's test inventory** (hard gate). A snapshot that
+   published is not proven usable until it answers a query — publication is not searchability —
+   and your recollection of the suite is not the project's test set: the referee's is. The
+   `recipe-derivation` opening checkmates on `tests-enumerated`
+   (`{"kind":"fact","query":"TestBody","expect":{"complete":true,"min_results":1}}`), which the
+   referee evaluates against the published snapshot — so the complete gtest TestBody set is
+   enumerated from the index, never trusted from your transcript. Call `scan {"scope":"*"}` to
+   obtain that same facts-derived set for the recipe's `tests` and for the report; do not
+   hand-list tests. (Skip only when step 6 reported no snapshot at all — there is nothing to
+   enumerate.)
 8. Reconcile the **diagnostic companions** that `arbiter init` wired.
    - `perf-mcp` (hard gate — pure stdlib, must answer): dispatch a task whose result is
      `{"kind":"mcp","server":"perf-mcp","tool":"perf.toolchain_probe","arguments":{},`
