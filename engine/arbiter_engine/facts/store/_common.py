@@ -33,6 +33,11 @@ class _NullLog:
     def write(self, *args: Any, **kwargs: Any) -> None:
         return None
 
+    def write_event(self, *args: Any, **kwargs: Any) -> None:
+        # The fact store runs log-disabled in arbiter (forensics live in the referee
+        # journal, not cipher-2's tools.log). Writes are dropped, never failing.
+        return None
+
     def close(self) -> None:
         return None
 
