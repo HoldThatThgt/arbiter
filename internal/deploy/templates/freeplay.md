@@ -14,9 +14,8 @@ expect: {"overall":"passed","facts":{"published":true}}
 Choose the build profile from the request, then create one executor task that runs the
 src_compile recipe and produces fresh facts before any implementation work starts.
 [CheckList]
-- Submit gear-up-published with the selected profile and any request-named feature flags
+- Run the src_compile recipe with the selected profile (and any request-named feature flags) and confirm facts published
 - Record the published snapshot or the typed reason publication failed
-[Submit] gear-up-published
 [Branch]
 success: orient
 failure: gear-up
