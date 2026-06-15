@@ -40,7 +40,8 @@ class FactsRelocationTest(unittest.TestCase):
                 """\
                 facts:
                   extractor: clang
-                  incremental: true
+                  incremental:
+                    enabled: true
                   index_on_build:
                     pool: 2
                     key_flags: [-DWITH_X]
@@ -49,7 +50,7 @@ class FactsRelocationTest(unittest.TestCase):
         )
 
         self.assertEqual(parsed.facts.extractor, "clang")
-        self.assertTrue(parsed.facts.incremental)
+        self.assertTrue(parsed.facts.incremental.enabled)
         self.assertEqual(parsed.facts.index_on_build.pool, 2)
         self.assertEqual(parsed.facts.index_on_build.key_flags, ("-DWITH_X",))
 

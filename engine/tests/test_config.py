@@ -14,7 +14,10 @@ class ConfigParserTest(unittest.TestCase):
                 # committed engine config
                 facts:
                   extractor: clang
-                  incremental: true
+                  incremental:
+                    enabled: true
+                    poll_interval_ms: 250
+                    max_dirty_files: 64
                   index_on_build:
                     pool: 4
                     key_flags: [-fsanitize=address, "__SANITIZE_ADDRESS__"]
@@ -27,7 +30,12 @@ class ConfigParserTest(unittest.TestCase):
         )
 
         self.assertEqual(parsed.facts.extractor, "clang")
-        self.assertTrue(parsed.facts.incremental)
+        self.assertTrue(parsed.facts.incremental.enabled)
+        self.assertEqual(parsed.facts.incremental.poll_interval_ms, 250)
+        self.assertEqual(parsed.facts.incremental.max_dirty_files, 64)
+        # Unspecified knobs fall back to the cipher-2 defaults.
+        self.assertEqual(parsed.facts.incremental.debounce_ms, 100)
+        self.assertEqual(parsed.facts.incremental.overlay_ttl_seconds, 600)
         self.assertEqual(parsed.facts.index_on_build.pool, 4)
         self.assertEqual(
             parsed.facts.index_on_build.key_flags,
@@ -66,7 +74,11 @@ class ConfigParserTest(unittest.TestCase):
             ("facts:\n\tincremental: true\n", 2, "tabs"),
             ("facts: &defaults\n  incremental: true\n", 1, "unsupported"),
             ("facts:\n  index_on_build:\n    key_flags:\n      - -fsanitize=address\n", 4, "mapping"),
-            ("facts:\n  incremental: maybe\n", 2, "boolean"),
+            ("facts:\n  incremental: true\n", 2, "mapping"),
+            ("facts:\n  incremental:\n    enabled: maybe\n", 3, "boolean"),
+            ("facts:\n  incremental:\n    poll_interval_ms: 0\n", 3, "positive"),
+            ("facts:\n  incremental:\n    overlay_ttl_seconds: -1\n", 3, "non-negative"),
+            ("facts:\n  incremental:\n    nope: 1\n", 3, "unknown key"),
             ("facts:\n  incremental: true\n  incremental: false\n", 3, "duplicate"),
         ]
 

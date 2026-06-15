@@ -15,9 +15,25 @@ class IndexOnBuildConfig:
 
 
 @dataclass(frozen=True)
+class IncrementalConfig:
+    """Live knobs for the background incremental index (owner decision 3 + ADR-0018).
+
+    worker_count is intentionally absent: it is unified with facts.index_on_build.pool
+    (owner decision 2) so a single knob drives both build-tail and dirty re-extraction.
+    Defaults mirror cipher-2's INCREMENTAL_DEFAULTS.
+    """
+
+    enabled: bool = True
+    poll_interval_ms: int = 500
+    debounce_ms: int = 100
+    overlay_ttl_seconds: int = 600
+    max_dirty_files: int = 500
+
+
+@dataclass(frozen=True)
 class FactsConfig:
     extractor: Optional[str] = None
-    incremental: Optional[bool] = None
+    incremental: IncrementalConfig = field(default_factory=IncrementalConfig)
     index_on_build: IndexOnBuildConfig = field(default_factory=IndexOnBuildConfig)
 
 
@@ -199,8 +215,35 @@ def _parse_facts(node: Optional[_Node]) -> FactsConfig:
     _reject_unknown(values, {"extractor", "incremental", "index_on_build"})
     return FactsConfig(
         extractor=_optional_string(values.get("extractor"), "facts.extractor"),
-        incremental=_optional_bool(values.get("incremental"), "facts.incremental"),
+        incremental=_parse_incremental(values.get("incremental")),
         index_on_build=_parse_index_on_build(values.get("index_on_build")),
+    )
+
+
+def _parse_incremental(node: Optional[_Node]) -> IncrementalConfig:
+    if node is None:
+        return IncrementalConfig()
+    values = _require_mapping(node, "facts.incremental")
+    _reject_unknown(
+        values,
+        {"enabled", "poll_interval_ms", "debounce_ms", "overlay_ttl_seconds", "max_dirty_files"},
+    )
+    defaults = IncrementalConfig()
+    enabled = _optional_bool(values.get("enabled"), "facts.incremental.enabled")
+    return IncrementalConfig(
+        enabled=defaults.enabled if enabled is None else enabled,
+        poll_interval_ms=_optional_positive_int(
+            values.get("poll_interval_ms"), "facts.incremental.poll_interval_ms", defaults.poll_interval_ms
+        ),
+        debounce_ms=_optional_positive_int(
+            values.get("debounce_ms"), "facts.incremental.debounce_ms", defaults.debounce_ms
+        ),
+        overlay_ttl_seconds=_optional_nonneg_int(
+            values.get("overlay_ttl_seconds"), "facts.incremental.overlay_ttl_seconds", defaults.overlay_ttl_seconds
+        ),
+        max_dirty_files=_optional_positive_int(
+            values.get("max_dirty_files"), "facts.incremental.max_dirty_files", defaults.max_dirty_files
+        ),
     )
 
 
@@ -268,6 +311,24 @@ def _optional_int(node: Optional[_Node], name: str) -> Optional[int]:
     if not isinstance(node.value, int) or isinstance(node.value, bool):
         raise ConfigError(node.line, f"{name} must be an integer")
     return node.value
+
+
+def _optional_positive_int(node: Optional[_Node], name: str, default: int) -> int:
+    value = _optional_int(node, name)
+    if value is None:
+        return default
+    if value <= 0:
+        raise ConfigError(node.line, f"{name} must be a positive integer")
+    return value
+
+
+def _optional_nonneg_int(node: Optional[_Node], name: str, default: int) -> int:
+    value = _optional_int(node, name)
+    if value is None:
+        return default
+    if value < 0:
+        raise ConfigError(node.line, f"{name} must be a non-negative integer")
+    return value
 
 
 def _optional_string_list(node: Optional[_Node], name: str) -> Tuple[str, ...]:

@@ -380,19 +380,28 @@ fix-slow-path opening insists on a measured baseline and a measured gain.
 ```yaml
 facts:
   index_on_build:
-    pool: 4            # cap extraction workers during the build tail (unset ⇒ CPU-derived)
-    key_flags: []      # extra compile flags that should key the facts cache
+    pool: 4                  # cap extraction workers during the build tail (unset ⇒ CPU-derived)
+    key_flags: []            # extra compile flags that should key the facts cache
+  incremental:               # live background index between builds (ADR-0018); all knobs optional
+    enabled: true            # automatic background incremental index (default on)
+    poll_interval_ms: 500    # how often the poll thread scans tracked sources for edits
+    debounce_ms: 100         # settle time after an observed edit before re-extracting
+    overlay_ttl_seconds: 600 # overlay GC age (0 ⇒ never GC)
+    max_dirty_files: 500     # refuse to build an overlay larger than this dirty set
 match:
-  goal_memo: false     # memoize goal passes per workspace digest (default off)
+  goal_memo: false           # memoize goal passes per workspace digest (default off)
 ```
 
 `pool` is the same knob cipher-2 exposed as `extractor.worker_count`, so `arbiter adopt`
-migrates that value straight into it. The `facts.extractor` (string) and `facts.incremental`
-(bool) keys are also accepted but **reserved pending the M4 cipher-2 facts absorption** —
-extractor selection and the incremental overlay-reconcile subsystem (ADR-0013). They parse
-and validate today but drive no behavior: indexing is build-driven (ADR-0004), and arbiter
-ships a single Clang extractor. The `runs:` and `engine:` sections must be empty when present
-— any sub-key is rejected as unknown.
+migrates that value straight into it; it is the **single** worker knob — it drives both the
+build-tail extraction and incremental dirty re-extraction (there is no separate incremental
+`worker_count`). `facts.incremental` is now a **live section** (ADR-0018): the absorbed
+cipher-2 engine runs an automatic background index that re-extracts edited sources between
+builds and publishes a temporary overlay merged into `search`/`detail` at query time; the
+referee forces a synchronous reconcile before every fact predicate so adjudication is never
+stale. `facts.extractor` (string) is still **reserved** — arbiter ships a single Clang
+extractor, so it parses and validates but selects nothing. The `runs:` and `engine:` sections
+must be empty when present — any sub-key is rejected as unknown.
 
 Environment variables:
 

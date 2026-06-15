@@ -225,6 +225,29 @@ executor gains `RegisterTest`; match state carries `frozen_tests`, run payloads 
 `frozen_digests`; specialized executors (implementer, test-author) split write from execute so
 the test-author authors tests without inheriting the player's framing.
 
+## ADR-0018 — M4 facts absorption complete; `facts.incremental` goes live as a background index (2026-06-15, accepted)
+The M4 absorption replaced the placeholder fact store/extractor with cipher-2's real engine:
+content-addressed snapshots + SQLite read-index (the per-TU `extract-cache` of ADR-0005 is
+**superseded** and removed — the absorbed extractor owns dirty re-extraction via
+`extract_dirty_sources`), the libclang AST extractor, and the search/detail query layer.
+Phase 2 makes `facts.incremental` a **live config section** (no longer a reserved bool) driving an
+**automatic background index** (owner-required): an `IncrementalCoordinator` (`facts/incremental.py`)
+that plans dirty sources (content + included-header fanout), re-extracts them, and publishes a
+content-addressed temporary overlay (`overlay-<sha16>`) of fact upserts + source/relative tombstones
+under `.arbiter/facts/run/incremental/`. Readers merge the published overlay at query time
+(`store.open_view(overlay)`); the coordinator is the facts single-writer (player QUERY engine,
+ADR-0009) and a session-resident poll thread keeps the overlay warm between the referee's
+synchronous `arbiter/refresh` reconciles, so adjudication is never stale. Live knobs:
+`poll_interval_ms`, `debounce_ms`, `overlay_ttl_seconds` (overlay GC — cipher-2 left this a no-op),
+`max_dirty_files`; `worker_count` is unified with `facts.index_on_build.pool` (one knob for both
+build-tail and incremental re-extraction). The coordinator keeps a real jsonl audit log
+(`facts/log.py`) — the store/extractor stay log-disabled (forensics live in the referee journal).
+**Consequences:** `facts.incremental` schema change (bool → section, validated knobs); new modules
+`facts/incremental.py` + `facts/log.py`; `extract_cache.py` removed; cipher-2's incremental/overlay/
+config tests migrate as acceptance (`engine/tests/c2`); the user-guide reserved-key note and
+[m4-facts-absorption.md](proposals/m4-facts-absorption.md) §6 are updated. Full plan + decisions:
+the M4 proposal §8.
+
 ---
 
 *Template for new entries:*
