@@ -74,6 +74,11 @@ Pick the strongest one the task allows, in this order:
   (paths are rooted at structuredContent; an errored call always fails).
 - Long predicates: add "timeout_s" (default 600) / "output_lines" (default 256).
 
+Note: `register`, `import_recipes`, and `scan` are opening-supplied — they are wired
+only while a `capabilities:[recipes]` opening (the recipe-derivation opening) is active,
+and you use them solely as that opening's steps direct. Outside such an opening they are
+not present.
+
 ## When tools push back
 
 - SubmitTask → task_stale: the round moved on; ListTask {} to see the live state,
