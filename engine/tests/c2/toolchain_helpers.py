@@ -1,5 +1,6 @@
 # Ported from cipher-2 tests/toolchain_helpers.py (M4 test support): the fake clang/gcc + JSON-AST
 # oracle is verbatim; the cipher2 write_default_config tail is replaced by returning an ExtractorConfig.
+# (The incremental tests' load_config shim lives in c2.incremental_support, not here.)
 from pathlib import Path
 
 from arbiter_engine.facts.extractor.code._shim import ExtractorConfig
@@ -20,12 +21,19 @@ def write_fake_toolchain(
     gcc.write_text(f"#!/bin/sh\necho 'gcc (GCC) {gcc_version}'\n", encoding="utf-8")
     clang.chmod(0o755)
     gcc.chmod(0o755)
-    return ExtractorConfig(
+    config = ExtractorConfig(
         clang_executable=str(clang),
         gcc_executable=str(gcc),
         compile_database_path=compile_database_path,
         extractor_worker_count=extractor_worker_count,
     )
+    # Mirror cipher-2's write_fake_toolchain, which persisted a config that a later
+    # load_config(target) read back. The extractor-config registry lives in
+    # initializer_support; stash there so load_config(target) returns this toolchain.
+    from c2.initializer_support import _CONFIG_BY_TARGET
+
+    _CONFIG_BY_TARGET[str(Path(target).resolve(strict=False))] = config
+    return config
 
 
 def _fake_clang_script(version: str) -> str:
