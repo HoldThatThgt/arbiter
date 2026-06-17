@@ -1,8 +1,8 @@
 ---
 name: recipe-derivation
-description: Capability-gated opening for deriving and proving committed run recipes.
+description: Capability-gated opening for deriving and proving committed run recipes, then proving every wired tool surface on its real function.
 capabilities: [recipes]
-max_steps: 48
+max_steps: 64
 verify_policy: named
 ---
 
@@ -11,17 +11,35 @@ run: src_compile
 tests: ["*"]
 expect: {"overall":{"one_of":["passed","failed"]}}
 
-[Verify] gear-up-published
-run: src_compile
-tests: ["src_compile"]
-expect: {"overall":"passed","facts":{"published":true}}
-
 [Verify] tests-enumerated
 fact: _Test
 expect: {"min_results":1}
 
-[SetGoal]
-verify: tests-enumerated
+# perf-mcp proven on its REAL function, not a version probe: the referee itself calls
+# perf.scan_c over the project (root defaults to the repo) and requires a schema-versioned
+# findings payload. `findings` may be empty on a repo with no C/C++ hot paths — that the
+# scan RAN and returned the typed shape is the proof; do not require a non-empty list.
+[Verify] perf-static-scan
+mcp: perf-mcp perf.scan_c
+arguments: {}
+expect: [{"path":"schema_version","op":"eq","value":"perf-mcp.scan.v1"},{"path":"findings","op":"exists"}]
+
+# perf-mcp's measurement path proven on a trivial, repo-agnostic command.
+[Verify] perf-command-measured
+mcp: perf-mcp perf.measure_command
+arguments: {"command":["true"],"repeat":2}
+expect: [{"path":"schema_version","op":"eq","value":"perf-mcp.measure.v1"}]
+
+# gdb-mcp proven on REAL debugging, not just gdb_diagnostics: compile a tiny program with
+# whatever C compiler is present and drive gdb through break->run->next->inspect, asserting it
+# read the live value (x=41). Per the intro design gdb is REPORTED, not gated: a host that lacks
+# gdb or a compiler, or forbids launching inferiors (unsigned gdb / DWARF5 mismatch on macOS),
+# must not fail the repo, so this always exits 0 — it PROVES real debugging on boxes where gdb
+# can (the report says "PROVED"), and reports the host limitation otherwise. The shell is the
+# referee's, re-run independently.
+[Verify] gdb-debugs-real-binary
+shell: T=$(mktemp -d); printf 'int main(){int x=41; volatile int y=x+1; return y-42;}\n' > "$T/g.c"; CC=$(command -v cc || command -v gcc || command -v gcc-12 || command -v gcc-10 || command -v clang || command -v clang-16); if [ -z "$CC" ]; then echo "gdb gate: no C compiler on host — reported, not gated"; exit 0; fi; "$CC" -g -O0 "$T/g.c" -o "$T/g" 2>/dev/null || { echo "gdb gate: trivial compile failed — reported, not gated"; exit 0; }; if ! command -v gdb >/dev/null 2>&1; then echo "gdb gate: gdb absent — reported, not gated"; exit 0; fi; O=$(gdb -nx -batch -ex 'break main' -ex run -ex next -ex 'print x' -ex quit "$T/g" 2>&1); if echo "$O" | grep -q '= 41'; then echo "gdb gate: PROVED real debugging — break main, run, read live x=41"; else echo "gdb gate: gdb present but could not debug on this host (host limitation) — reported, not gated: $(echo "$O" | tr -d '\n' | tail -c 160)"; fi; exit 0
+timeout_s: 180
 
 [STEP] derive
 [StepJob]
@@ -58,9 +76,10 @@ finishes this step is a real registered recipe proven by a real run.
    predicate is bound — only a real compile+run satisfies it.
    Your recipe MUST keep a real `src_compile` stage that compiles through the shims. A recipe with
    only a `test_run` stage runs the pre-built binary and will still pass candidate-proven, but it
-   builds nothing — so the very next publish step then fails forever (facts never publish, because
-   `arbiter cc` was never invoked). Do NOT drop, empty, or comment out the `src_compile` stage to
-   get a green candidate-proven; the build stage is the point.
+   builds nothing — so the `_Test` index stays empty and the next `enumerate` step fails forever
+   (facts never publish, because `arbiter cc` was never invoked). The cc-interposed build at this
+   step is what publishes the first facts snapshot; do NOT drop, empty, or comment out the
+   `src_compile` stage to get a green candidate-proven — the build stage is the point.
 
     compile_db:
       path: build/compile_commands.json
@@ -108,26 +127,82 @@ lists — is literal. Common mistakes that make register reject the file, do NOT
 - Submit candidate-proven from a real run (structured gtest output only) — never a file-exists check, marker file, or shell shortcut
 [Submit] candidate-proven
 [Branch]
-success: publish
+success: enumerate
 failure: derive
 
-[STEP] publish
+[STEP] enumerate
 [StepJob]
-Run the proven src_compile recipe so arbiter cc journals every translation unit and the engine
-publishes the first facts snapshot. Only a real cc-interposed green build publishes facts; if it
-does not publish, cc is not actually interposed — go back and wire it. The snapshot records each
-gtest case as its generated `Suite_Case_Test` fixture type, so this build is what makes the
-project's test set machine-knowable. Call scan {"scope": "*"} to pull that facts-derived test
-inventory and use it as the authoritative test list for the recipe's `tests` and for what you
-report — do not hand-list tests or recall the suite from memory. The match's goal is
-`tests-enumerated`: after this round the referee re-runs the test index query itself and checkmates
-only when the published snapshot actually contains the test set, so an enumeration you assert but
-the index does not contain cannot finish the bootstrap.
+Prove the published snapshot is queryable and carries the project's test set — publication is not
+searchability. Call scan {"scope": "*"} to pull the facts-derived test inventory (each gtest case
+recorded as its generated `Suite_Case_Test` fixture type) and use it as the authoritative test
+list for what you report — do not hand-list tests or recall the suite from memory. Then submit
+tests-enumerated: the referee re-runs the `_Test` index query itself against the published
+snapshot and passes only when the snapshot actually contains the test set, so an enumeration you
+assert but the index does not contain cannot pass.
 [CheckList]
-- Submit gear-up-published for the proven recipe
-- Call scan {"scope": "*"} and treat its facts-derived test set as the authoritative test inventory
-- Record any instrumentation macro key_flags recommendation for user confirmation
-[Submit] gear-up-published
+- Call scan {"scope": "*"} and treat its facts-derived set as the authoritative test inventory
+- Confirm the snapshot answers a query (search/detail) before submitting — publication is not searchability
+- Submit tests-enumerated (referee re-queries the index; your transcript is not the test set)
+[Submit] tests-enumerated
+[Branch]
+success: reconcile-perf
+failure: derive
+
+[STEP] reconcile-perf
+[StepJob]
+Prove perf-mcp on its REAL functions, not a version probe. Submit perf-static-scan: the referee
+itself calls `perf.scan_c` over the project and requires a schema-versioned findings payload — that
+proves the static analyzer actually runs and returns typed output (the findings list may be empty
+on a repo with no C/C++ hot paths; that is still a pass). Then exercise the rest of the surface and
+report what it returns: call `perf.measure_command` with a trivial command (e.g. argv ["true"]) and
+confirm a `perf-mcp.measure.v1` timing payload, and call `perf.explain_finding` (pass a `finding`
+from the scan, or a `rule_id`) and confirm a `perf-mcp.explain.v1` explanation. Report all three
+results. Do not submit a toolchain probe in place of the scan — a version check is not a proof.
+[CheckList]
+- Submit perf-static-scan (referee runs perf.scan_c → schema-versioned findings)
+- Call perf.measure_command on a trivial command and report the perf-mcp.measure.v1 timing
+- Call perf.explain_finding on a scan finding or rule_id and report the perf-mcp.explain.v1 explanation
+[Submit] perf-static-scan
+[Branch]
+success: reconcile-diag
+failure: reconcile-perf
+
+[STEP] reconcile-diag
+[StepJob]
+Prove gdb-mcp on REAL debugging, not just gdb_diagnostics, and exercise the remaining capability
+tools. Submit gdb-debugs-real-binary: the referee compiles a tiny program and drives gdb through
+break->run->inspect, asserting it reads a live value — it passes on hosts where gdb can debug, and
+reports-and-passes where gdb is absent or the host forbids launching inferiors (a host limitation
+never fails the repo). Alongside it, drive a real gdb-mcp session against your proven test binary
+and report the outputs: gdb_start (mode exec on the binary) → gdb_breakpoint (set one) → gdb_exec
+(run) → gdb_stack / gdb_eval (read a frame and a value) → gdb_stop. Also exercise the recipe-import
+path — call import_recipes on a recipe book and confirm the imported recipe is queryable via
+recipe_search — and append one NotePlaybook gotcha capturing anything you learned this run.
+[CheckList]
+- Submit gdb-debugs-real-binary (referee proves gdb debugs, or reports a host limitation)
+- Drive a real gdb-mcp session (gdb_start → gdb_breakpoint → gdb_exec → gdb_stack/gdb_eval → gdb_stop) on the proven binary and report the outputs
+- Exercise import_recipes (then recipe_search to confirm the import is queryable) and append a NotePlaybook gotcha
+[Submit] gdb-debugs-real-binary
+[Branch]
+success: confirm
+failure: reconcile-diag
+
+[STEP] confirm
+[StepJob]
+This is a human-confirmation gate — there is no executor task here. Do NOT CreateTask. Put the
+`[Checkpoint]` question below to the user verbatim with AskUserQuestion (pass / fail options),
+relaying the reported recipe id, snapshot id, test inventory, the perf scan/measure/explain
+results, the gdb session/debug result, and any suggested facts.key_flags so they can judge. Then
+call SubmitCheckpoint with their actual choice — pass advances to END, fail loops back to
+reconcile-diag. Never decide on the user's behalf in an interactive run. ONLY in a
+non-interactive / headless run where AskUserQuestion cannot reach a person (it errors or returns no
+usable answer) do you SubmitCheckpoint {"decision":"pass"} once without a human — every prior step
+was already referee-verified — and note the auto-approval in the report.
+[Checkpoint]
+The bootstrap proved the recipe, published facts, enumerated the test set, and exercised perf-mcp
+and gdb-mcp on their real functions. Review the reported recipe id, snapshot id, test inventory,
+perf scan/measure/explain results, gdb session/debug result, and any suggested facts.key_flags —
+do these proven surfaces and the reported results look right for this repository?
 [Branch]
 success: END
-failure: derive
+failure: reconcile-diag

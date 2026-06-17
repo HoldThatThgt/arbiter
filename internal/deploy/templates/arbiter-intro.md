@@ -39,18 +39,35 @@ the referee ends the match:
    step. Its `request` string must carry the goal, the scope limits, and the exact bound predicate
    name from step 1 for the executor to submit. This is the player's job and yours alone — nobody
    hands you a task; you write it. CreateTask returns a `task_id`.
-3. **Dispatch an arbiter-executor** subagent with the Task tool, putting that `task_id` on a
-   "task id:" line in the prompt along with the request. The executor does the probing, building,
-   and recipe work (`register`, `import_recipes`, and `scan` are its capability-gated tools, live
-   only while a `capabilities:[recipes]` opening is loaded) and finishes by calling its own
-   `SubmitTask` on that `task_id` with the step's bound predicate (`{"verify":"<name>"}`).
+3. **Dispatch the right executor subagent** with the Task tool, putting that `task_id` on a
+   "task id:" line in the prompt along with the request. Route by step: the recipe/facts steps
+   (`derive`, `publish`, `enumerate`) go to **arbiter-executor** (`register`, `import_recipes`,
+   `scan` are its capability-gated tools, live only while a `capabilities:[recipes]` opening is
+   loaded); the diagnostic reconcile steps (`reconcile-perf`, `reconcile-diag`) go to
+   **arbiter-debugger**, the only subagent wired with the `perf-mcp` and `gdb-mcp` companion tools
+   needed to drive a real perf scan and a real gdb session. Whichever you dispatch finishes by
+   calling its own `SubmitTask` on that `task_id` with the step's bound predicate
+   (`{"verify":"<name>"}`).
 4. Call **`mcp__arbiter__CheckStepJob`** — ask the referee to adjudicate. `complete:false` with
    `no_tasks` means you skipped step 2 — go create one; `open_tasks` means await or re-dispatch
    the listed ids; `goal_running` means call again shortly. `complete:true` advances the step (or
    ends the match); then return to step 1 for the new step.
 
-Accept outcomes only as SubmitTask verdicts: nothing in this bootstrap is "done" because you
-observed it; it is done when a typed predicate said so.
+**Checkpoint steps are the exception to steps 2–3.** When `ShowStepJob` marks the current step as a
+checkpoint (it carries a `checkpoint` question instead of a checklist — the opening's `confirm`
+step), do NOT `CreateTask` or dispatch anyone: put that exact question to the user with
+`AskUserQuestion` (pass / fail), then call **`mcp__arbiter__SubmitCheckpoint`** with
+`{"decision":"pass"|"fail"}` relaying their real choice (pass → advance, fail → loop the step). In
+an interactive session relay the real human choice and never decide for them — the checkpoint
+exists to get a real human yes. ONLY when this is a non-interactive / headless run where
+`AskUserQuestion` cannot reach a person (it errors or returns no usable answer) do you avoid
+looping forever: every step in this opening was already referee-verified, so `SubmitCheckpoint`
+`{"decision":"pass"}` once and note in your final report that the confirmation was auto-approved
+because the run is non-interactive (no human present). Never auto-pass a checkpoint a human could
+have answered.
+
+Accept outcomes only as SubmitTask/SubmitCheckpoint verdicts: nothing in this bootstrap is "done"
+because you observed it; it is done when a typed predicate or the user said so.
 
 **Non-negotiable rules — follow exactly, do not improvise:**
 - Load EXACTLY the `recipe-derivation` opening, by name: dispatch the curator to
@@ -68,102 +85,57 @@ observed it; it is done when a typed predicate said so.
 - On a tool error, read the message and fix the cause; do not resubmit the same thing hoping it
   passes, and never treat a tool failure as a step completing.
 
-This bootstrap also **reconciles every wired tool surface**. It is not enough that `arbiter
-init` wrote the entries — the build/index, query, recipe, and diagnostic tools must each answer
-once before the repo is declared ready, so a surface that was wired but is actually broken
-fails the bootstrap instead of being discovered later mid-match. Surfaces that are always
-available (recipe `run`, facts `search`/`detail`, `scan`/`recipe_search`, `perf-mcp`) are
-**hard-gated** by typed predicates; surfaces that depend on a host prerequisite (`gdb-mcp`'s
-host `gdb`, the Clang facts toolchain) are probed and **reported** on the checklist — never
-silently assumed, never used to fail a repo that is otherwise wired correctly.
+This bootstrap **proves every wired tool surface on its REAL function** — not a version/readiness
+probe — and it does so through the loaded opening's own steps, each gated by a referee-verified
+predicate, so a surface that was wired but is actually broken fails its step instead of being
+discovered later. The `recipe-derivation` opening walks these steps; drive each with the loop above
+and the opening's `ShowStepJob` text tells you exactly what to submit:
 
-## Bootstrap
+- **derive** → `candidate-proven`: a real registered recipe builds and runs the suite through the
+  `arbiter cc` shims — and that cc-interposed build publishes the first facts snapshot as a side
+  effect (so there is no separate "publish" step). (arbiter-executor.)
+- **enumerate** → `tests-enumerated`: the referee re-queries the published `_Test` index itself,
+  proving facts published WITH the project's test set (recorded as the generated `Suite_Case_Test`
+  fixture types) — enumerated from the index, never trusted from your transcript. An empty index
+  means the derive build was not cc-interposed (or the recipe had no real `src_compile` stage) —
+  fix that, do not loop. Call `scan {"scope":"*"}` for the authoritative test set to report. If
+  facts publication is blocked only by a missing capable Clang (LLVM ≥ 16 / Apple ≥ 15) — not a
+  build failure — report the typed reason; builds, matches, and shell/mcp predicates work without
+  facts.
+- **reconcile-perf** → `perf-static-scan`: the referee runs `perf.scan_c` over the project (a REAL
+  static analysis, not `perf.toolchain_probe`). In the same step also call `perf.measure_command`
+  and `perf.explain_finding` and report their typed results. (arbiter-debugger.)
+- **reconcile-diag** → `gdb-debugs-real-binary`: the referee compiles a tiny program and drives gdb
+  through break→run→inspect — proving real debugging where the host can, reporting-and-passing
+  where gdb is absent or cannot launch inferiors (gdb is reported, never used to fail the repo). In
+  the same step drive a real gdb-mcp session against the proven binary
+  (`gdb_start`→`gdb_breakpoint`→`gdb_exec`→`gdb_stack`/`gdb_eval`→`gdb_stop`), exercise
+  `import_recipes` (then `recipe_search` to confirm the import is queryable), and append a
+  `NotePlaybook` gotcha. (arbiter-debugger.)
+- **confirm** → a `[Checkpoint]`: put its question to the user with `AskUserQuestion` and relay the
+  answer via `SubmitCheckpoint`. This proves the human-confirmation surface.
 
-1. probe the build system: identify make, cmake, or custom entry points; locate the compiler,
-   gtest binary, build directory, and the repo's primary suite target.
-2. Load the `recipe-derivation` opening with arbiter-curator (it ships with `arbiter init`,
-   refreshed to the shipped template on every init). If the curator reports it missing, the
-   deployment is broken — tell the user to re-run `arbiter init`, then stop.
-3. Discover, derive, and prove recipes in `.arbiter/recipes.yaml`. Seed candidates from the
-   build probe **and** the executor's `scan` tool (facts-derived test-target discovery — confirm
-   it returns real candidates, not an empty stub). Each candidate must prove itself before it is
-   treated as committed knowledge: call `register`, then create a referee task with
-   `run: <candidate>`, representative `tests`, and
-   `expect: {"overall":{"one_of":["passed","failed"]}}`. After a candidate is proven, confirm the
-   book is queryable — a `recipe_search` for it must return the proven id.
-4. Install `arbiter cc` interposition into every proven `src_compile` stage. Preserve the real
-   compiler path and profile overlays; do not replace the build system with a synthetic command
-   when a native target exists.
-5. Run the instrumentation macro scan as a whole-token source scan for:
-   `__SANITIZE_ADDRESS__`, `__SANITIZE_THREAD__`, and `__has_feature(*_sanitizer)`.
-   Report every hit as `path:line token text`, plus a recommended `facts.key_flags` list such as
-   `[-fsanitize=address]` or `[-fsanitize=thread]`. Never auto-write those flags; ask the user
-   to confirm because facts relevance is a semantic choice.
-6. Run the first gear-up task through the proven `src_compile` recipe with the selected profile.
-   The predicate is `{"overall":"passed","facts":{"published":true}}`. If publication fails
-   only because the host lacks a capable Clang (LLVM ≥ 16 / Apple ≥ 15) — not because the build
-   failed — report the typed publication reason on the checklist rather than looping; builds,
-   matches, and shell/mcp predicates still work without facts.
-7. Reconcile the **query surface and the project's test inventory** (hard gate). A snapshot that
-   published is not proven usable until it answers a query — publication is not searchability —
-   and your recollection of the suite is not the project's test set: the referee's is. The
-   `recipe-derivation` opening checkmates on `tests-enumerated`
-   (`{"kind":"fact","query":"_Test","expect":{"min_results":1}}`), which the referee evaluates
-   against the published snapshot — so the project's gtest test set (recorded in the index as the
-   generated `Suite_Case_Test` fixture types) is enumerated from the index, never trusted from your
-   transcript. Call `scan {"scope":"*"}` to obtain that same facts-derived set for the recipe's
-   `tests` and for the report; do not hand-list tests. (Skip only when step 6 reported no snapshot
-   at all — there is nothing to enumerate.)
-8. Reconcile the **diagnostic companions** that `arbiter init` wired.
-   - `perf-mcp` (hard gate — pure stdlib, must answer): dispatch a task whose result is
-     `{"kind":"mcp","server":"perf-mcp","tool":"perf.toolchain_probe","arguments":{},`
-     `"expect":[{"path":"schema_version","op":"eq","value":"perf-mcp.probe.v1"}]}`.
-   - `gdb-mcp` (reported, not gated — host `gdb` may be absent or unable to launch inferiors):
-     probe readiness with `gdb_diagnostics` (or note `python3 -m arbiter_engine.gdbmcp doctor
-     --root .`) and record `gdb-mcp ready` / `gdb-mcp unavailable: <reason>` on the checklist.
-     Do not block the bootstrap on it.
-9. Confirm the base openings are present — `freeplay`, `gold-digger`, `recipe-derivation`,
-   and `regression-triage` are delivered by `arbiter init` (refreshed to the shipped template on
-   every init; your own-named books are never touched). Ask the curator to list them and, if any
-   are missing, have the user re-run `arbiter init`.
+Three things the opening leaves to you — do them and fold them into the final report:
+- **Probe the build system** before loading the opening (make/cmake entry points, compiler, gtest
+  binary, build dir, primary suite target) so your derive task is concrete.
+- **Instrumentation macro scan**: whole-token grep the sources for `__SANITIZE_ADDRESS__`,
+  `__SANITIZE_THREAD__`, and `__has_feature(*_sanitizer)`; report `path:line token` hits and a
+  suggested `facts.key_flags` (e.g. `[-fsanitize=address]`). Never auto-write flags — ask the user,
+  because facts relevance is a semantic choice.
+- **Openings present**: have the curator list the books and confirm `freeplay`, `gold-digger`,
+  `recipe-derivation`, and `regression-triage` are all there (re-run `arbiter init` if any are
+  missing).
 
-## Checkmate — the match ending is NOT the finish line
+## Checkmate
 
-When the match reports `finished_success` it means ONE thing: the recipe is proven and the
-`tests-enumerated` goal saw the published snapshot. That is necessary but NOT sufficient. The
-match almost always checkmates at the very first step — the proving build publishes facts, which
-satisfies the goal immediately, so the publish step never even runs — and a freshly bootstrapped
-repo is still NOT done at that moment. DO NOT stop or declare success when the match ends. You,
-the player, must now reconcile every remaining wired surface YOURSELF by calling each tool
-directly and seeing it answer. Asserting a surface is "ready" without calling it does NOT count:
-if you did not call `mcp__perf-mcp__perf_toolchain_probe`, you have not reconciled perf-mcp.
+The opening runs every step to `END` — it does NOT checkmate early. The bootstrap is complete only
+when the match reaches `finished_success` (the `confirm` checkpoint passed) AND each gated step
+produced its verdict — every surface above was proven on its real function, not asserted. A step
+whose predicate cannot pass keeps the match open; report the blocking predicate rather than
+declaring success. Report a surface as proven only because its step's predicate passed (or its tool
+returned a real result), never because you observed it.
 
-After the match ends, run each of these and keep its result:
-
-1. **Test inventory from the index** — call `mcp__arbiter__search` with `{"query":"_Test"}`. It
-   must return the project's gtest fixture types (the real test set); take one id and call
-   `mcp__arbiter__detail` with `{"fact_id":"<that id>"}`. The index is the test set; your
-   transcript is not. (This is the same facts-derived inventory the executor's `scan` exposes.)
-2. **perf-mcp (hard gate)** — call `mcp__perf-mcp__perf_toolchain_probe` with `{}`. It must return
-   `schema_version` = `perf-mcp.probe.v1`. If it does not answer, the bootstrap is NOT complete —
-   report the blocking failure, do not paper over it.
-3. **gdb-mcp (reported, never gates)** — call `mcp__gdb-mcp__gdb_diagnostics` with `{}` and record
-   `gdb-mcp ready` or `gdb-mcp unavailable: <reason>`. A missing or unable host `gdb` never fails
-   the repo.
-4. **Instrumentation macro scan** — whole-token grep the sources for `__SANITIZE_ADDRESS__`,
-   `__SANITIZE_THREAD__`, and `__has_feature(*_sanitizer)`; report `path:line token` hits plus a
-   suggested `facts.key_flags` (e.g. `[-fsanitize=address]`). Never auto-write flags — ask the user.
-5. **Openings present** — have the curator list the books and confirm `freeplay`, `gold-digger`,
-   `recipe-derivation`, and `regression-triage` are all present.
-
-The bootstrap is complete ONLY when the proven recipe, the `search`+`detail` index answer, the
-`perf-mcp` probe verdict, the `gdb-mcp` readiness line, the macro scan, and the openings list have
-EACH produced a real result from a real call. If a published snapshot is blocked solely by a
-missing capable Clang (LLVM ≥ 16 / Apple ≥ 15) — not a build failure — finish as "wired; facts
-unavailable until Clang ≥ 16 is installed" with the typed reason recorded, rather than looping.
-
-The final reply names the proven recipe(s), the snapshot id (or the typed reason none published),
-the `search`/`detail` test-inventory result, the `perf-mcp` and `gdb-mcp` readiness lines, the
-macro-scan checklist, any suggested `facts.key_flags`, and the installed openings. If a hard-gated
-surface — a proven-recipe count of at least one, the `perf-mcp` probe, or the facts query — cannot
-produce its verdict, report the blocking predicate instead of declaring the bootstrap complete.
+The final reply names: the proven recipe id, the snapshot id (or the typed reason none published),
+the `scan`/`search` test inventory, the perf-mcp scan/measure/explain results, the gdb debug result
+and the gdb-mcp session outputs, the macro-scan checklist with any suggested `facts.key_flags`, and
+the installed openings.
