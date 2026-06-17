@@ -366,7 +366,26 @@ def _publish_compile_facts(
     profiles: Sequence[str],
 ) -> Optional[Mapping[str, object]]:
     if book.compile_db is None:
-        return None
+        # A recipe with no top-level `compile_db:` section can build and run, but can never
+        # publish facts: the extractor has no compile-command source to index. Returning a
+        # silent None left a facts-gated step (gear-up-published, tests-enumerated) failing with
+        # an opaque journal_miss and no way for the author to learn what was missing. Surface a
+        # typed, not-published result naming the absent section instead.
+        return pipeline.PipelineResult(
+            published=False,
+            snapshot_id=None,
+            files=0,
+            warnings=[{
+                "kind": "no_compile_db",
+                "message": "facts cannot publish: this recipe has no top-level `compile_db:` "
+                "section. Add one, as a sibling of `targets:`, with `path:` set to the build's "
+                "compile_commands.json (configure cmake with -DCMAKE_EXPORT_COMPILE_COMMANDS=ON), "
+                "e.g.\ncompile_db:\n  path: build/compile_commands.json",
+            }],
+            extract_ms=0,
+            hidden_ms=0,
+            tail_ms=0,
+        ).to_json()
     journals = _compile_journals(root, target, stage_name)
     if not any(path.exists() for path in journals):
         return pipeline.PipelineResult(
@@ -388,7 +407,24 @@ def _publish_compile_facts(
         profile="+".join(profiles) if profiles else "default",
         extractor_config=extractor_config,
     )
-    return result.to_json()
+    payload = result.to_json()
+    # A `binary:` that does not resolve after a green build silently disables the build cache
+    # (build_cache.lookup requires the file): every subsequent run then resets the journal and
+    # recompiles incrementally, publishing a partial snapshot that clobbers the complete one —
+    # which reads downstream as a passing build whose tests-enumerated goal never satisfies. Name
+    # it so the author points `binary:` at where the build actually writes the test binary.
+    if build_succeeded and target.binary and not (root / target.binary).exists():
+        warnings = list(payload.get("warnings") or [])
+        warnings.append({
+            "kind": "binary_not_found",
+            "message": f"the recipe's `binary:` path {target.binary!r} does not exist after a green "
+            f"build, so the build cache is disabled and each run recompiles incrementally and "
+            f"publishes an INCOMPLETE facts snapshot. Set `binary:` to the test binary's path "
+            f"relative to the repo root (where the build writes it, typically under build/, "
+            f"e.g. build/{Path(target.binary).name}).",
+        })
+        payload["warnings"] = warnings
+    return payload
 
 
 def _compile_journals(root: Path, target: recipes.Target, stage_name: str) -> Tuple[Path, ...]:

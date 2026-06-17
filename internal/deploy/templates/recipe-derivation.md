@@ -38,8 +38,11 @@ finishes this step is a real registered recipe proven by a real run.
    tabs, lists inline [a, b, c] — wiring the two shim scripts as the compilers in the configure
    `pre` command. Strict YAML subset: NO anchors/aliases (`&`/`*`) and NO extra keys; every path
    (`compile_db.path`, `binary`, `sources`) is REPO-RELATIVE (no leading `/`). Set `binary` to the
-   relative path of the test binary the build produces — it lets arbiter skip an unchanged rebuild,
-   so the publish step reuses the cached build (fast) instead of recompiling. Then call
+   FULL repo-relative path the build actually writes the test binary to — including its build
+   directory, e.g. `build/<name>`, NOT just `<name>`. It lets arbiter skip an unchanged rebuild,
+   so the publish step reuses the cached build (fast) instead of recompiling; a `binary` that does
+   not point at the real output file disables that cache and makes the publish snapshot incomplete.
+   Then call
    register {"path": ".arbiter/recipes.yaml"}. register's error names the offending line/field —
    fix that one line, do not re-guess from scratch.
 4. Prove the registered recipe by SUBMITTING candidate-proven — call SubmitTask with
@@ -99,6 +102,7 @@ lists — is literal. Common mistakes that make register reject the file, do NOT
   (so the build journals nothing → `journal_miss`). The entire cmake invocation is a SINGLE
   `- [...]` list item.
 [CheckList]
+- The recipe begins with a top-level `compile_db:` section (sibling of `targets:`, `path:` pointing at the build's compile_commands.json) — without it the recipe builds but NEVER publishes facts, and the publish step fails forever
 - The configure command wires .arbiter/shim_cc.sh and .arbiter/shim_cxx.sh as the compilers (real compiler through arbiter cc); the shims are used as-is, not recreated
 - recipe_search, then write .arbiter/recipes.yaml in the shape above, then register {"path": ".arbiter/recipes.yaml"}
 - Submit candidate-proven from a real run (structured gtest output only) — never a file-exists check, marker file, or shell shortcut
