@@ -604,6 +604,13 @@ func ScanDir(dir string) Catalog {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" {
 			continue
 		}
+		// FORMAT.md is the deployed grammar reference, not a playbook; the deploy
+		// opening enumeration already skips it by name. Excluding it here keeps it
+		// out of the catalog's invalid[] list, where ReadPlayBook would otherwise
+		// surface it to the model as a bogus "playbook with bad frontmatter".
+		if entry.Name() == "FORMAT.md" {
+			continue
+		}
 		path := filepath.Join(dir, entry.Name())
 		book, issues := ParseFile(path)
 		if len(issues) > 0 {

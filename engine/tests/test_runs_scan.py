@@ -11,11 +11,11 @@ from arbiter_engine.runs import discovery
 from arbiter_engine.runs import state as run_state
 
 
-def _test_body_fact(suite, name, file, line, fact_id, *, kind="function"):
+def _test_body_fact(suite, name, file, line, fact_id, *, kind="type"):
     return FactRecord(
         object_id=fact_id,
-        object_name=f"{suite}_{name}_Test::TestBody",
-        object_description=f"gtest body {suite}.{name}",
+        object_name=f"{suite}_{name}_Test",
+        object_description=f"gtest fixture {suite}.{name}",
         object_source=f"{file}:{line}",
         object_profile="debug",
         payload={"fact_kind": kind},
@@ -85,12 +85,12 @@ class DiscoveryTest(unittest.TestCase):
             root = Path(tmp)
             fact = FactRecord(
                 object_id="code:function:param",
-                object_name="My_Param_Suite_Some_Case_Test::TestBody",
-                object_description="parameterized body",
+                object_name="My_Param_Suite_Some_Case_Test",
+                object_description="parameterized fixture",
                 object_source="src/p.cc:11",
                 object_profile="debug",
                 payload={
-                    "fact_kind": "function",
+                    "fact_kind": "type",
                     "test_suite": "My_Param_Suite",
                     "test_name": "Some_Case",
                 },
@@ -166,9 +166,9 @@ class ScanToolTest(unittest.TestCase):
             result = response["result"]
             self.assertFalse(result["isError"])
             self.assertNotIn("stub", json.dumps(result))
-            self.assertEqual(result["scope"], "tests")
-            self.assertEqual(len(result["targets"]), 1)
-            target = result["targets"][0]
+            self.assertEqual(result["structuredContent"]["scope"], "tests")
+            self.assertEqual(len(result["structuredContent"]["targets"]), 1)
+            target = result["structuredContent"]["targets"][0]
             self.assertEqual(target["test"], "Suite.Fail")
             self.assertEqual(target["file"], "src/fail.cc")
             self.assertEqual(target["line"], 42)
@@ -183,7 +183,7 @@ class ScanToolTest(unittest.TestCase):
 
             result = response["result"]
             self.assertFalse(result["isError"])
-            self.assertEqual(result["targets"], [])
+            self.assertEqual(result["structuredContent"]["targets"], [])
             self.assertNotIn("stub", json.dumps(result))
 
     def test_scan_tool_rejects_non_string_scope(self):

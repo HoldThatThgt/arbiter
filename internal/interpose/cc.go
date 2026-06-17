@@ -30,6 +30,14 @@ type invocation struct {
 	compile     bool
 }
 
+// Bounded retry for a real-compiler exec that fails to start (non-ExitError, e.g. a
+// transient fork EAGAIN under a parallel build). ccExecRetries is the number of extra
+// attempts after the first; the backoff grows linearly to let resource pressure ease.
+const (
+	ccExecRetries      = 4
+	ccExecRetryBackoff = 100 * time.Millisecond
+)
+
 // Run executes one interposed compiler invocation: journal it (when it
 // compiles sources), then exec the real compiler with exit code passed
 // through bit-exact. root is the deployment root that owns the journal; cwd
@@ -55,27 +63,40 @@ func Run(root, cwd string, args []string, stdin io.Reader, stdout, stderr io.Wri
 		}
 		journalAll(root, cwd, inv, false, "")
 	}
-	cmd := exec.Command(inv.argv[0], inv.argv[1:]...)
-	cmd.Dir = cwd
-	cmd.Env = os.Environ()
-	cmd.Stdin = stdin
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-	if err := cmd.Run(); err != nil {
+	// Exec the real compiler. A non-ExitError from Run() — after executableUnavailable
+	// already confirmed the binary exists — is not a compile result but the process
+	// failing to start/run at all: in practice a transient fork/exec failure (EAGAIN /
+	// resource pressure under a parallel build). Retry a bounded number of times before
+	// recording a permanent miss, so one flaky fork does not poison the whole facts
+	// snapshot. exec.Cmd is single-use, so rebuild it each attempt.
+	var runErr error
+	for attempt := 0; attempt <= ccExecRetries; attempt++ {
+		cmd := exec.Command(inv.argv[0], inv.argv[1:]...)
+		cmd.Dir = cwd
+		cmd.Env = os.Environ()
+		cmd.Stdin = stdin
+		cmd.Stdout = stdout
+		cmd.Stderr = stderr
+		runErr = cmd.Run()
+		if runErr == nil {
+			return 0
+		}
 		var exit *exec.ExitError
-		if errors.As(err, &exit) {
+		if errors.As(runErr, &exit) {
 			return exit.ExitCode()
 		}
-		if inv.compile {
-			journalAll(root, cwd, inv, true, err.Error())
+		if attempt < ccExecRetries {
+			time.Sleep(time.Duration(attempt+1) * ccExecRetryBackoff)
 		}
-		if errors.Is(err, exec.ErrNotFound) || os.IsNotExist(err) {
-			return 127
-		}
-		fmt.Fprintln(stderr, err)
-		return 1
 	}
-	return 0
+	if inv.compile {
+		journalAll(root, cwd, inv, true, runErr.Error())
+	}
+	if errors.Is(runErr, exec.ErrNotFound) || os.IsNotExist(runErr) {
+		return 127
+	}
+	fmt.Fprintln(stderr, runErr)
+	return 1
 }
 
 // journalAll appends one entry per source file: the engine consumes

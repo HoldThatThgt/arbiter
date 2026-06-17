@@ -257,7 +257,11 @@ def _parse_targets(node: Optional[_Node]) -> Tuple[Target, ...]:
             if name in body
         }
         if not stages:
-            raise RecipeError(item.line, "target must declare at least one stage")
+            raise RecipeError(
+                item.line,
+                "target must declare at least one stage: add a 'src_compile', 'test_compile', "
+                "or 'test_run' mapping directly under the target (each holds pre/cmd/post argv lists)",
+            )
         targets.append(
             Target(
                 id=target_id,
@@ -311,6 +315,36 @@ def _command(node: Optional[_Node], name: str) -> Tuple[str, ...]:
     if node is None:
         raise RecipeError(1, f"{name} is required")
     if isinstance(node.value, str):
+        # A scalar string is exec'd directly as ONE program name (no shell), so a string
+        # carrying spaces — arguments, 'cd', '&&', pipes — can never run: the whole string
+        # is taken as a single executable. Reject it here with the correct shape instead of
+        # letting it fail at build time as an opaque "command not found". Char-match only.
+        stripped = node.value.strip()
+        if " " in stripped:
+            raise RecipeError(
+                node.line,
+                f"{name} runs as ONE command by direct exec, never through a shell, so a "
+                f"string with spaces cannot work — the entire string is taken as a single "
+                f"program name. Write the command as an inline argv list instead, one token "
+                f"per item: e.g. cmd: [cmake, --build, build, --target, NAME], or "
+                f"cmd: [./build/tests]. There is no shell, so 'cd', '&&', ';', '|' and "
+                f"redirection are unavailable: put each command as its own item under 'pre' "
+                f"(a list of argv lists) and use flags like cmake's -S/-B in place of 'cd'.",
+            )
+        # A command's first (here: only) token beginning with '-' is a flag, not a program —
+        # the tell-tale of an argv list mis-split across separate list items
+        # (pre: [cmake, -S, ., -B, build]). Each pre/post item must be ONE complete command
+        # written as an inline list; catch the split here, not as an opaque build failure.
+        if stripped.startswith("-"):
+            raise RecipeError(
+                node.line,
+                f"{name} item {node.value!r} begins with '-', so it is a flag, not a program. "
+                f"A command's first token must be the executable — you have split one command "
+                f"across separate list items. Write the WHOLE command as a single inline list, "
+                f"e.g. pre: [[cmake, -S, ., -B, build, -DCMAKE_C_COMPILER=...]] (pre/post are "
+                f"lists OF argv lists: one list item per command, and each item is the complete "
+                f"[program, arg, arg] inline list — never one argument per item).",
+            )
         return (node.value,)
     if isinstance(node.value, list) and all(isinstance(item, str) for item in node.value):
         if not node.value:
@@ -527,14 +561,22 @@ def _require_mapping(node: _Node, name: str) -> dict[str, _Node]:
 
 def _require_sequence(node: _Node, name: str) -> list[_Node]:
     if not isinstance(node.value, list):
-        raise RecipeError(node.line, f"{name} must be a sequence")
+        raise RecipeError(
+            node.line,
+            f"{name} must be a sequence — write each entry as a '- ' list item on its own line, "
+            f"not a mapping",
+        )
     return [item if isinstance(item, _Node) else _Node(item, node.line) for item in node.value]
 
 
 def _reject_unknown(values: Mapping[str, _Node], allowed: set[str]) -> None:
     for key, node in values.items():
         if key not in allowed:
-            raise RecipeError(node.line, f"unknown key {key!r}")
+            allowed_list = ", ".join(sorted(allowed))
+            raise RecipeError(
+                node.line,
+                f"unknown key {key!r}; at this level the only allowed keys are: {allowed_list}",
+            )
 
 
 def _required_string(node: Optional[_Node], name: str) -> str:

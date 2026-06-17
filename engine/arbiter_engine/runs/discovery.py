@@ -1,13 +1,14 @@
 """Facts-derived test discovery for `runs.scan`.
 
 The primary (and, in this stdlib-only engine, the *only*) test-discovery path is a
-query against the real facts read_index for the **TestBody function facts** a green
-build publishes — gtest's ``TEST(Suite, Name)`` / ``TEST_F`` / ``TEST_P`` macros expand
-to a ``Suite_Name_Test::TestBody`` method, so a published snapshot already carries one
-``function`` fact per test case. ``scan`` reads them back as candidate targets to
-register and prove; there is no tree-sitter fallback here (it lives behind the optional
-``[scan]`` extra), so when no snapshot exists / the index is empty we return an empty,
-typed result — fail-closed, never a crash.
+query against the real facts read_index for the **gtest fixture types** a green build
+publishes — ``TEST(Suite, Name)`` / ``TEST_F`` / ``TEST_P`` generate a ``Suite_Name_Test``
+class, and the libclang extractor records that as a ``type`` fact (it does NOT emit the
+macro-expanded ``::TestBody`` method), so a published snapshot carries one ``_Test`` type
+fact per test case. ``scan`` reads them back as candidate targets to register and prove;
+there is no tree-sitter fallback here (it lives behind the optional ``[scan]`` extra), so
+when no snapshot exists / the index is empty we return an empty, typed result —
+fail-closed, never a crash.
 """
 
 from __future__ import annotations
@@ -73,7 +74,7 @@ def discover_test_candidates(
         store = facts_store.open_fact_store(root, mode="r")
         # search() routes through the persisted sqlite read_index; on a cold repo
         # the index is absent and the store returns [] (no snapshot ⇒ no facts).
-        facts = store.search("TestBody", limit)
+        facts = store.search("_Test", limit)
     except facts_store.StorageError:
         return ()
     candidates: List[TestCandidate] = []
@@ -146,7 +147,7 @@ def _state_path(repo_root: Path) -> Path:
 
 
 def _candidate_from_fact(fact: Any) -> Optional[TestCandidate]:
-    if _fact_kind(fact) != "function":
+    if _fact_kind(fact) != "type":
         return None
     suite, name = _suite_and_name(fact)
     if suite is None or name is None:
@@ -183,12 +184,12 @@ def _suite_and_name(fact: Any) -> Tuple[Optional[str], Optional[str]]:
 
 
 def _parse_test_body_name(object_name: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
-    if not isinstance(object_name, str) or not object_name.endswith(_TEST_BODY_SUFFIX):
+    # The libclang extractor records the gtest-generated test FIXTURE TYPE
+    # (TEST(Suite, Name) → `Suite_Name_Test`), not the macro-expanded `::TestBody`
+    # method, so discovery keys off the `_Test` type name.
+    if not isinstance(object_name, str) or not object_name.endswith(_TEST_CLASS_SUFFIX):
         return None, None
-    test_class = object_name[: -len(_TEST_BODY_SUFFIX)]
-    if not test_class.endswith(_TEST_CLASS_SUFFIX):
-        return None, None
-    stem = test_class[: -len(_TEST_CLASS_SUFFIX)]
+    stem = object_name[: -len(_TEST_CLASS_SUFFIX)]
     suite, separator, name = stem.partition("_")
     if not separator or not suite or not name:
         return None, None

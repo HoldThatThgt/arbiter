@@ -56,16 +56,28 @@ def publish_after_build(
     tail_start = monotonic()
     records = list(_read_records(journals))
     tail_ms = _elapsed_ms(tail_start, monotonic)
-    if _has_miss_marker(records):
+    # A miss marks a single TU whose compile command arbiter cc could not capture — most
+    # often a transient fork/exec failure under a parallel build, not a compile error (the
+    # build's own success is verified separately just below). compile_db.emit already drops
+    # missed TUs, so one flaky fork must not invalidate the whole snapshot: abort only when
+    # NOTHING journaled cleanly; otherwise publish facts from the TUs that did, and report
+    # the skipped count as a warning.
+    missed = sum(1 for record in records if record.get("miss") is True)
+    if missed and missed == len(records):
         return PipelineResult(
             published=False,
             snapshot_id=None,
             files=0,
-            warnings=[{"kind": "journal_miss", "message": "compile journal contains a miss marker"}],
+            warnings=[{"kind": "journal_miss", "message": "compile journal contains only miss markers"}],
             extract_ms=0,
             hidden_ms=0,
             tail_ms=tail_ms,
         )
+    partial_miss_warnings: list[dict[str, Any]] = (
+        [{"kind": "journal_miss_partial", "message": f"{missed} translation unit(s) skipped: compile command not journaled"}]
+        if missed
+        else []
+    )
     if not build_succeeded:
         return PipelineResult(
             published=False,
@@ -121,7 +133,7 @@ def publish_after_build(
         published=True,
         snapshot_id=manifest.snapshot_id,
         files=manifest.source_count,
-        warnings=[_extract_error_warning(error) for error in result.errors],
+        warnings=partial_miss_warnings + [_extract_error_warning(error) for error in result.errors],
         extract_ms=extract_ms,
         hidden_ms=min(extract_ms, tail_ms),
         tail_ms=tail_ms,
