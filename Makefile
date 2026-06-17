@@ -1,4 +1,10 @@
-# Go dependencies must be vendored when introduced. This scaffold has no external deps.
+# Go dependencies must be vendored when introduced; the committed vendor/ tree is the
+# single source of truth. Pin -mod=vendor for every go command so build/install/test work
+# offline and cache-less regardless of the caller's environment: Go only auto-selects
+# vendoring when nothing overrides it, so a stray GOFLAGS=-mod=mod (common in CI) or an
+# older toolchain otherwise defeats it and the build reaches for the network. A Makefile
+# assignment beats the inherited env var, and exporting it covers go build/vet/test alike.
+export GOFLAGS := -mod=vendor
 
 PYTHON ?= python3
 # root installs land on the system PATH; everyone else stays in $HOME.
