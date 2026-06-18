@@ -70,7 +70,7 @@ func TestBaseOpeningTemplatesParse(t *testing.T) {
 			entry:      "derive",
 			capability: "recipes",
 			policy:     "named",
-			verify:     []string{"gear-up-published", "candidate-proven", "tests-enumerated"},
+			verify:     []string{"candidate-proven", "tests-enumerated", "perf-static-scan", "perf-command-measured", "gdb-debugs-real-binary"},
 		},
 		{
 			file:        "regression-triage.md",
@@ -156,27 +156,56 @@ func TestBaseOpeningTemplatesParse(t *testing.T) {
 		t.Fatalf("goal expect %s != suite-green expect %s", goal.Expect, book.Verify["suite-green"].Expect)
 	}
 
-	// recipe-derivation 的 checkmate 是 tests-enumerated —— 一个 fact: _Test 谓词,裁判对已
-	// 发布快照自行重跑测试枚举查询。libclang 抽取器记录的是 gtest 生成的 fixture 类型
-	// `Suite_Name_Test`(并非宏展开的 ::TestBody 方法),所以索引按 _Test 类型名枚举测试,
-	// scan(discovery.py)走的也是 store.search("_Test")。这些 _Test facts 只可能存在于已发布
-	// 的快照,所以它传递性地保留了"facts 必须真发布"的反作弊保证,并额外强制项目测试集由
-	// 索引枚举得出、而非取信于模型转录。走到 END 仍枚举不出测试集 ⇒ 败局。
+	// recipe-derivation no longer sets an early [SetGoal]. The old goal (tests-enumerated)
+	// checkmated the match the instant facts published — at the derive step — which skipped the
+	// reconciliation steps entirely. The match now runs derive → publish → enumerate →
+	// reconcile-perf → reconcile-diag → confirm → END, binding a referee-verified predicate to
+	// every gated step so every wired surface is proven on its REAL function before END (not a
+	// version probe). tests-enumerated survives as the enumerate step's bound predicate, so the
+	// referee still re-queries the published _Test index itself (libclang records each gtest case
+	// as its generated Suite_Name_Test fixture TYPE, which only a published snapshot carries; no
+	// transcript trust) — it is a step gate now, not the checkmate.
 	rd, issues := playbook.ParseBytes("recipe-derivation.md", []byte(mustTemplate("templates/recipe-derivation.md")))
 	if len(issues) != 0 {
 		t.Fatalf("recipe-derivation issues = %#v", issues)
 	}
-	if rd.Goal == nil || rd.Goal.Kind != "fact" || rd.Goal.Query != "_Test" {
-		t.Fatalf("recipe-derivation goal = %#v", rd.Goal)
+	if rd.Goal != nil {
+		t.Fatalf("recipe-derivation should have no early [SetGoal] (it must run every reconcile step to END); goal = %#v", rd.Goal)
 	}
-	if string(rd.Goal.Expect) != string(rd.Verify["tests-enumerated"].Expect) {
-		t.Fatalf("goal expect %s != tests-enumerated expect %s", rd.Goal.Expect, rd.Verify["tests-enumerated"].Expect)
+	// tests-enumerated is still the fact: _Test predicate; perf-mcp is proven on its real
+	// function (perf.scan_c, an mcp predicate) and gdb on real debugging (a shell gate) — not
+	// gdb_diagnostics/toolchain_probe version checks.
+	if te := rd.Verify["tests-enumerated"]; te.Kind != "fact" || te.Query != "_Test" {
+		t.Fatalf("tests-enumerated verify = %#v", te)
 	}
-	// 每个可裁决步骤都用 [Submit] 把谓词钉死,模型既不能自拟也不能改选。
-	for step, want := range map[string]string{"derive": "candidate-proven", "publish": "gear-up-published"} {
+	if rd.Verify["perf-static-scan"].Kind != "mcp" {
+		t.Fatalf("perf-static-scan should be an mcp predicate; got %#v", rd.Verify["perf-static-scan"])
+	}
+	if rd.Verify["perf-command-measured"].Kind != "mcp" {
+		t.Fatalf("perf-command-measured should be an mcp predicate; got %#v", rd.Verify["perf-command-measured"])
+	}
+	if rd.Verify["gdb-debugs-real-binary"].Kind != "shell" {
+		t.Fatalf("gdb-debugs-real-binary should be a shell predicate; got %#v", rd.Verify["gdb-debugs-real-binary"])
+	}
+	// Every gated step pins its predicate via [Submit]; the confirm step is a human [Checkpoint].
+	// derive's cc-interposed build publishes facts as a side effect, so enumerate (tests-enumerated)
+	// is the facts-published proof — there is no separate re-running "publish" step (a second
+	// src_compile run would be incremental and never republish: it fails facts.published forever).
+	if _, ok := rd.Steps["publish"]; ok {
+		t.Fatalf("recipe-derivation should not have a separate publish step (derive publishes; enumerate proves it)")
+	}
+	for step, want := range map[string]string{
+		"derive":         "candidate-proven",
+		"enumerate":      "tests-enumerated",
+		"reconcile-perf": "perf-static-scan",
+		"reconcile-diag": "gdb-debugs-real-binary",
+	} {
 		if got := rd.Steps[step].Submit; got != want {
 			t.Fatalf("recipe-derivation step %q Submit = %q, want %q", step, got, want)
 		}
+	}
+	if rd.Steps["confirm"].Checkpoint == "" {
+		t.Fatalf("recipe-derivation confirm step should be a [Checkpoint] human gate")
 	}
 }
 
@@ -210,13 +239,17 @@ func TestArbiterIntroTemplateDefinesAdjudicatedBootstrap(t *testing.T) {
 		"probe",
 		"recipe-derivation",
 		"register",
-		`{"overall":{"one_of":["passed","failed"]}}`,
+		// Each wired surface is proven by name on its REAL function (not a version probe):
+		// the recipe build, the perf static analyzer, a real gdb session, and the human gate.
+		"candidate-proven",
 		"arbiter cc",
+		"perf.scan_c",
+		"gdb-mcp session",
+		"SubmitCheckpoint",
+		"facts snapshot",
 		"__SANITIZE_ADDRESS__",
 		"__has_feature",
 		"facts.key_flags",
-		"proven-recipe count",
-		"published snapshot",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("arbiter-intro template missing %q", want)
