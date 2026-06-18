@@ -367,14 +367,16 @@ func runRun(parent context.Context, root string, spec ResultSpec, meta map[strin
 		return result, nil
 	}
 	var payload struct {
-		RunID   string            `json:"run_id"`
-		Overall string            `json:"overall"`
-		Passed  int               `json:"passed"`
-		Failed  int               `json:"failed"`
-		PerTest []RunPerTest      `json:"per_test"`
-		Facts   *RunFactsEvidence `json:"facts"`
-		IsError bool              `json:"isError"`
-		Content json.RawMessage   `json:"content"`
+		RunID      string            `json:"run_id"`
+		Overall    string            `json:"overall"`
+		Passed     int               `json:"passed"`
+		Failed     int               `json:"failed"`
+		PerTest    []RunPerTest      `json:"per_test"`
+		Facts      *RunFactsEvidence `json:"facts"`
+		Failure    string            `json:"failure"`
+		StderrTail string            `json:"stderr_tail"`
+		IsError    bool              `json:"isError"`
+		Content    json.RawMessage   `json:"content"`
 	}
 	if err := json.Unmarshal(envelope.Result, &payload); err != nil {
 		result.Failure = "engine_error"
@@ -384,7 +386,17 @@ func runRun(parent context.Context, root string, spec ResultSpec, meta map[strin
 	}
 	isErr := payload.IsError
 	result.IsError = &isErr
-	result.Output = tailLines(string(payload.Content), spec.OutputLines)
+	// The engine reports a typed `failure` code (e.g. indexer_unavailable, compile_failed,
+	// no_tests_ran) plus a `stderr_tail` whenever a run did not reach a clean verdict. Carry both
+	// onto the Result: SubmitTask then journals the failure code (the audit trail already records
+	// result.Failure for other predicate kinds), and the executor sees the actionable detail
+	// instead of a bare "<recipe>: errored".
+	result.Failure = payload.Failure
+	output := string(payload.Content)
+	if payload.StderrTail != "" {
+		output = strings.TrimRight(output, "\n") + "\n" + payload.StderrTail
+	}
+	result.Output = tailLines(output, spec.OutputLines)
 	if payload.IsError {
 		result.DurationMS = int(time.Since(start).Milliseconds())
 		return result, nil

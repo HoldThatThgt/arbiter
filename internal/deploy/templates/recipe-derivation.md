@@ -48,32 +48,80 @@ finishes this step is a real registered recipe proven by a real run.
 1. Probe the native build system (read its build files) to learn the configure command, the build
    command, the test binary it produces, the globs of sources it compiles, AND the project's real
    C and C++ compilers (the ones the build would use — e.g. what `cc`/`c++` resolve to, or what the
-   build files name).
+   build files name). When the build defines MANY test executables, pick the SMALLEST self-contained
+   one to prove — ideally a target built from a single test source file with the fewest link
+   dependencies — NOT an aggregate / "merged" / "all-tests" target and NOT a "build everything"
+   target. One small gtest binary proves the recipe and publishes the facts index; a merged or
+   whole-project target compiles a huge fraction of the codebase, so its build is slow and often
+   fails on an unrelated translation unit, which blocks this step for reasons that have nothing to
+   do with your recipe.
 2. Wire that build through `arbiter cc` so every translation unit is journaled — that journal is
-   what the facts index is built from. The compilers in your configure command must be the two shim
-   scripts `.arbiter/shim_cc.sh` and `.arbiter/shim_cxx.sh`:
-   - If they already exist, use them as-is — an operator may have pre-wired an unusual toolchain;
-     do NOT edit or replace them.
-   - If they do NOT exist, CREATE them now from the compilers you just probed. Write each as a
-     one-line wrapper that routes the real compiler through `arbiter cc`, then `chmod +x` both:
+   what the facts index is built from. `arbiter cc` is a compiler LAUNCHER: given
+   `arbiter cc --root ABS_REPO -- <compiler> <args>` it records the compile, then execs
+   `<compiler> <args>` UNCHANGED. So do NOT replace or rewrite the project's compiler or toolchain —
+   prepend `arbiter cc` in front of whatever compiler the build already uses (the way ccache is
+   wired). Use the LEAST invasive form, chosen by build system:
+   - **A CMakeLists.txt drives the build → use the compiler-launcher flags.** Add to the configure
+     command (alongside whatever else it needs):
+       `-DCMAKE_C_COMPILER_LAUNCHER=arbiter;cc;--root;ABS_REPO;--`
+       `-DCMAKE_CXX_COMPILER_LAUNCHER=arbiter;cc;--root;ABS_REPO;--`
+     CMake splits each `;`-list into the argv `arbiter cc --root ABS_REPO --` and prepends it before
+     the compiler it detected — so it keeps using the project's REAL compilers (its own compiler-id
+     detection runs WITHOUT this, so there is no probe issue) and just routes each compile through
+     `arbiter cc`. Keep the trailing `--`. The launcher only fires when the build actually compiles,
+     so the stage's `cmd` (e.g. `cmake --build`) must still run. In `.arbiter/recipes.yaml`, write
+     each whole `-D…LAUNCHER=…` flag as ONE double-quoted list item —
+     `"-DCMAKE_C_COMPILER_LAUNCHER=arbiter;cc;--root;ABS_REPO;--"` — never split it on the
+     semicolons. (Works identically with the Ninja generator.)
+   - **make / autotools / a `configure` script that honors `CC`/`CXX` → prefix those.** Pass them ON
+     the build command (in the stage's `cmd` argv, as double-quoted tokens) so they override the
+     environment: `"CC=arbiter cc --root ABS_REPO -- REAL_CC"` and
+     `"CXX=arbiter cc --root ABS_REPO -- REAL_CXX"`. This prepends `arbiter cc` without replacing the
+     toolchain.
+   - **The build offers NEITHER a launcher hook NOR a `CC`/`CXX` override → standalone shim scripts,
+     LAST RESORT.** If `.arbiter/shim_cc.sh` / `.arbiter/shim_cxx.sh` already exist, use them as-is
+     (an operator may have pre-wired an unusual toolchain). Otherwise write each as a one-line shell
+     script ON DISK (these are scripts, not recipe argv) and `chmod +x` both:
        `.arbiter/shim_cc.sh`  contains:  `#!/bin/sh` (newline) `exec arbiter cc --root ABS_REPO -- REAL_CC "$@"`
        `.arbiter/shim_cxx.sh` contains:  `#!/bin/sh` (newline) `exec arbiter cc --root ABS_REPO -- REAL_CXX "$@"`
-     substituting ABS_REPO = the repository's absolute path, REAL_CC / REAL_CXX = the compilers the
-     build ITSELF uses by default — what `cc`/`c++` resolve to, or the `$CC`/`$CXX` the build sets,
-     as found in step 1. Wrap THAT compiler even if it is not Clang: arbiter re-parses the journaled
-     translation units into the facts index with its OWN capable Clang internally, so the build
-     compiler does NOT need to be Clang for facts to publish — the "capable Clang" requirement is on
-     arbiter's index, never on your build. Do NOT switch the build to a different compiler than it
-     normally uses just because another one is installed; the shim must journal the project's REAL
-     build, and wrapping a compiler the build would not have chosen makes the index describe a build
-     that never happens. The wrapper MUST invoke `arbiter cc` (it is on PATH) — a direct compiler is
-     not journaled, so facts never publish.
-   Reference the shims as the compilers in your configure command by their **absolute** path — a
-   build system that probes the compiler from a temporary directory (cmake does) cannot resolve a
-   relative compiler path.
-3. Write `.arbiter/recipes.yaml` (RecipeBook v2) in exactly the shape below — two-space indent, no
-   tabs, lists inline [a, b, c] — wiring the two shim scripts as the compilers in the configure
-   `pre` command. Strict YAML subset: NO anchors/aliases (`&`/`*`) and NO extra keys; every path
+     then wire the shims as the compilers by their **absolute** path (a build that probes the
+     compiler from a temporary directory — cmake does — cannot resolve a relative path).
+   In every form: `arbiter` is on PATH, so the bare token works (if the build's environment cannot
+   resolve it, use arbiter's absolute path). `--root ABS_REPO` (the repository's absolute path) is
+   REQUIRED so journals land in the repo's `.arbiter`, not a build subdir's. REAL_CC / REAL_CXX is
+   the compiler the build uses by default — what `cc`/`c++` resolve to, or the build's own
+   `$CC`/`$CXX`, as found in step 1 — wrap THAT even if it is not Clang: arbiter re-parses the
+   journaled translation units into the index with its OWN capable Clang internally, so the build
+   compiler need not be Clang for facts to publish (the "capable Clang" requirement is on arbiter's
+   index, never on your build). Do NOT switch the build to a different compiler than it normally uses
+   just because another one is installed.
+3. Discover what the test needs to RUN CORRECTLY, not merely compile — and make it RECIPE CONTENT so
+   a clean checkout runs the test from the recipe alone. The setup a test assumes is rarely in the
+   build files; look where the project documents how it RUNS its tests, in order: (a) the CI config
+   (`.github/workflows/*.yml`, `.gitlab-ci.yml`, `azure-pipelines.yml`, a `Jenkinsfile`) — the
+   authoritative "how we build AND run the tests": env vars it exports, services/containers it
+   starts, setup/bootstrap scripts and env files it runs before the test step; (b) test/contributor
+   docs and `scripts/`/`tools/` setup or env scripts, and any sample config the tests read; (c) the
+   test sources themselves — env vars they read, config/data files they open (usually relative to a
+   working directory), and fixture `SetUp()` prerequisites. Put each finding in the recipe field that
+   carries it (all shown in the shape below):
+   - **Environment variables the test needs → the target's `env:` map.** Each stage runs its `pre`,
+     `cmd`, and `post` as SEPARATE processes that share this `env:` map — so a variable set by
+     `source some-env.sh` inside a `pre` command does NOT carry over to the test. If the project
+     sources an env script, read the variables it exports and put them in `env:` directly.
+   - **Services, data directories, config-file generation, one-time setup (any side effect beyond an
+     env var) → `test_run.pre`.** Each `pre` item is one argv list; for a shell snippet (sourcing,
+     `&&`) use `[sh, -c, "<snippet>"]`. `pre` runs before `cmd`; a non-zero `pre` fails the stage,
+     which cleanly says "the environment broke," not "the test failed."
+   - **The directory the test must run from → the target's `workdir:`** (tests often open data/config
+     relative to cwd).
+   Keep `test_run.cmd` the BARE binary — setup goes in `env`/`pre`/`workdir`, never folded into `cmd`
+   (the harness appends `--gtest_*` to that argv). "Works only if your shell happens to have X set" is
+   an INCOMPLETE recipe; a test failing on an unset variable or an unstarted service is a RECIPE
+   defect, not a test defect.
+4. Write `.arbiter/recipes.yaml` (RecipeBook v2) in exactly the shape below — two-space indent, no
+   tabs, lists inline [a, b, c] — wiring the build through `arbiter cc` in the configure `pre`
+   command via the form you chose in step 2. Strict YAML subset: NO anchors/aliases (`&`/`*`) and NO extra keys; every path
    (`compile_db.path`, `binary`, `sources`) is REPO-RELATIVE (no leading `/`). Set `binary` to the
    FULL repo-relative path the build actually writes the test binary to — including its build
    directory, e.g. `build/<name>`, NOT just `<name>`. It lets arbiter skip an unchanged rebuild,
@@ -82,7 +130,7 @@ finishes this step is a real registered recipe proven by a real run.
    Then call
    register {"path": ".arbiter/recipes.yaml"}. register's error names the offending line/field —
    fix that one line, do not re-guess from scratch.
-4. Prove the registered recipe by SUBMITTING candidate-proven — call SubmitTask with
+5. Prove the registered recipe by SUBMITTING candidate-proven — call SubmitTask with
    result `{"verify": "candidate-proven"}`. The REFEREE runs the recipe for you (it builds and
    runs the whole suite); that submission is what advances the step and publishes facts into the
    match. Do NOT try to satisfy this by calling the `run` tool yourself, or by building in Bash —
@@ -93,7 +141,18 @@ finishes this step is a real registered recipe proven by a real run.
    The gtest harness injects its own `--gtest_output`; the recipe's `test_run` cmd is just the
    binary. A pass or a fail both prove the harness; an errored or zero-test run does not. The
    predicate is bound — only a real compile+run satisfies it.
-   Your recipe MUST keep a real `src_compile` stage that compiles through the shims. A recipe with
+   candidate-proven passes on a `passed` OR a `failed` run, but a run that "failed" only because the
+   environment from step 3 was never set up is an INCOMPLETE recipe, not a result — even though it
+   satisfies the predicate. Before treating a failing run as done, triage it: an environment-shaped
+   failure — "connection refused" / cannot connect, "No such file or directory", an unset/empty env
+   variable, permission denied, a fixture `SetUp()` failing, or EVERY test failing the same way in a
+   fresh recipe — means the recipe is missing `env` / `test_run.pre` / `workdir`; add it (step 3),
+   re-run, and record the trap in the target's `notes`. Only a genuine assertion outcome
+   (`EXPECT_*` / `ASSERT_*` on the code, in an environment that is demonstrably up — e.g. sibling
+   tests pass) is a real result. The dividing question: would this test pass for a developer whose
+   machine is set up correctly? If yes, that setup was the recipe's job.
+   Your recipe MUST keep a real `src_compile` stage that compiles through `arbiter cc` (via the
+   launcher / prefix / shim form from step 2). A recipe with
    only a `test_run` stage runs the pre-built binary and will still pass candidate-proven, but it
    builds nothing — so the `_Test` index stays empty and the next `enumerate` step fails forever
    (facts never publish, because `arbiter cc` was never invoked). The cc-interposed build at this
@@ -107,18 +166,30 @@ finishes this step is a real registered recipe proven by a real run.
         binary: build/TEST_BINARY
         harness:
           kind: gtest
+        workdir: .                          # dir the test runs from (step 3); OMIT to default to the repo root
+        env:                                # env vars the test needs to run (step 3); OMIT the whole key if none
+          SOME_VAR: some-value
         src_compile:
           pre:
-            - [cmake, -S, ., -B, build, -DCMAKE_C_COMPILER=ABS_REPO/.arbiter/shim_cc.sh, -DCMAKE_CXX_COMPILER=ABS_REPO/.arbiter/shim_cxx.sh, -DCMAKE_BUILD_TYPE=Debug]
+            - [cmake, -S, ., -B, build, "-DCMAKE_C_COMPILER_LAUNCHER=arbiter;cc;--root;ABS_REPO;--", "-DCMAKE_CXX_COMPILER_LAUNCHER=arbiter;cc;--root;ABS_REPO;--", -DCMAKE_BUILD_TYPE=Debug]
           cmd: [cmake, --build, build, --target, TEST_BINARY]
         test_run:
-          cmd: [./build/TEST_BINARY]
+          pre:                              # runtime setup from step 3 (start a service, generate config/data); OMIT if none
+            - [sh, -c, "./scripts/setup-test-env.sh"]
+          cmd: [./build/TEST_BINARY]        # the BARE binary only — setup goes in env/pre/workdir, never here
         sources: [SRC_GLOB_1, SRC_GLOB_2]
 
 Copy that shape verbatim and substitute ONLY the CAPS placeholders: `ABS_REPO` = the repository's
 absolute path, `TEST_BINARY` = the test binary's name, `SRC_GLOB_*` = the source globs the build
 compiles (e.g. `src/*.cc`, `include/*.h`). Everything else — the key names, the nesting, the argv
-lists — is literal. Common mistakes that make register reject the file, do NOT do these:
+lists — is literal — EXCEPT the runtime-environment slots `workdir:`, `env:`, and `test_run.pre`,
+which are OPTIONAL: fill them with what step 3 found (the `SOME_VAR` / `setup-test-env.sh` shown are
+illustrative — replace or remove them), or drop each line entirely if the test needs nothing there.
+The shape shows the CMake compiler-launcher form (sub-step 2, first bullet); for
+a make/autotools build, drop the `-D…LAUNCHER` flags and instead carry the `CC`/`CXX` prefix tokens
+on the build command, e.g. `cmd: [make, "CC=arbiter cc --root ABS_REPO -- REAL_CC", "CXX=arbiter cc
+--root ABS_REPO -- REAL_CXX", -C, build]`. Common mistakes that make register reject the file, do
+NOT do these:
 - There is NO `stages:`/`steps:`/`stage:` wrapper — the stage keys `src_compile`/`test_run` sit
   DIRECTLY under the target, exactly as shown.
 - A target is keyed by `id:`, never `name:`. `targets:` is a sequence — each target is a `- id:`
@@ -134,15 +205,16 @@ lists — is literal. Common mistakes that make register reject the file, do NOT
   separate `- [..]` items under `pre`, and use cmake's `-S`/`-B` flags instead of `cd`. There is
   no `&&`, `;`, `|`, `cd`, or redirection.
 - Each `pre`/`post` item is ONE complete command written as a single inline list
-  `- [cmake, -S, ., -B, build, -DCMAKE_C_COMPILER=...]` — NOT one argument per line. Writing
+  `- [cmake, -S, ., -B, build, "-DCMAKE_C_COMPILER_LAUNCHER=arbiter;cc;--root;ABS_REPO;--"]` — NOT one argument per line. Writing
   `pre:` and then `- cmake`, `- -S`, `- .`, `- -B` on separate lines is WRONG: that runs `cmake`
   with no arguments, then tries to run `-S` as its own program, and the configure never happens
   (so the build journals nothing → `journal_miss`). The entire cmake invocation is a SINGLE
   `- [...]` list item.
 [CheckList]
 - The recipe begins with a top-level `compile_db:` section (sibling of `targets:`, `path:` pointing at the build's compile_commands.json) — without it the recipe builds but NEVER publishes facts, and the publish step fails forever
-- The configure command wires .arbiter/shim_cc.sh and .arbiter/shim_cxx.sh as the compilers (real compiler through arbiter cc); create them from the probed compiler if they are absent, or use them as-is if an operator already wired them
+- The configure/build command routes every compile through `arbiter cc` using the least invasive form the build offers — a compiler-launcher hook (CMake: CMAKE_C/CXX_COMPILER_LAUNCHER), a CC/CXX prefix on the build command (make/autotools), or standalone shim scripts only as a last resort — keeping the project's own compilers; every form includes `--root ABS_REPO`
 - recipe_search, then write .arbiter/recipes.yaml in the shape above, then register {"path": ".arbiter/recipes.yaml"}
+- The recipe declares the runtime environment the test needs to RUN — env vars in `env:`, services/setup in `test_run.pre`, the right `workdir:` — discovered from the CI config / test docs / test sources, not guessed; an environment-shaped failure is a recipe defect to fix, not a reported test result
 - Submit candidate-proven from a real run (structured gtest output only) — never a file-exists check, marker file, or shell shortcut
 [Submit] candidate-proven
 [Branch]

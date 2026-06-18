@@ -62,6 +62,14 @@ class RunResult:
         }
         if self.failure is not None:
             out["failure"] = self.failure
+        # Carry the diagnostic tails to the envelope so a failed run's actual reason (e.g. the
+        # indexer-toolchain message, a compiler error) reaches the referee/journal and the executor,
+        # not just the terse failure code. Emitted only when non-empty so a clean run's shape is
+        # unchanged.
+        if self.stderr_tail:
+            out["stderr_tail"] = self.stderr_tail
+        if self.stdout_tail:
+            out["stdout_tail"] = self.stdout_tail
         if self.guidance:
             out["guidance"] = [entry.to_json() for entry in self.guidance]
         if self.facts is not None:
@@ -145,6 +153,28 @@ def run_target(
             stderr_tail=str(facts.get("stderr_tail", "")),
         )
     stage = target.stages["test_run"]
+    env = runner._stage_env(os.environ, target, stage, book, profiles, "test_run", arbiter_bin)
+    stage_timeout = timeout_s if timeout_s is not None else stage.timeout_s
+    # test_run.pre carries the runtime setup the test needs (start a service, generate
+    # config/data, derive state) and must run BEFORE the test binary, sharing the stage's
+    # env + workdir. The test path used to run only stage.cmd, so any test_run.pre was
+    # silently dropped — a test that needed setup then failed as if its environment were
+    # broken. A non-zero pre means the environment could not be established and no verdict is
+    # obtainable, so it is `errored` (never a passable "failed"), the same as a build failure.
+    for pre_command in stage.pre:
+        pre_proc = runner._run_command(pre_command, workdir, env, stage_timeout)
+        if pre_proc.exit_code != 0:
+            return RunResult(
+                run_id=run_id,
+                overall="errored",
+                passed=0,
+                failed=0,
+                skipped=0,
+                facts=facts.get("facts"),
+                failure="test_run_pre_failed",
+                stdout_tail=pre_proc.stdout_tail,
+                stderr_tail=pre_proc.stderr_tail,
+            )
     run_dir = root / ".arbiter" / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     xml_path = run_dir / f"{target_id}.xml"
@@ -153,11 +183,13 @@ def run_target(
         command.append("--gtest_fail_fast")
     if tests:
         command.append("--gtest_filter=" + ":".join(tests))
-    env = runner._stage_env(os.environ, target, stage, book, profiles, "test_run", arbiter_bin)
-    stage_timeout = timeout_s if timeout_s is not None else stage.timeout_s
     # runner._run_command maps subprocess.TimeoutExpired to exit code 124 with
     # a tail message instead of letting the exception propagate.
     proc = runner._run_command(command, workdir, env, stage_timeout)
+    # test_run.post is teardown (stop a service, clean up); run it best-effort AFTER the test
+    # so a teardown failure never clobbers the test verdict the run just obtained.
+    for post_command in stage.post:
+        runner._run_command(post_command, workdir, env, stage_timeout)
     if proc.exit_code == 124 and not xml_path.exists():
         return RunResult(
             run_id=run_id,
