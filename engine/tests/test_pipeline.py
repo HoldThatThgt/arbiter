@@ -8,6 +8,7 @@ from arbiter_engine.facts.extractor.code import (
     _clear_test_libclang_backend,
     _install_json_test_libclang_backend,
 )
+from arbiter_engine.facts.extractor.code._shim import InitError
 from arbiter_engine.facts.store import open_fact_store
 from arbiter_engine.shared import pipeline
 
@@ -122,8 +123,12 @@ class PipelineSeamTest(unittest.TestCase):
             self.assertIsNone(result.snapshot_id)
             self.assertEqual(result.warnings[0]["kind"], "build_failed")
 
-    def test_missing_toolchain_degrades_to_not_published(self):
-        # No capable clang -> a typed not-published signal (builds/runs keep working), never a crash.
+    def test_missing_toolchain_hard_stops_instead_of_publishing(self):
+        # Owner policy: the code index is a must-have. No capable clang is a HARD STOP, not a
+        # degraded publish — publish_after_build re-raises the toolchain InitError (run_target turns
+        # it into a typed indexer_unavailable errored run) so a build can never report green with no
+        # fact index behind it. Non-toolchain not-published reasons (journal_miss, build_failed)
+        # stay graceful, as the sibling tests above assert.
         _clear_test_libclang_backend()
         try:
             with tempfile.TemporaryDirectory() as tmp:
@@ -141,11 +146,13 @@ class PipelineSeamTest(unittest.TestCase):
                     {"argv": ["clang", "-c", "src/a.c", "-o", "build/a.o"], "cwd": str(root), "src": "src/a.c", "out": "build/a.o"},
                 )
 
-                result = pipeline.publish_after_build(root, [journal], cdb, extractor_config=config)
+                with self.assertRaises(InitError) as raised:
+                    pipeline.publish_after_build(root, [journal], cdb, extractor_config=config)
 
-                self.assertFalse(result.published)
-                self.assertIsNone(result.snapshot_id)
-                self.assertTrue(result.warnings)
+                self.assertEqual(raised.exception.code, "clang_unavailable")
+                self.assertIn(raised.exception.code, pipeline.TOOLCHAIN_FAILURE_CODES)
+                # No snapshot may be published when the indexer toolchain can't run.
+                self.assertFalse((root / ".arbiter" / "facts" / "snapshots" / "current").exists())
         finally:
             _install_json_test_libclang_backend()
 

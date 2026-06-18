@@ -133,7 +133,7 @@ The facts store has no standalone lifecycle: no `cipher2 init`, no user-facing i
   .claude/skills/arbiter-play/  arbiter-intro/  playbook-create/    # the three user-facing verbs
   .arbiter/
     config.yml                     # COMMITTED. strict YAML-subset. sections:
-                                   #   facts:{extractor, incremental, index_on_build:{pool, key_flags}}
+                                   #   facts:{extractor, incremental, index_on_build:{pool, key_flags}, toolchain:{clang, libclang, clang_args}}
                                    #   runs:{harness defaults}
                                    #   match:{goal_memo: false}        engine:{}
     playbook/*.md                  # COMMITTED — steps, [CheckList], [Branch], [Gotcha], [Verify], [SetGoal], [Submit], [Checkpoint]

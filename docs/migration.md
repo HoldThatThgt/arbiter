@@ -65,8 +65,9 @@ sanitizer profile publishes its own snapshot), `facts:{published, snapshot_id, e
 hidden_ms, tail_ms}` on src_compile verdicts, `profiles:` overlays, typed `no_snapshot` error.
 **Exit:** on a fixture repo: clean build publishes a snapshot inside the run verdict; asan-profile
 rebuild publishes its OWN content-addressed snapshot (distinct id, not the plain build's);
-shim-miss / non-green / incapable-toolchain all show `facts:{published:false}` failing the gear-up
-predicate closed.
+shim-miss / non-green show `facts:{published:false}` failing the gear-up predicate closed, while an
+incapable toolchain instead hard-stops the run as `failure:indexer_unavailable` (mandatory index,
+ADR-0020).
 
 ## M7 — Deploy, seats, skills: the four verbs
 `internal/deploy` rewrite: `arbiter init` (engines.json + verification, seat key, curator AND

@@ -113,6 +113,18 @@ class InitError(Exception):
         )
 
 
+# The InitError codes _validate_toolchain raises when the indexer *toolchain* itself is unusable —
+# clang or libclang missing, their majors mismatched, or a clang that can't emit a type-driven AST.
+# Owner policy makes the code index a must-have, so every path that exercises the toolchain treats
+# these as a HARD STOP (publish aborts the run; the synchronous reconcile aborts adjudication),
+# never a degraded run. Other InitError codes (malformed compile-db, bad source root) are NOT
+# toolchain failures — there is simply nothing to index — and stay graceful. This is the single
+# source of truth shared by shared.pipeline, facts.incremental, and facts.view.
+TOOLCHAIN_FAILURE_CODES = frozenset(
+    {"clang_unavailable", "libclang_unavailable", "libclang_version_mismatch", "clang_capability_failed"}
+)
+
+
 # --- incremental ----------------------------------------------------------
 #
 # Verbatim from cipher2.incremental.IncrementalBuildResult (Phase 2). Only the
@@ -133,5 +145,6 @@ __all__ = [
     "InitProgressSink",
     "NullProgressSink",
     "InitError",
+    "TOOLCHAIN_FAILURE_CODES",
     "IncrementalBuildResult",
 ]

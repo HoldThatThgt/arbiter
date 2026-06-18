@@ -45,6 +45,33 @@ class ConfigParserTest(unittest.TestCase):
         self.assertFalse(parsed.match.goal_memo)
         self.assertEqual(parsed.engine, {})
 
+    def test_parses_toolchain_section(self):
+        parsed = config.parse_config(
+            textwrap.dedent(
+                """\
+                facts:
+                  toolchain:
+                    clang: /usr/lib/llvm-16/bin/clang
+                    libclang: /usr/lib/llvm-16/lib/libclang.so
+                    clang_args: [--gcc-toolchain=/opt/gcc-7.3.0, "-isystem/opt/x"]
+                """
+            )
+        )
+
+        self.assertEqual(parsed.facts.toolchain.clang, "/usr/lib/llvm-16/bin/clang")
+        self.assertEqual(parsed.facts.toolchain.libclang, "/usr/lib/llvm-16/lib/libclang.so")
+        self.assertEqual(
+            parsed.facts.toolchain.clang_args,
+            ("--gcc-toolchain=/opt/gcc-7.3.0", "-isystem/opt/x"),
+        )
+
+    def test_toolchain_defaults_when_absent(self):
+        parsed = config.parse_config("facts:\n  extractor: clang\n")
+
+        self.assertIsNone(parsed.facts.toolchain.clang)
+        self.assertIsNone(parsed.facts.toolchain.libclang)
+        self.assertEqual(parsed.facts.toolchain.clang_args, ())
+
     def test_load_config_reads_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.yml"
@@ -59,6 +86,7 @@ class ConfigParserTest(unittest.TestCase):
             ("extra:\n", 1, "unknown key"),
             ("facts:\n  unknown: true\n", 2, "unknown key"),
             ("facts:\n  index_on_build:\n    nope: true\n", 3, "unknown key"),
+            ("facts:\n  toolchain:\n    nope: x\n", 3, "unknown key"),
         ]
 
         for text, line, detail in cases:
@@ -80,6 +108,8 @@ class ConfigParserTest(unittest.TestCase):
             ("facts:\n  incremental:\n    overlay_ttl_seconds: -1\n", 3, "non-negative"),
             ("facts:\n  incremental:\n    nope: 1\n", 3, "unknown key"),
             ("facts:\n  incremental: true\n  incremental: false\n", 3, "duplicate"),
+            ("facts:\n  toolchain:\n    clang: 5\n", 3, "string"),
+            ("facts:\n  toolchain:\n    clang_args: not-a-list\n", 3, "inline list"),
         ]
 
         for text, line, detail in cases:

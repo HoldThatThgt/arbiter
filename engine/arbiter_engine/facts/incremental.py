@@ -29,7 +29,12 @@ from typing import Dict, Iterable, List, Optional, Protocol
 from arbiter_engine.config import IncrementalConfig
 from arbiter_engine.facts import relocation
 from arbiter_engine.facts.extractor.code import CodeFactExtractor
-from arbiter_engine.facts.extractor.code._shim import ExtractorConfig, IncrementalBuildResult
+from arbiter_engine.facts.extractor.code._shim import (
+    ExtractorConfig,
+    IncrementalBuildResult,
+    InitError,
+    TOOLCHAIN_FAILURE_CODES,
+)
 from arbiter_engine.facts.log import JsonlLog, LogError, LogEvent, open_log
 from arbiter_engine.facts.store import (
     FactRecord,
@@ -271,6 +276,14 @@ class IncrementalCoordinator:
             return self._publish_overlay(store, base_snapshot_id, dirty_sources, result, started)
         except IncrementalError as exc:
             return self._fail(exc.code, base_snapshot_id, started, dirty_count=len(dirty_sources))
+        except InitError as exc:
+            if exc.code in TOOLCHAIN_FAILURE_CODES:
+                # Mandatory-index hard stop: the indexer toolchain is unusable, so the synchronous
+                # reconcile must abort (view.reconcile surfaces indexer_unavailable) rather than
+                # leave adjudication reading a stale view. The background daemon swallows it per-tick.
+                # Non-toolchain InitErrors stay graceful, like every other extract failure.
+                raise
+            return self._fail("clang_ast_failed", base_snapshot_id, started, dirty_count=len(dirty_sources))
         except Exception:
             return self._fail("clang_ast_failed", base_snapshot_id, started, dirty_count=len(dirty_sources))
 
@@ -334,6 +347,14 @@ class IncrementalCoordinator:
             return self._publish_overlay(store, base_snapshot_id, dirty_sources, result, started)
         except IncrementalError as exc:
             return self._fail(exc.code, base_snapshot_id, started, dirty_count=len(dirty_sources))
+        except InitError as exc:
+            if exc.code in TOOLCHAIN_FAILURE_CODES:
+                # Mandatory-index hard stop: the indexer toolchain is unusable, so the synchronous
+                # reconcile must abort (view.reconcile surfaces indexer_unavailable) rather than
+                # leave adjudication reading a stale view. The background daemon swallows it per-tick.
+                # Non-toolchain InitErrors stay graceful, like every other extract failure.
+                raise
+            return self._fail("clang_ast_failed", base_snapshot_id, started, dirty_count=len(dirty_sources))
         except Exception:
             return self._fail("clang_ast_failed", base_snapshot_id, started, dirty_count=len(dirty_sources))
 
@@ -676,8 +697,14 @@ class IncrementalCoordinator:
     def _poll_loop(self) -> None:
         interval = self.config.poll_interval_ms / 1000.0
         while not self._stop_event.wait(interval):
-            self._gc_aged_overlay()
-            self._scan_once()
+            try:
+                self._gc_aged_overlay()
+                self._scan_once()
+            except Exception:  # noqa: BLE001 - the background poll is best-effort and must outlive
+                # any single tick, including the mandatory-index hard stop a broken toolchain now
+                # raises from the reconcile path. A bad tick is skipped, never fatal; the synchronous
+                # reconcile (view.reconcile) is what surfaces the failure as indexer_unavailable.
+                continue
 
     def _gc_aged_overlay(self) -> None:
         """Reap a published overlay once its ``created_at`` ages past the TTL (ADR-0018).

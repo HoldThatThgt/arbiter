@@ -1,9 +1,15 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from arbiter_engine.facts.extractor.code._shim import InitError
 from arbiter_engine.runs import gtest
 from arbiter_engine.runs import recipes
+
+# Importing the c2 package installs the JSON-AST libclang oracle (its __init__ side-effect), so the
+# now-mandatory facts publish inside run_target extracts hermetically — no real libclang/clang.
+from c2.toolchain_helpers import write_fake_toolchain
 
 
 class GTestAdapterTest(unittest.TestCase):
@@ -211,6 +217,43 @@ targets:
             self.assertEqual(result.failure, "src_compile")
             self.assertEqual(result.per_test, ())
 
+    def test_indexer_toolchain_failure_is_an_errored_run_not_a_silent_pass(self):
+        # Owner policy: the code index is a must-have. When the facts publish raises a toolchain
+        # InitError (clang/libclang unusable), run_target aborts with a typed indexer_unavailable
+        # errored run rather than reporting a green build with no fact index behind it.
+        book = recipes.parse(
+            """
+compile_db:
+  path: compile_commands.json
+targets:
+  - id: unit
+    binary: build/unit
+    harness:
+      kind: gtest
+    src_compile:
+      cmd: [/bin/true]
+    test_run:
+      cmd: [/bin/false]
+"""
+        )
+        boom = InitError(
+            "libclang_unavailable",
+            "libclang library is unavailable",
+            details={"reason": "auto_not_found"},
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch.object(gtest, "_run_compile_stages", side_effect=boom):
+                result = gtest.run_target(root, book, "unit", run_id="r-no-index")
+
+        self.assertEqual(result.overall, "errored")
+        self.assertEqual(result.failure, "indexer_unavailable")
+        self.assertEqual((result.passed, result.failed, result.skipped), (0, 0, 0))
+        # The reason is actionable: it names the failure code and points at the fix.
+        self.assertIn("libclang_unavailable", result.stderr_tail)
+        self.assertIn("auto_not_found", result.stderr_tail)
+        self.assertIn("facts.toolchain", result.stderr_tail)
+
     def test_zero_tests_matched_is_errored_not_passed(self):
         # A `tests` filter that matches nothing makes gtest exit 0 with an empty
         # result file, which parse_xml reads as "passed". run_target overrides
@@ -281,16 +324,21 @@ targets:
       cmd: [{str(fake_gtest)}]
 """
             )
-            plain = gtest.run_target(root, book, "unit", run_id="plain", arbiter_bin=str(fake_arbiter))
+            # The code index is mandatory, so run_target now requires a working indexer toolchain;
+            # the fake toolchain (JSON-AST oracle) keeps this hermetic without a real libclang.
+            config = write_fake_toolchain(root, compile_database_path=root / "compile_commands.json")
+            plain = gtest.run_target(
+                root, book, "unit", run_id="plain", arbiter_bin=str(fake_arbiter), extractor_config=config
+            )
             asan = gtest.run_target(
-                root, book, "unit", run_id="asan", profiles=["asan"], arbiter_bin=str(fake_arbiter)
+                root, book, "unit", run_id="asan", profiles=["asan"], arbiter_bin=str(fake_arbiter),
+                extractor_config=config,
             )
 
             self.assertEqual(plain.overall, "passed")
             self.assertEqual(asan.overall, "passed")
             # The sanitizer profile applies its cflags to the build. Facts publication from the
-            # build journal (CodeFactExtractor -> FileFactStore) is covered hermetically in
-            # test_pipeline; run_target degrades gracefully when no facts toolchain is present.
+            # build journal (CodeFactExtractor -> FileFactStore) is covered hermetically in test_pipeline.
             self.assertIn("-fsanitize=address", (root / "cflags.log").read_text(encoding="utf-8"))
 
     def write_fake_arbiter(self, path):
