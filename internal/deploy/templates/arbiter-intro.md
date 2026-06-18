@@ -117,7 +117,13 @@ and the opening's `ShowStepJob` text tells you exactly what to submit:
 
 Three things the opening leaves to you — do them and fold them into the final report:
 - **Probe the build system** before loading the opening (make/cmake entry points, compiler, gtest
-  binary, build dir, primary suite target) so your derive task is concrete.
+  binary, build dir, and which test target to prove) so your derive task is concrete. When the
+  project exposes MANY test executables, do NOT pick an aggregate / "merged" / "all-tests" target
+  and do NOT build the whole project — those compile a large fraction of the codebase, so the
+  proving build is slow and frequently breaks on an unrelated translation unit. Choose the SMALLEST
+  self-contained test executable instead — ideally one built from a single test source file with the
+  fewest link dependencies. One small gtest binary is enough to prove the recipe and publish the
+  facts index; the bootstrap does not need the project's whole test suite built.
 - **Instrumentation macro scan**: whole-token grep the sources for `__SANITIZE_ADDRESS__`,
   `__SANITIZE_THREAD__`, and `__has_feature(*_sanitizer)`; report `path:line token` hits and a
   suggested `facts.key_flags` (e.g. `[-fsanitize=address]`). Never auto-write flags — ask the user,

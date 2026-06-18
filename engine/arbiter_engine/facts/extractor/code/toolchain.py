@@ -200,11 +200,53 @@ def _diagnostic_lines(diagnostics: Sequence[Tuple[int, Dict[str, JSONValue]]]) -
     return lines
 
 
+# A build compiler and the index clang can spell the SAME language standard with
+# different `-std` tokens: GCC/CMake emit `-std=gnu++23` / `-std=c++23` for C++23,
+# while an in-progress-draft clang (e.g. clang 16) only accepts the `2b`/`2c` draft
+# spelling for those same standards and rejects the finalized name outright (it then
+# parses no translation unit, so the build's C++ units yield no facts). The index must
+# re-parse whatever the build compiled, so translate the standard token to the index
+# clang's equivalent spelling. An exact, finite equivalence table keyed by the whole
+# token; any token without an entry (the common case) is left untouched.
+_STD_TOKEN_EQUIVALENTS = {
+    "c++23": "c++2b",
+    "gnu++23": "gnu++2b",
+    "c++26": "c++2c",
+    "gnu++26": "gnu++2c",
+}
+
+
+def _equivalent_std_token(value: str) -> str:
+    return _STD_TOKEN_EQUIVALENTS.get(value, value)
+
+
+def _normalize_std_tokens(flags: Sequence[str]) -> List[str]:
+    result: List[str] = []
+    index = 0
+    while index < len(flags):
+        arg = flags[index]
+        option, separator, value = arg.partition("=")
+        if separator and option == "-std":
+            result.append(option + separator + _equivalent_std_token(value))
+            index += 1
+            continue
+        if arg == "-std" and index + 1 < len(flags):
+            result.append(arg)
+            result.append(_equivalent_std_token(flags[index + 1]))
+            index += 2
+            continue
+        result.append(arg)
+        index += 1
+    return result
+
+
 def _libclang_absolute_compile_flags(compile_lookup: _CompileCommandLookup) -> List[str]:
     flags = list(compile_lookup.flags)
     if not compile_lookup.matched or compile_lookup.entry is None:
-        return flags
-    return _absolutize_compile_flags(flags, compile_lookup.entry.directory_path)
+        return _normalize_std_tokens(flags)
+    return _normalize_std_tokens(
+        _absolutize_compile_flags(flags, compile_lookup.entry.directory_path)
+    )
 
 
 def _absolutize_compile_flags(flags: Sequence[str], base: Path) -> List[str]:

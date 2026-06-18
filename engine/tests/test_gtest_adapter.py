@@ -58,6 +58,68 @@ targets:
             self.assertEqual(result.per_test[1].message, "bad")
             self.assertIn("--gtest_output=xml:", (root / "args.log").read_text(encoding="utf-8"))
 
+    def test_test_run_pre_runs_before_the_binary(self):
+        # Runtime setup declared in test_run.pre (start a service, generate config/data) MUST run
+        # before the test binary. The fake gtest reports pass only if pre created the sentinel.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake = root / "fake_gtest.sh"
+            fake.write_text(
+                "#!/bin/sh\n"
+                "for arg in \"$@\"; do case \"$arg\" in --gtest_output=xml:*) out=\"${arg#--gtest_output=xml:}\";; esac; done\n"
+                "mkdir -p \"$(dirname \"$out\")\"\n"
+                "if [ \"$(cat setupdone 2>/dev/null)\" = ready ]; then\n"
+                "  printf '%s' '<testsuites tests=\"1\" failures=\"0\" skipped=\"0\"><testsuite name=\"S\" tests=\"1\" failures=\"0\" skipped=\"0\"><testcase classname=\"S\" name=\"OK\" time=\"0\"/></testsuite></testsuites>' > \"$out\"\n"
+                "else\n"
+                "  printf '%s' '<testsuites tests=\"1\" failures=\"1\" skipped=\"0\"><testsuite name=\"S\" tests=\"1\" failures=\"1\" skipped=\"0\"><testcase classname=\"S\" name=\"OK\" time=\"0\"><failure message=\"setup missing\">x</failure></testcase></testsuite></testsuites>' > \"$out\"\n"
+                "fi\n"
+                "exit 0\n",
+                encoding="utf-8",
+            )
+            fake.chmod(0o755)
+            book = recipes.parse(
+                f"""
+targets:
+  - id: unit
+    binary: fake_gtest.sh
+    harness:
+      kind: gtest
+    test_run:
+      pre:
+        - [sh, -c, "echo ready > setupdone"]
+      cmd: [{str(fake)}]
+"""
+            )
+            result = gtest.run_target(root, book, "unit", run_id="pre-ok")
+            self.assertEqual(result.overall, "passed")
+            self.assertTrue((root / "setupdone").exists())
+
+    def test_test_run_pre_failure_is_errored_not_a_run(self):
+        # A non-zero test_run.pre means the environment could not be set up: errored
+        # (test_run_pre_failed), never a passable run, and the binary must not have run.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake = root / "fake_gtest.sh"
+            fake.write_text("#!/bin/sh\ntouch ran_anyway\nexit 0\n", encoding="utf-8")
+            fake.chmod(0o755)
+            book = recipes.parse(
+                f"""
+targets:
+  - id: unit
+    binary: fake_gtest.sh
+    harness:
+      kind: gtest
+    test_run:
+      pre:
+        - [sh, -c, "exit 3"]
+      cmd: [{str(fake)}]
+"""
+            )
+            result = gtest.run_target(root, book, "unit", run_id="pre-fail")
+            self.assertEqual(result.overall, "errored")
+            self.assertEqual(result.failure, "test_run_pre_failed")
+            self.assertFalse((root / "ran_anyway").exists())
+
     def test_repeated_names_get_occurrences(self):
         with tempfile.TemporaryDirectory() as tmp:
             xml = Path(tmp) / "repeated.xml"
