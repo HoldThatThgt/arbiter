@@ -45,13 +45,32 @@ timeout_s: 180
 [StepJob]
 Do these in order. Do not skip a sub-step, and do not fake any of them — the only thing that
 finishes this step is a real registered recipe proven by a real run.
-1. The wrapper scripts `.arbiter/shim_cc.sh` and `.arbiter/shim_cxx.sh` already exist and route the
-   project's real C/C++ compiler through `arbiter cc`. Reference them as the compilers in your
-   configure command by their **absolute** path — a build system that probes the compiler from a
-   temporary directory (cmake does) cannot resolve a relative compiler path. Do NOT recreate, edit,
-   or replace them with a direct compiler path.
-2. Probe the native build system (read its build files) to learn the configure command, the build
-   command, the test binary it produces, and the globs of sources it compiles.
+1. Probe the native build system (read its build files) to learn the configure command, the build
+   command, the test binary it produces, the globs of sources it compiles, AND the project's real
+   C and C++ compilers (the ones the build would use — e.g. what `cc`/`c++` resolve to, or what the
+   build files name).
+2. Wire that build through `arbiter cc` so every translation unit is journaled — that journal is
+   what the facts index is built from. The compilers in your configure command must be the two shim
+   scripts `.arbiter/shim_cc.sh` and `.arbiter/shim_cxx.sh`:
+   - If they already exist, use them as-is — an operator may have pre-wired an unusual toolchain;
+     do NOT edit or replace them.
+   - If they do NOT exist, CREATE them now from the compilers you just probed. Write each as a
+     one-line wrapper that routes the real compiler through `arbiter cc`, then `chmod +x` both:
+       `.arbiter/shim_cc.sh`  contains:  `#!/bin/sh` (newline) `exec arbiter cc --root ABS_REPO -- REAL_CC "$@"`
+       `.arbiter/shim_cxx.sh` contains:  `#!/bin/sh` (newline) `exec arbiter cc --root ABS_REPO -- REAL_CXX "$@"`
+     substituting ABS_REPO = the repository's absolute path, REAL_CC / REAL_CXX = the compilers the
+     build ITSELF uses by default — what `cc`/`c++` resolve to, or the `$CC`/`$CXX` the build sets,
+     as found in step 1. Wrap THAT compiler even if it is not Clang: arbiter re-parses the journaled
+     translation units into the facts index with its OWN capable Clang internally, so the build
+     compiler does NOT need to be Clang for facts to publish — the "capable Clang" requirement is on
+     arbiter's index, never on your build. Do NOT switch the build to a different compiler than it
+     normally uses just because another one is installed; the shim must journal the project's REAL
+     build, and wrapping a compiler the build would not have chosen makes the index describe a build
+     that never happens. The wrapper MUST invoke `arbiter cc` (it is on PATH) — a direct compiler is
+     not journaled, so facts never publish.
+   Reference the shims as the compilers in your configure command by their **absolute** path — a
+   build system that probes the compiler from a temporary directory (cmake does) cannot resolve a
+   relative compiler path.
 3. Write `.arbiter/recipes.yaml` (RecipeBook v2) in exactly the shape below — two-space indent, no
    tabs, lists inline [a, b, c] — wiring the two shim scripts as the compilers in the configure
    `pre` command. Strict YAML subset: NO anchors/aliases (`&`/`*`) and NO extra keys; every path
@@ -122,7 +141,7 @@ lists — is literal. Common mistakes that make register reject the file, do NOT
   `- [...]` list item.
 [CheckList]
 - The recipe begins with a top-level `compile_db:` section (sibling of `targets:`, `path:` pointing at the build's compile_commands.json) — without it the recipe builds but NEVER publishes facts, and the publish step fails forever
-- The configure command wires .arbiter/shim_cc.sh and .arbiter/shim_cxx.sh as the compilers (real compiler through arbiter cc); the shims are used as-is, not recreated
+- The configure command wires .arbiter/shim_cc.sh and .arbiter/shim_cxx.sh as the compilers (real compiler through arbiter cc); create them from the probed compiler if they are absent, or use them as-is if an operator already wired them
 - recipe_search, then write .arbiter/recipes.yaml in the shape above, then register {"path": ".arbiter/recipes.yaml"}
 - Submit candidate-proven from a real run (structured gtest output only) — never a file-exists check, marker file, or shell shortcut
 [Submit] candidate-proven
