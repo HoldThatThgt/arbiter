@@ -11,7 +11,10 @@ from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from arbiter_engine.facts import relocation
 from arbiter_engine.facts.extractor.code import CodeFactExtractor
-from arbiter_engine.facts.extractor.code._shim import ExtractorConfig, InitError
+# TOOLCHAIN_FAILURE_CODES (the codes that make a broken indexer a hard stop) is defined next to
+# InitError in _shim — the single source of truth shared by this module, facts.incremental, and
+# facts.view. Re-exported here so existing callers (gtest.run_target, tests) keep using it.
+from arbiter_engine.facts.extractor.code._shim import ExtractorConfig, InitError, TOOLCHAIN_FAILURE_CODES
 from arbiter_engine.facts.store import FileFactStore
 from arbiter_engine.shared import compile_db
 
@@ -91,7 +94,8 @@ def publish_after_build(
 
     compile_db.emit(journals, compile_db_path)
     workers = pool if isinstance(pool, int) and pool > 0 else (cpu_count() or 1)
-    # Production auto-detects the toolchain (clang/libclang via toolchain.py); tests inject a
+    # Production auto-detects the toolchain (clang/libclang via toolchain.py) unless
+    # .arbiter/config.yml facts.toolchain pins it (indexer-only); tests inject a
     # fake-toolchain ExtractorConfig. Either way the compile-db is the journaled one just emitted.
     if extractor_config is not None:
         config = extractor_config
@@ -99,6 +103,7 @@ def publish_after_build(
         config = ExtractorConfig(
             compile_database_path=Path(compile_db_path),
             extractor_worker_count=workers,
+            **relocation.extractor_toolchain_overrides(root),
         )
     extract_start = monotonic()
     try:
@@ -107,8 +112,14 @@ def publish_after_build(
         # lock, so the pipeline does not also hold locks.SNAPSHOT here.
         result = CodeFactExtractor(root, config).collect(None, profile)
     except InitError as exc:
-        # No capable libclang (or a toolchain/compile-db failure): a typed not-published signal.
-        # Builds, runs, shell/mcp predicates, and diagnostics keep working without a facts index.
+        if exc.code in TOOLCHAIN_FAILURE_CODES:
+            # Mandatory-index hard stop: the indexer toolchain itself is unusable. Propagate so the
+            # caller aborts the run with a typed indexer_unavailable failure rather than publishing
+            # nothing and letting the build/run report green without a fact index behind it.
+            raise
+        # A non-toolchain init failure (malformed compile-db, bad source root): the toolchain works
+        # but there is nothing to index. Stay a typed not-published signal — builds, runs, shell/mcp
+        # predicates, and diagnostics keep working without a facts index.
         extract_ms = _elapsed_ms(extract_start, monotonic)
         return PipelineResult(
             published=False,

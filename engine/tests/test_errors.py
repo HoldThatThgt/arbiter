@@ -24,6 +24,11 @@ class EngineErrorTaxonomyTest(unittest.TestCase):
                 {"expected": "1", "found": "2"},
             ),
             (errors.harness_unavailable("gtest"), "harness_unavailable", {"harness": "gtest"}),
+            (
+                errors.indexer_unavailable("libclang_unavailable", "libclang library is unavailable"),
+                "indexer_unavailable",
+                {"toolchain_code": "libclang_unavailable", "detail": "libclang library is unavailable"},
+            ),
             (errors.lock_timeout("state.lock"), "lock_timeout", {"lock": "state.lock"}),
         ]
 
@@ -36,6 +41,7 @@ class EngineErrorTaxonomyTest(unittest.TestCase):
                 "recipe_pin_mismatch",
                 "engine_stale",
                 "harness_unavailable",
+                "indexer_unavailable",
                 "lock_timeout",
             },
         )

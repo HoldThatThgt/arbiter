@@ -19,7 +19,7 @@ from arbiter_engine import config
 from arbiter_engine import errors
 from arbiter_engine.facts import incremental
 from arbiter_engine.facts import relocation
-from arbiter_engine.facts.extractor.code._shim import ExtractorConfig
+from arbiter_engine.facts.extractor.code._shim import ExtractorConfig, InitError, TOOLCHAIN_FAILURE_CODES
 from arbiter_engine.shared import locks
 
 
@@ -71,7 +71,18 @@ def reconcile(repo: Path, context: AccessContext, *, timeout_s: float = 30.0) ->
     # reconciles, and the synchronous reconcile shares the flock with the background poll thread.
     with locks.acquire(repo, [locks.OVERLAY], timeout_s=timeout_s):
         coordinator = _build_coordinator(repo)
-        status = coordinator.reconcile_current_sources()
+        try:
+            status = coordinator.reconcile_current_sources()
+        except InitError as exc:
+            if exc.code not in TOOLCHAIN_FAILURE_CODES:
+                raise
+            # Mandatory-index hard stop, consistent with the build-tail publish: the indexer
+            # toolchain is unusable, so the synchronous reconcile that gates fact predicates aborts
+            # adjudication rather than silently returning a stale base view. (The background daemon
+            # calls reconcile too but swallows per-tick exceptions, so it stays best-effort; only
+            # this writer-synchronous path — arbiter/refresh and the writer search/detail access —
+            # turns the failure into a typed error.)
+            raise errors.indexer_unavailable(exc.code, exc.message)
         return _view_from_status(repo, status)
 
 
@@ -122,6 +133,7 @@ def _reconcile_extractor_config(repo: Path, worker_count: int) -> ExtractorConfi
     return ExtractorConfig(
         compile_database_path=compile_db if compile_db.exists() else None,
         extractor_worker_count=worker_count,
+        **relocation.extractor_toolchain_overrides(repo),
     )
 
 

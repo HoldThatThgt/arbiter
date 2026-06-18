@@ -13,6 +13,7 @@ SPEC_ERROR_KINDS = frozenset(
         "recipe_pin_mismatch",
         "engine_stale",
         "harness_unavailable",
+        "indexer_unavailable",
         "lock_timeout",
     }
 )
@@ -102,6 +103,19 @@ def harness_unavailable(harness: str) -> RPCError:
 
 def lock_timeout(lock: str) -> RPCError:
     return rpc_error(-32000, "lock timeout", "lock_timeout", lock=lock)
+
+
+def indexer_unavailable(toolchain_code: str, detail: str) -> RPCError:
+    # The code index is a must-have: a synchronous reconcile that can't run because the indexer
+    # toolchain is unusable aborts adjudication rather than letting a fact predicate read a stale
+    # view. Mirrors the build-tail hard stop (gtest.run_target -> failure="indexer_unavailable").
+    return rpc_error(
+        -32000,
+        "indexer unavailable",
+        "indexer_unavailable",
+        toolchain_code=toolchain_code,
+        detail=detail,
+    )
 
 
 def internal_error(exc: BaseException) -> RPCError:

@@ -31,10 +31,32 @@ class IncrementalConfig:
 
 
 @dataclass(frozen=True)
+class ToolchainConfig:
+    """Indexer-only toolchain pins (facts.toolchain).
+
+    These populate the libclang extractor's ExtractorConfig and affect ONLY arbiter's
+    code indexer — never the build, which runs from the recipe's own commands against
+    the host PATH and never consults this. ``clang`` selects the probe binary (its
+    sibling libclang is auto-derived from ``<prefix>/lib``); ``libclang`` overrides that
+    derivation for nonstandard layouts; ``clang_args`` is where toolchain pins like
+    ``--gcc-toolchain=<dir>`` belong.
+
+    A gcc *binary* path is intentionally absent: the indexer never executes gcc (it only
+    feeds a cache key), so only clang flags influence C++ header resolution. Point the
+    indexer at a gcc install via ``clang_args: [--gcc-toolchain=/path]``.
+    """
+
+    clang: Optional[str] = None
+    libclang: Optional[str] = None
+    clang_args: Tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class FactsConfig:
     extractor: Optional[str] = None
     incremental: IncrementalConfig = field(default_factory=IncrementalConfig)
     index_on_build: IndexOnBuildConfig = field(default_factory=IndexOnBuildConfig)
+    toolchain: ToolchainConfig = field(default_factory=ToolchainConfig)
 
 
 @dataclass(frozen=True)
@@ -212,11 +234,24 @@ def _parse_facts(node: Optional[_Node]) -> FactsConfig:
     if node is None:
         return FactsConfig()
     values = _require_mapping(node, "facts")
-    _reject_unknown(values, {"extractor", "incremental", "index_on_build"})
+    _reject_unknown(values, {"extractor", "incremental", "index_on_build", "toolchain"})
     return FactsConfig(
         extractor=_optional_string(values.get("extractor"), "facts.extractor"),
         incremental=_parse_incremental(values.get("incremental")),
         index_on_build=_parse_index_on_build(values.get("index_on_build")),
+        toolchain=_parse_toolchain(values.get("toolchain")),
+    )
+
+
+def _parse_toolchain(node: Optional[_Node]) -> ToolchainConfig:
+    if node is None:
+        return ToolchainConfig()
+    values = _require_mapping(node, "facts.toolchain")
+    _reject_unknown(values, {"clang", "libclang", "clang_args"})
+    return ToolchainConfig(
+        clang=_optional_string(values.get("clang"), "facts.toolchain.clang"),
+        libclang=_optional_string(values.get("libclang"), "facts.toolchain.libclang"),
+        clang_args=_optional_string_list(values.get("clang_args"), "facts.toolchain.clang_args"),
     )
 
 

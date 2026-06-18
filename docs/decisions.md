@@ -276,6 +276,32 @@ otherwise unchanged; `docs/design.md` seat-tool counts and the M4 proposals' tes
 (`engine/tests/c2/`) and headline total (24 files / 233 tests) are corrected in the same batch; the
 four gap fixes land as their own reviewed PRs.
 
+## ADR-0020 — Indexer toolchain config + mandatory-index hard stop (2026-06-17, accepted)
+Two coupled owner decisions about the code index. **(1) `facts.toolchain` — an indexer-only
+toolchain pin.** A new `config.yml` section (`clang`, `libclang`, `clang_args`) populates the
+libclang extractor's `ExtractorConfig` and *only* the indexer — the build keeps running from the
+recipe's own commands against the host PATH. It is wired into both `ExtractorConfig` construction
+sites (`shared.pipeline.publish_after_build`, `facts.view._reconcile_extractor_config`) via
+`relocation.extractor_toolchain_overrides` (fail-soft: missing/malformed config ⇒ no overrides).
+There is deliberately **no gcc-binary key** — the indexer never executes gcc (`gcc_executable` only
+feeds a cache key), so the gcc lever is `clang_args: [--gcc-toolchain=…]`. libclang is auto-derived
+from the clang binary's `../lib` sibling; `libclang` overrides that only for nonstandard layouts.
+**(2) The code index is a must-have — a broken indexer toolchain is a HARD STOP, unconditionally
+(no opt-out).** The shared `_shim.TOOLCHAIN_FAILURE_CODES` (`clang_unavailable`,
+`libclang_unavailable`, `libclang_version_mismatch`, `clang_capability_failed`) is enforced at both
+points the toolchain is exercised: the build-tail publish re-raises them and `run_target` surfaces
+`RunResult(overall="errored", failure="indexer_unavailable")`; the synchronous reconcile that gates
+every fact predicate (`view.reconcile`, used by `arbiter/refresh` and writer `search`/`detail`)
+maps them to the new `indexer_unavailable` SPEC error — so a match can never adjudicate on a missing
+*or stale* index. Scope is toolchain-only: `no_compile_db` / journal-miss / non-green build /
+non-toolchain `InitError`s stay graceful (nothing to index ≠ broken indexer). **Consequences:** both
+background daemons (`view._background_loop`, the coordinator's `_poll_loop`) swallow per-tick so a
+broken toolchain skips a tick rather than killing the engine — read-only querying over an
+already-published index survives; `errors.SPEC_ERROR_KINDS` gains `indexer_unavailable`; tests that
+drive a real build/reconcile must be hermetic (import the `c2` JSON-AST oracle + a fake toolchain).
+Supersedes the prior "missing/incapable toolchain degrades to a typed not-published signal" wording
+in engine-facts/engine-shared.
+
 ---
 
 *Template for new entries:*

@@ -424,6 +424,10 @@ facts:
     debounce_ms: 100         # settle time after an observed edit before re-extracting
     overlay_ttl_seconds: 600 # overlay GC age (0 ⇒ never GC)
     max_dirty_files: 500     # refuse to build an overlay larger than this dirty set
+  toolchain:                 # pin the INDEXER's clang/libclang — never the build; all keys optional
+    clang: /usr/lib/llvm-16/bin/clang            # which clang the extractor probes (libclang auto-derived from ../lib)
+    libclang: /usr/lib/llvm-16/lib/libclang.so   # override only for nonstandard layouts
+    clang_args: [--gcc-toolchain=/opt/gcc-7.3.0] # extra parse flags — where a gcc toolchain pin belongs
 match:
   goal_memo: false           # memoize goal passes per workspace digest (default off)
 ```
@@ -436,8 +440,32 @@ cipher-2 engine runs an automatic background index that re-extracts edited sourc
 builds and publishes a temporary overlay merged into `search`/`detail` at query time; the
 referee forces a synchronous reconcile before every fact predicate so adjudication is never
 stale. `facts.extractor` (string) is still **reserved** — arbiter ships a single Clang
-extractor, so it parses and validates but selects nothing. The `runs:` and `engine:` sections
-must be empty when present — any sub-key is rejected as unknown.
+extractor, so it parses and validates but selects nothing.
+
+`facts.toolchain` pins the toolchain the **code indexer** uses, scoped to indexing only — it
+populates the libclang extractor's config and is never consulted by the build, which keeps
+running from the recipe's own commands against the host PATH. Use it when the indexer should
+parse with a different clang than `clang` on PATH (e.g. to match a build compiled elsewhere)
+without perturbing the build. `clang` selects the probe binary and its sibling libclang is
+auto-derived; set `libclang` only when that derivation can't find a matching-major library.
+There is deliberately **no gcc binary key**: the indexer never executes gcc (a gcc path would
+only change a cache key), so to make indexing read a specific gcc's libstdc++ headers, pass the
+clang mechanism — `clang_args: [--gcc-toolchain=/path/to/gcc-install]` (or `--gcc-install-dir=`,
+`-isystem`, `--sysroot`).
+
+The code index is a **must-have**: a non-working indexer *toolchain* is a hard stop, not a
+degraded run. If clang or libclang is missing, their majors mismatch, or the clang can't emit a
+type-driven AST, the failure is unconditional (no opt-out) and surfaces at both points the
+toolchain is exercised: the build-tail publish makes the run **error** with `failure:
+indexer_unavailable`, and the synchronous reconcile that gates every fact predicate raises the
+`indexer_unavailable` error rather than serving a stale index — so a match can never silently
+adjudicate without facts. (The background index daemon stays best-effort: a broken toolchain just
+skips a tick, so read-only `search`/`detail` over an already-published index keep working.)
+`facts.toolchain` is the remedy when the host's default `clang` isn't the one you want indexing to
+use. Note the scope: only a broken *toolchain* hard-stops; a recipe with no `compile_db:` section,
+a build that failed, or an uncaptured compile journal stay their existing typed not-published
+results (there is simply nothing to index). The `runs:` and `engine:` sections must be empty when
+present — any sub-key is rejected as unknown.
 
 Environment variables:
 

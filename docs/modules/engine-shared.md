@@ -36,8 +36,11 @@ set (bounded extraction pool: cores/4 while compiler activity is detected, full 
 own write lock) → return `facts:{published, snapshot_id, files, warnings, extract_ms,
 hidden_ms, tail_ms}` to the runner for the verdict. Failure honesty: per-file extraction
 failures follow cipher policy and surface as `warnings`; a journal miss marker or non-green build
-forces `published:false`, and a missing/incapable toolchain degrades to a typed not-published
-signal — the gear-up predicate fails closed, builds and runs keep working.
+forces `published:false` (graceful — nothing to index). A missing/incapable toolchain is instead
+the mandatory-index **hard stop** (ADR-0020): `publish_after_build` re-raises the toolchain
+`InitError` (codes in `_shim.TOOLCHAIN_FAILURE_CODES`) and `run_target` surfaces it as
+`RunResult(overall="errored", failure="indexer_unavailable")` — the build still ran, but the run
+errors rather than report green with no index behind it.
 
 ## Invariants
 stdlib-only; no daemon (pipeline lives within the EXEC engine's run call / startRun worker);

@@ -54,6 +54,60 @@ class FactsRelocationTest(unittest.TestCase):
         self.assertEqual(parsed.facts.index_on_build.pool, 2)
         self.assertEqual(parsed.facts.index_on_build.key_flags, ("-DWITH_X",))
 
+    def test_extractor_toolchain_overrides_from_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".arbiter").mkdir()
+            (root / ".arbiter" / "config.yml").write_text(
+                textwrap.dedent(
+                    """\
+                    facts:
+                      toolchain:
+                        clang: /usr/lib/llvm-16/bin/clang
+                        libclang: /usr/lib/llvm-16/lib/libclang.so
+                        clang_args: [--gcc-toolchain=/opt/gcc-7.3.0]
+                    """
+                ),
+                encoding="utf-8",
+            )
+
+            overrides = relocation.extractor_toolchain_overrides(root)
+
+        self.assertEqual(
+            overrides,
+            {
+                "clang_executable": "/usr/lib/llvm-16/bin/clang",
+                "libclang_library_path": Path("/usr/lib/llvm-16/lib/libclang.so"),
+                "clang_args": ("--gcc-toolchain=/opt/gcc-7.3.0",),
+            },
+        )
+
+    def test_extractor_toolchain_overrides_omits_unset_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".arbiter").mkdir()
+            (root / ".arbiter" / "config.yml").write_text(
+                "facts:\n  toolchain:\n    clang: /opt/clang\n", encoding="utf-8"
+            )
+
+            overrides = relocation.extractor_toolchain_overrides(root)
+
+        # Unset libclang/clang_args stay absent so the extractor keeps auto-detecting them.
+        self.assertEqual(overrides, {"clang_executable": "/opt/clang"})
+
+    def test_extractor_toolchain_overrides_fail_soft(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # No .arbiter/config.yml at all -> no overrides (full auto-detect).
+            self.assertEqual(relocation.extractor_toolchain_overrides(root), {})
+
+            (root / ".arbiter").mkdir()
+            (root / ".arbiter" / "config.yml").write_text(
+                "facts:\n  toolchain:\n    bogus: 1\n", encoding="utf-8"
+            )
+            # A malformed config must not crash the indexer; it degrades to auto-detect.
+            self.assertEqual(relocation.extractor_toolchain_overrides(root), {})
+
     def test_descriptors_keep_cipher_search_detail_inputs_without_meta(self):
         tools = descriptors.tool_descriptors()
 

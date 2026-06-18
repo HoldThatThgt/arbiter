@@ -27,6 +27,12 @@ corpus. Only the owner-signed deltas below are permitted; everything else is a r
   **LLVM Clang ≥ 16, Apple Clang ≥ 15**. libclang is located at runtime (clang_executable →
   llvm-config → platform paths; explicit `libclang_library` is a last-resort escape hatch) and
   a clang/libclang major-version mismatch is a typed failure (`libclang_version_mismatch`).
+- **Indexer toolchain pin (`config.yml facts.toolchain`, ADR-0020):** `clang` / `libclang` /
+  `clang_args` pin the *extraction* toolchain only — populated into the extractor's
+  `ExtractorConfig` at both construction sites, never consulted by the build (which keeps its own
+  PATH). Use it when the indexer should parse with a different clang than `clang` on PATH. There is
+  no gcc-binary key (the indexer never executes gcc); the gcc lever is `clang_args:
+  [--gcc-toolchain=…]`.
 - **Build toolchain: independent and untouched.** The target repo builds with whatever its
   build system needs — gcc/g++ of any vintage is the *normal* case for the target DBMS class.
   The AST path never requires GCC; arbiter never replaces, substitutes, or version-gates the
@@ -38,8 +44,10 @@ corpus. Only the owner-signed deltas below are permitted; everything else is a r
   own Clang. Flag cleaning at this seam serves *parseability*; ADR-0005's codegen-flag
   stripping serves *cache keying* — same mechanism, two distinct obligations.
 - Clang/libclang unavailable, capability probe failure, or version mismatch **block facts
-  extraction explicitly** (typed errors) and must never degrade the build, the refereed loop's
-  shell/mcp predicates, or the bundled diagnostics — facts become unavailable, never faked.
+  extraction explicitly** (typed errors). The code index is a must-have, so this is a **hard stop**
+  (ADR-0020): the run errors as `indexer_unavailable` and the synchronous reconcile aborts
+  adjudication rather than degrade silently — yet the build itself, the refereed loop's shell/mcp
+  predicates, and the bundled diagnostics keep working; facts are never faked.
 
 ## Owner-signed deltas (each one is an ADR or design.md §10 phase-3 line item — nothing else)
 1. Paths: `.cipher/` → `.arbiter/facts/`; config → `config.yml facts:` section.
@@ -66,8 +74,10 @@ corpus. Only the owner-signed deltas below are permitted; everything else is a r
   emit the compile-db → `CodeFactExtractor(root, config).collect(None, profile)` over exactly the
   compiled TU set → `FileFactStore.replace_snapshot(...)`; report `{published, snapshot_id, files,
   warnings, extract_ms, hidden_ms, tail_ms}` to the runs verdict. A miss-marked or non-green build
-  fails closed (no publish); a missing/incapable toolchain degrades to a typed not-published
-  signal, never a crash.
+  fails closed (no publish, graceful — nothing to index); a missing/incapable toolchain is instead
+  the mandatory-index **hard stop** (ADR-0020) — `publish_after_build` re-raises the toolchain
+  `InitError` and the run errors as `failure:indexer_unavailable`, never a silent not-published and
+  never a crash.
 - Typed `no_snapshot{hint:"run the gear-up step"}` before first publish.
 - Fact-predicate evidence: `{snapshot_id, overlay_id, view_state}` on every adjudicated query.
 
@@ -82,7 +92,8 @@ facts-conformance corpus (ADR-0013) replayed byte-exact against the engine — t
 cipher-2 reference is retired, and new corpus scenarios are cross-checked against upstream
 cipher-2 out-of-tree before their lines become the pin; build-driven seam tests (a green build
 round-trips journal → compile-db → snapshot; a sanitizer profile publishes its own
-content-addressed snapshot; miss-marker / non-green / incapable-toolchain all fail closed);
+content-addressed snapshot; miss-marker / non-green fail closed as not-published, while an
+incapable toolchain hard-stops the run as `indexer_unavailable` — ADR-0020);
 single-writer enforcement (executor engine attempting reconcile → typed refusal).
 
 ## Done

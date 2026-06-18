@@ -10,8 +10,11 @@ from pathlib import Path
 from unittest import mock
 
 from arbiter_engine import config
+from arbiter_engine import errors
 from arbiter_engine import rpc
+from arbiter_engine.facts import incremental
 from arbiter_engine.facts import view
+from arbiter_engine.facts.extractor.code._shim import InitError
 from arbiter_engine.shared import locks
 from arbiter_engine.shared import pipeline
 
@@ -169,6 +172,64 @@ class FactsReconcileTest(unittest.TestCase):
         self.assertEqual(response["error"]["data"]["kind"], "capability_revoked")
         with self.assertRaises(config.ConfigError):
             config.parse_config("facts:\n  overlay_ttl_seconds: 600\n")
+
+    def test_reconcile_extractor_config_applies_indexer_toolchain_pin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".arbiter").mkdir()
+            (root / ".arbiter" / "config.yml").write_text(
+                "facts:\n"
+                "  toolchain:\n"
+                "    clang: /usr/lib/llvm-16/bin/clang\n"
+                "    clang_args: [--gcc-toolchain=/opt/gcc-7.3.0]\n",
+                encoding="utf-8",
+            )
+
+            extractor_config = view._reconcile_extractor_config(root, 3)
+
+        # facts.toolchain flows into the extractor's ExtractorConfig (indexer-only) ...
+        self.assertEqual(extractor_config.clang_executable, "/usr/lib/llvm-16/bin/clang")
+        self.assertEqual(extractor_config.clang_args, ("--gcc-toolchain=/opt/gcc-7.3.0",))
+        # ... while unpinned fields and the worker count are untouched.
+        self.assertIsNone(extractor_config.libclang_library_path)
+        self.assertEqual(extractor_config.extractor_worker_count, 3)
+
+    def test_synchronous_reconcile_hard_stops_when_indexer_toolchain_unusable(self):
+        # Consistency with the build-tail publish: the synchronous reconcile that gates every fact
+        # predicate must abort with a typed indexer_unavailable error when the indexer toolchain is
+        # unusable, never silently return a stale base view (which would let adjudication proceed on
+        # an out-of-date index).
+        boom = InitError(
+            "libclang_unavailable", "libclang library is unavailable", details={"reason": "auto_not_found"}
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".arbiter").mkdir()
+            ctx = view.AccessContext(role="QUERY", seat="player")
+            with mock.patch.object(
+                incremental.IncrementalCoordinator, "reconcile_current_sources", side_effect=boom
+            ):
+                with self.assertRaises(errors.RPCError) as raised:
+                    view.reconcile(root, ctx)
+
+        self.assertEqual(raised.exception.data["kind"], "indexer_unavailable")
+        self.assertEqual(raised.exception.data["toolchain_code"], "libclang_unavailable")
+
+    def test_synchronous_reconcile_does_not_mislabel_non_toolchain_init_errors(self):
+        # Scope guard: only toolchain failures are the hard stop. A non-toolchain InitError must not
+        # be dressed up as indexer_unavailable — view.reconcile re-raises it unchanged.
+        boom = InitError("malformed_compile_database", "compile database must be valid JSON")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".arbiter").mkdir()
+            ctx = view.AccessContext(role="QUERY", seat="player")
+            with mock.patch.object(
+                incremental.IncrementalCoordinator, "reconcile_current_sources", side_effect=boom
+            ):
+                with self.assertRaises(InitError) as raised:
+                    view.reconcile(root, ctx)
+
+        self.assertEqual(raised.exception.code, "malformed_compile_database")
 
 
 if __name__ == "__main__":

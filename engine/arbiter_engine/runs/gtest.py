@@ -11,7 +11,7 @@ from typing import Mapping, Optional, Sequence, Tuple
 from arbiter_engine import errors
 from arbiter_engine.runs import guidance
 from arbiter_engine.runs import recipes
-from arbiter_engine.facts.extractor.code._shim import ExtractorConfig
+from arbiter_engine.facts.extractor.code._shim import ExtractorConfig, InitError
 from arbiter_engine.runs import runner
 from arbiter_engine.runs.guidance import GuidanceEntry
 from arbiter_engine.shared import pipeline
@@ -103,16 +103,35 @@ def run_target(
             failure="workdir_escape",
             stderr_tail=str(exc),
         )
-    facts = _run_compile_stages(
-        root,
-        book,
-        target,
-        profiles=profiles,
-        arbiter_bin=arbiter_bin,
-        extractor_config=extractor_config,
-        facts_key_flags=facts_key_flags,
-        facts_pool=facts_pool,
-    )
+    try:
+        facts = _run_compile_stages(
+            root,
+            book,
+            target,
+            profiles=profiles,
+            arbiter_bin=arbiter_bin,
+            extractor_config=extractor_config,
+            facts_key_flags=facts_key_flags,
+            facts_pool=facts_pool,
+        )
+    except InitError as exc:
+        if exc.code not in pipeline.TOOLCHAIN_FAILURE_CODES:
+            # publish_after_build's contract is to re-raise only toolchain-class InitErrors; any
+            # other InitError reaching here is not the mandatory-index hard stop, so don't mislabel
+            # it as indexer_unavailable — let it propagate.
+            raise
+        # Mandatory-index hard stop: the indexer toolchain (clang/libclang) is unusable. The code
+        # index is a must-have, so a match must not proceed on an unusable indexer — surface a typed
+        # errored run instead of a green build with no facts behind it.
+        return RunResult(
+            run_id=run_id,
+            overall="errored",
+            passed=0,
+            failed=0,
+            skipped=0,
+            failure="indexer_unavailable",
+            stderr_tail=_indexer_unavailable_message(exc),
+        )
     if facts.get("compile_failed"):
         return RunResult(
             run_id=run_id,
@@ -312,6 +331,16 @@ def _with_facts(result: RunResult, facts: Mapping[str, object]) -> RunResult:
         failure=result.failure,
         stdout_tail=result.stdout_tail,
         stderr_tail=result.stderr_tail,
+    )
+
+
+def _indexer_unavailable_message(exc: InitError) -> str:
+    detail = ", ".join(f"{key}={value}" for key, value in sorted(exc.details.items()) if value != "")
+    suffix = f" ({detail})" if detail else ""
+    return (
+        f"indexer toolchain unavailable [{exc.code}]: {exc.message}{suffix}. "
+        "The code index is mandatory — install a matching clang/libclang, or pin one for the "
+        "indexer via .arbiter/config.yml facts.toolchain (clang / libclang / clang_args)."
     )
 
 
