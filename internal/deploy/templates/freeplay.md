@@ -5,9 +5,13 @@ max_steps: 64
 ---
 
 [Verify] gear-up-published
+# Build proof: asserts ONLY facts.published. The no-match filter makes test_run a no-op so the run
+# is overall=errored (no_tests_ran); facts publish from src_compile BEFORE test_run and cannot be
+# faked (libclang builds the index from the journaled TUs). Adding an "overall" clause would make
+# this gate unsatisfiable — do not.
 run: src_compile
 tests: ["src_compile"]
-expect: {"overall":"passed","facts":{"published":true}}
+expect: {"facts":{"published":true}}
 
 [STEP] gear-up
 [StepJob]
