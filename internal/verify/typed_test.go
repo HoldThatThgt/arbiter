@@ -324,6 +324,31 @@ func TestCompareRunFactsPublished(t *testing.T) {
 	}
 }
 
+// A facts-ONLY run expect (no "overall" clause) is satisfied by a run whose build
+// published the index, even when the run's overall verdict is "errored". This is
+// the contract behind the recipe-derivation `build-published` gate: facts publish
+// from the src_compile stage BEFORE test_run, so a deliberate no-match test filter
+// (overall=errored, no_tests_ran) still proves the build + index — without claiming
+// any test passed. CompareRun must check only the clauses present, never an implicit
+// overall gate.
+func TestCompareRunFactsOnlyIgnoresErroredOverall(t *testing.T) {
+	expect, err := ParseRunExpect(mustRaw(t, `{"facts":{"published":true}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Build published the index but no test matched the filter -> overall errored.
+	if ok, report := CompareRun(expect, RunEvidence{Overall: "errored", Facts: &RunFactsEvidence{Published: true}}); !ok {
+		t.Fatalf("facts-only gate rejected an errored run that published facts: %#v", report)
+	}
+	// Build failed / index did not publish -> the gate must NOT pass.
+	if ok, _ := CompareRun(expect, RunEvidence{Overall: "errored"}); ok {
+		t.Fatal("facts-only gate passed with no facts published")
+	}
+	if ok, _ := CompareRun(expect, RunEvidence{Overall: "errored", Facts: &RunFactsEvidence{Published: false}}); ok {
+		t.Fatal("facts-only gate passed with facts.published=false")
+	}
+}
+
 func TestCompareFactClauses(t *testing.T) {
 	expect, err := ParseFactExpect(mustRaw(t, `{"min_results":1,"max_results":3,"complete":true,"reachable":true,"total_at_least":2}`))
 	if err != nil {

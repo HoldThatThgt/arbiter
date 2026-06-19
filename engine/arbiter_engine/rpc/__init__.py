@@ -21,6 +21,7 @@ from arbiter_engine.runs import async_runs
 from arbiter_engine.runs import discovery
 from arbiter_engine.runs import gtest
 from arbiter_engine.runs import recipes
+from arbiter_engine.runs import scan as ast_scan
 from arbiter_engine.shared import census
 
 
@@ -639,14 +640,28 @@ def _scan_tool(context: Context, arguments: Mapping[str, Any]) -> Mapping[str, A
     scope = arguments.get("scope")
     if not isinstance(scope, str):
         raise RPCError(-32602, "invalid arguments", {"kind": "invalid_args", "field": "scope"})
-    # Capability-gating happens at the seat layer; the handler just returns real,
-    # facts-derived candidates (fail-closed to an empty list when no snapshot exists).
+    # Capability-gating happens at the seat layer; the handler just returns real
+    # candidates: the build-independent AST scan unioned with the facts index
+    # (fail-closed to an empty list when neither sources nor a snapshot exist).
     candidates = discovery.scan(Path.cwd(), scope)
     targets = [candidate.to_json() for candidate in candidates]
+    built = sum(1 for candidate in candidates if candidate.built)
+    structured: dict[str, Any] = {
+        "scope": scope,
+        "targets": targets,
+        # "ast" when the source walk ran (every declared test is reported);
+        # "facts" when the [scan] extra is absent and only built tests appear.
+        "discovery": "ast" if ast_scan.tree_sitter_available() else "facts",
+        "built": built,
+        "declared": len(targets),
+    }
+    reason = ast_scan.unavailable_reason()
+    if reason is not None:
+        structured["scan_unavailable"] = reason
     return {
-        "content": [{"type": "text", "text": f"{len(targets)} test candidates"}],
+        "content": [{"type": "text", "text": f"{len(targets)} test candidates ({built} built)"}],
         "isError": False,
-        "structuredContent": {"scope": scope, "targets": targets},
+        "structuredContent": structured,
     }
 
 

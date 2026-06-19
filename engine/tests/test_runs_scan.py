@@ -173,7 +173,8 @@ class ScanToolTest(unittest.TestCase):
             self.assertEqual(target["file"], "src/fail.cc")
             self.assertEqual(target["line"], 42)
             self.assertEqual(target["fact_id"], "code:function:abc")
-            self.assertEqual(result["content"][0]["text"], "1 test candidates")
+            self.assertTrue(target["built"])
+            self.assertEqual(result["content"][0]["text"], "1 test candidates (1 built)")
 
     def test_scan_tool_is_fail_closed_without_a_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:

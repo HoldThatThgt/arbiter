@@ -8,8 +8,14 @@ version = "0.2.0"
 requires-python = ">=3.9"
 dependencies = []
 
+# Build-independent test discovery (arbiter_engine.runs.scan). The core engine is
+# stdlib-only and zero-install; this extra adds tree-sitter so `scan` can find every
+# test DECLARED in source without a build. Absent, `scan` degrades to the facts index.
 [project.optional-dependencies]
-scan = []
+scan = [
+    "tree-sitter>=0.23,<0.24",
+    "tree-sitter-cpp>=0.23,<0.24",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

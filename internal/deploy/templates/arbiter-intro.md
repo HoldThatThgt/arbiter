@@ -41,7 +41,7 @@ the referee ends the match:
    hands you a task; you write it. CreateTask returns a `task_id`.
 3. **Dispatch the right executor subagent** with the Task tool, putting that `task_id` on a
    "task id:" line in the prompt along with the request. Route by step: the recipe/facts steps
-   (`derive`, `publish`, `enumerate`) go to **arbiter-executor** (`register`, `import_recipes`,
+   (`derive`, `prove`, `enumerate`) go to **arbiter-executor** (`register`, `import_recipes`,
    `scan` are its capability-gated tools, live only while a `capabilities:[recipes]` opening is
    loaded); the diagnostic reconcile steps (`reconcile-perf`, `reconcile-diag`) go to
    **arbiter-debugger**, the only subagent wired with the `perf-mcp` and `gdb-mcp` companion tools
@@ -91,9 +91,12 @@ predicate, so a surface that was wired but is actually broken fails its step ins
 discovered later. The `recipe-derivation` opening walks these steps; drive each with the loop above
 and the opening's `ShowStepJob` text tells you exactly what to submit:
 
-- **derive** → `candidate-proven`: a real registered recipe builds and runs the suite through the
-  `arbiter cc` shims — and that cc-interposed build publishes the first facts snapshot as a side
-  effect (so there is no separate "publish" step). (arbiter-executor.)
+- **derive** → `build-published`: author a recipe and prove its `arbiter cc`-interposed build
+  PUBLISHES the first facts snapshot — the build half only, run under a no-match filter so it needs
+  no test environment yet (so there is no separate "publish" step). (arbiter-executor.)
+- **prove** → `candidate-proven`: discover the runtime environment the test needs (CI config first),
+  add it to the recipe, and prove the whole suite actually RUNS through the recipe — this is where an
+  environment-shaped failure means a recipe defect to fix, not a test result. (arbiter-executor.)
 - **enumerate** → `tests-enumerated`: the referee re-queries the published `_Test` index itself,
   proving facts published WITH the project's test set (recorded as the generated `Suite_Case_Test`
   fixture types) — enumerated from the index, never trusted from your transcript. An empty index
@@ -101,7 +104,10 @@ and the opening's `ShowStepJob` text tells you exactly what to submit:
   fix that, do not loop. Call `scan {"scope":"*"}` for the authoritative test set to report. If
   facts publication is blocked only by a missing capable Clang (LLVM ≥ 16 / Apple ≥ 15) — not a
   build failure — report the typed reason; builds, matches, and shell/mcp predicates work without
-  facts.
+  facts. This step also makes the WHOLE suite runnable: register a recipe for every test binary the
+  build produces (`import_recipes`, one target per binary) so a clean checkout can `run` any suite
+  from the committed book — only the one target from derive is proven; the rest stay unproven until
+  their first run.
 - **reconcile-perf** → `perf-static-scan`: the referee runs `perf.scan_c` over the project (a REAL
   static analysis, not `perf.toolchain_probe`). In the same step also call `perf.measure_command`
   and `perf.explain_finding` and report their typed results. (arbiter-debugger.)
@@ -142,6 +148,7 @@ declaring success. Report a surface as proven only because its step's predicate 
 returned a real result), never because you observed it.
 
 The final reply names: the proven recipe id, the snapshot id (or the typed reason none published),
-the `scan`/`search` test inventory, the perf-mcp scan/measure/explain results, the gdb debug result
+the `scan`/`search` test inventory, the recipe-book coverage (how many test binaries got a
+registered recipe vs the single one proven), the perf-mcp scan/measure/explain results, the gdb debug result
 and the gdb-mcp session outputs, the macro-scan checklist with any suggested `facts.key_flags`, and
 the installed openings.
