@@ -74,7 +74,11 @@ half of the recipe, then submit the build proof.
    target and NOT a "build everything" target. One small gtest binary proves the recipe and publishes
    the facts index; a merged or whole-project target compiles a huge fraction of the codebase, so its
    build is slow and often fails on an unrelated translation unit, which blocks this step for reasons
-   that have nothing to do with your recipe.
+   that have nothing to do with your recipe. Pick a target whose tests actually RUN on THIS build
+   host, not merely compile: a test source may guard all of its cases behind a platform/architecture
+   `#if` (an x86-only or Windows-only test), so on a different host it compiles to a binary with ZERO
+   tests — that target builds and publishes facts here, but can never be proven in the prove step.
+   Favor a small target whose test cases are unconditional / portable.
 2. Wire that build through `arbiter cc` so every translation unit is journaled — that journal is
    what the facts index is built from. `arbiter cc` is a compiler LAUNCHER: given
    `arbiter cc --root ABS_REPO -- <compiler> <args>` it records the compile, then execs
@@ -259,13 +263,19 @@ derive, and submit candidate-proven.
    suite — never the test binary's filename, which matches no suite and returns `no_tests_ran`. The
    gtest harness injects its own `--gtest_output`; the recipe's `test_run` cmd is just the binary. A
    pass or a fail both prove the harness; an errored or zero-test run does not.
+   A zero-test WHOLE-SUITE run (`no_tests_ran` on `tests: ["*"]`) is NOT an environment problem to fix
+   here: it means the target you proved at derive has no test cases that run on this host (they are
+   platform-guarded out at compile time, so the binary is empty). That target cannot be proven on this
+   host — do not loop trying to fix it. This step's failure returns to derive; go back there and pick a
+   different small target whose tests run on this host.
    candidate-proven passes on a `passed` OR a `failed` run, but a run that "failed" only because the
    environment from sub-step 1 was never set up is an INCOMPLETE recipe, not a result — even though it
    satisfies the predicate. Before treating a failing run as done, triage it: an environment-shaped
    failure — "connection refused" / cannot connect, "No such file or directory", an unset/empty env
    variable, permission denied, a fixture `SetUp()` failing, or EVERY test failing the same way in a
-   fresh recipe — means the recipe is missing `env` / `test_run.pre` / `workdir`; add it (sub-step 1),
-   re-run, and record the trap in the target's `notes`. Only a genuine assertion outcome
+   fresh recipe — means the recipe is missing `env` / `test_run.pre` / `workdir`; add it to the recipe
+   (this step's failure returns to derive, where you re-author with the env and re-prove) and record
+   the trap in the target's `notes`. Only a genuine assertion outcome
    (`EXPECT_*` / `ASSERT_*` on the code, in an environment that is demonstrably up — e.g. sibling
    tests pass) is a real result. The dividing question: would this test pass for a developer whose
    machine is set up correctly? If yes, that setup was the recipe's job.
@@ -275,7 +285,7 @@ derive, and submit candidate-proven.
 [Submit] candidate-proven
 [Branch]
 success: enumerate
-failure: prove
+failure: derive
 
 [STEP] enumerate
 [StepJob]

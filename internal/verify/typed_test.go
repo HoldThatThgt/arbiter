@@ -585,6 +585,21 @@ func TestPassConsultsTypedVerdictFirst(t *testing.T) {
 	if Pass(Result{}) {
 		t.Fatal("no signal must stay fail-closed")
 	}
+	// A typed run whose expect verdict PASSED but which carries a diagnostic
+	// failure code (e.g. no_tests_ran on a facts-only build-published gate, where
+	// the no-match filter makes the run overall=errored while facts still publish)
+	// must PASS: the verdict is the only signal, the failure code is audit-only.
+	// Regression for the e2e bug where Pass() failed build-published on no_tests_ran.
+	if !Pass(Result{Verdict: &yes, Failure: "no_tests_ran"}) {
+		t.Fatal("typed verdict true must pass despite a diagnostic run failure code")
+	}
+	if Pass(Result{Verdict: &no, Failure: "no_tests_ran"}) {
+		t.Fatal("typed verdict false must still fail")
+	}
+	// Infrastructure failures leave Verdict nil; those stay fail-closed on Failure.
+	if Pass(Result{Failure: "timeout"}) {
+		t.Fatal("an infra failure with no verdict must fail-closed")
+	}
 }
 
 func specCode(err error) string {
