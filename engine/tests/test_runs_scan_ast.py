@@ -145,6 +145,30 @@ TEST(Suite, Fail) { SUCCEED(); }
             tests = {t["test"] for t in structured["targets"]}
             self.assertIn("A.B", tests)
 
+    def test_coverage_excludes_vendored_and_counts_built_from_facts(self):
+        # Coverage = built/declared over the PROJECT scope: vendored third-party
+        # (extra/, etc.) is excluded from the denominator, and `built` is counted
+        # only from real facts (cannot be faked). This backs the suite-covered gate.
+        with tempfile.TemporaryDirectory() as tmp:
+            _write(tmp, "unittest/calc_test.cc",
+                   b"#include <gtest/gtest.h>\nTEST(Calc, A) { SUCCEED(); }\nTEST(Calc, B) { SUCCEED(); }\n")
+            # A vendored test must NOT count toward declared.
+            _write(tmp, "extra/abseil/x_test.cc",
+                   b"#include <gtest/gtest.h>\nTEST(Vend, Z) { SUCCEED(); }\n")
+            # Only Calc.A has a published fact -> built == 1 of 2 project tests.
+            _publish(tmp, [_test_body_fact("Calc", "A", "unittest/calc_test.cc", 2, "code:t:1")])
+
+            cov = discovery.coverage(tmp)
+            self.assertEqual(cov["declared"], 2)  # vendored Vend.Z excluded
+            self.assertEqual(cov["built"], 1)     # Calc.A is the only built one
+            self.assertAlmostEqual(cov["ratio"], 0.5)
+
+    def test_coverage_zero_when_nothing_built(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _write(tmp, "unittest/calc_test.cc", b"#include <gtest/gtest.h>\nTEST(Calc, A) { SUCCEED(); }\n")
+            cov = discovery.coverage(tmp)
+            self.assertEqual((cov["declared"], cov["built"], cov["ratio"]), (1, 0, 0.0))
+
 
 class DegradeWithoutTreeSitterTest(unittest.TestCase):
     """With tree-sitter absent, scan falls back to the facts-only inventory."""

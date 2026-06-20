@@ -70,7 +70,7 @@ func TestBaseOpeningTemplatesParse(t *testing.T) {
 			entry:      "derive",
 			capability: "recipes",
 			policy:     "named",
-			verify:     []string{"build-published", "candidate-proven", "tests-enumerated", "perf-static-scan", "perf-command-measured", "gdb-debugs-real-binary"},
+			verify:     []string{"build-published", "candidate-proven", "tests-enumerated", "suite-covered", "perf-static-scan", "perf-command-measured", "gdb-debugs-real-binary"},
 		},
 		{
 			file:        "regression-triage.md",
@@ -158,7 +158,7 @@ func TestBaseOpeningTemplatesParse(t *testing.T) {
 
 	// recipe-derivation no longer sets an early [SetGoal]. The old goal (tests-enumerated)
 	// checkmated the match the instant facts published — at the derive step — which skipped the
-	// reconciliation steps entirely. The match now runs derive → prove → enumerate →
+	// reconciliation steps entirely. The match now runs derive → prove → enumerate → cover →
 	// reconcile-perf → reconcile-diag → confirm → END, binding a referee-verified predicate to
 	// every gated step so every wired surface is proven on its REAL function before END (not a
 	// version probe). tests-enumerated survives as the enumerate step's bound predicate, so the
@@ -201,6 +201,7 @@ func TestBaseOpeningTemplatesParse(t *testing.T) {
 		"derive":         "build-published",
 		"prove":          "candidate-proven",
 		"enumerate":      "tests-enumerated",
+		"cover":          "suite-covered",
 		"reconcile-perf": "perf-static-scan",
 		"reconcile-diag": "gdb-debugs-real-binary",
 	} {

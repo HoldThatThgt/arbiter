@@ -41,7 +41,7 @@ the referee ends the match:
    hands you a task; you write it. CreateTask returns a `task_id`.
 3. **Dispatch the right executor subagent** with the Task tool, putting that `task_id` on a
    "task id:" line in the prompt along with the request. Route by step: the recipe/facts steps
-   (`derive`, `prove`, `enumerate`) go to **arbiter-executor** (`register`, `import_recipes`,
+   (`derive`, `prove`, `enumerate`, `cover`) go to **arbiter-executor** (`register`, `import_recipes`,
    `scan` are its capability-gated tools, live only while a `capabilities:[recipes]` opening is
    loaded); the diagnostic reconcile steps (`reconcile-perf`, `reconcile-diag`) go to
    **arbiter-debugger**, the only subagent wired with the `perf-mcp` and `gdb-mcp` companion tools
@@ -104,10 +104,16 @@ and the opening's `ShowStepJob` text tells you exactly what to submit:
   fix that, do not loop. Call `scan {"scope":"*"}` for the authoritative test set to report. If
   facts publication is blocked only by a missing capable Clang (LLVM ≥ 16 / Apple ≥ 15) — not a
   build failure — report the typed reason; builds, matches, and shell/mcp predicates work without
-  facts. This step also makes the WHOLE suite runnable: register a recipe for every test binary the
-  build produces (`import_recipes`, one target per binary) so a clean checkout can `run` any suite
-  from the committed book — only the one target from derive is proven; the rest stay unproven until
-  their first run.
+  facts. This step also REGISTERS the whole suite: a recipe for every test binary the build produces
+  (`import_recipes`, one target per binary) so a clean checkout can `run` any suite from the
+  committed book — registered here, built+indexed at the next step.
+- **cover** → `suite-covered`: build and INDEX the whole project test suite through `arbiter cc` (one
+  or a few parallel cc-interposed builds of the test tree; the facts index merges incrementally), so
+  the index carries the project's tests, not just the one derive binary. The referee measures
+  built/declared coverage over the project scope (vendored third-party excluded) and passes only at
+  substantial coverage — proving one binary scores ~0. This is the bootstrap's FULL-COVERAGE purpose;
+  it does not require tests to pass, only to build+index, and skips host-unbuildable binaries.
+  (arbiter-executor.)
 - **reconcile-perf** → `perf-static-scan`: the referee runs `perf.scan_c` over the project (a REAL
   static analysis, not `perf.toolchain_probe`). In the same step also call `perf.measure_command`
   and `perf.explain_finding` and report their typed results. (arbiter-debugger.)

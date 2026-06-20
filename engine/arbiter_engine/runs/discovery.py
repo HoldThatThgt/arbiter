@@ -140,6 +140,41 @@ def discover_declared_tests(repo_root: Path | str) -> Tuple[TestCandidate, ...]:
     return tuple(candidates)
 
 
+# Bundled third-party trees declare their own gtest cases (e.g. a vendored abseil
+# or googletest under extra/), which a project bootstrap is not responsible for
+# covering. Coverage is measured over the PROJECT scope only — these prefixes are
+# excluded from the denominator so "build every test binary" is an achievable bar.
+# (The scan inventory itself stays complete; only the coverage ratio is scoped.)
+_VENDOR_PREFIXES = (
+    "extra/", "third_party/", "third-party/", "thirdparty/", "vendor/",
+    "external/", "deps/", "contrib/", "node_modules/",
+)
+
+
+def _in_project_scope(file: str) -> bool:
+    return not any(file.startswith(prefix) for prefix in _VENDOR_PREFIXES)
+
+
+def coverage(repo_root: Path | str, *, limit: int = 200_000) -> dict[str, Any]:
+    """Build coverage over the project scope: built declared tests / declared tests.
+
+    ``declared`` is the build-INDEPENDENT AST scan (every gtest case in source);
+    ``built`` is how many of those the facts index actually carries — which is
+    produced ONLY by a real ``arbiter cc``-interposed build, so the ratio cannot
+    be faked. Vendored third-party trees are excluded from both counts. A bootstrap
+    that proves only one small binary scores ~0; covering the suite drives it to ~1.
+    """
+    declared = [t for t in discover_declared_tests(repo_root) if _in_project_scope(t.file)]
+    built_keys = {
+        (candidate.suite, candidate.name)
+        for candidate in discover_test_candidates(repo_root, limit=limit)
+    }
+    n_declared = len(declared)
+    n_built = sum(1 for t in declared if (t.suite, t.name) in built_keys)
+    ratio = (n_built / n_declared) if n_declared else 0.0
+    return {"declared": n_declared, "built": n_built, "ratio": round(ratio, 4)}
+
+
 def _union(repo_root: Path | str) -> Tuple[TestCandidate, ...]:
     """Merge AST-declared tests with facts-built tests, keyed by (suite, name).
 

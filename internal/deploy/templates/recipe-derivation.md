@@ -27,6 +27,16 @@ expect: {"facts":{"published":true}}
 fact: _Test
 expect: {"min_results":1}
 
+# Full-suite coverage gate: how many of the project's DECLARED gtest cases the facts index
+# actually carries (built / declared over the project scope, vendored third-party excluded).
+# `declared` is the build-independent AST scan of source; `built` is produced ONLY by a real
+# arbiter cc-interposed build, so the ratio cannot be faked — proving one small binary scores
+# ~0, building+indexing the whole suite drives it up. The referee re-runs discovery.coverage()
+# against the live snapshot; pass requires substantial coverage (tune the 0.50 floor per repo).
+[Verify] suite-covered
+shell: PYTHONPATH=.arbiter/engine python3 -c 'import sys; from arbiter_engine.runs import discovery as d; c=d.coverage("."); sys.stderr.write("suite-covered "+repr(c)+chr(10)); sys.exit(0 if c["ratio"]>=0.50 else 1)'
+timeout_s: 900
+
 # perf-mcp proven on its REAL function, not a version probe: the referee itself calls
 # perf.scan_c over the project (root defaults to the repo) and requires a schema-versioned
 # findings payload. `findings` may be empty on a repo with no C/C++ hot paths — that the
@@ -306,8 +316,8 @@ this is cheap and does NOT build anything: each added target stays UNPROVEN unti
 proven target's id `src_compile`; give the others their binary names. For a large suite, GENERATE
 the book programmatically (loop the enumerated binaries into the target shape) rather than
 hand-writing each. The goal: a clean checkout can `run` ANY suite from the committed book without
-re-deriving. Do NOT try to build or prove them all — proving the one in derive is the mechanism
-proof; this step just makes the rest runnable.
+re-deriving. This step only REGISTERS the book (a recipe per binary); the NEXT step (cover) builds
+and indexes those binaries so the whole project test suite enters the facts index.
 [CheckList]
 - Call scan {"scope": "*"} and treat its facts-derived set as the authoritative test inventory
 - Confirm the snapshot answers a query (search/detail) before submitting — publication is not searchability
@@ -315,8 +325,35 @@ proof; this step just makes the rest runnable.
 - Register a recipe for EVERY test binary the build produces (import_recipes — one target per binary, ids = binary names) so the whole suite is runnable, not just the single target you proved; these stay unproven until first run
 [Submit] tests-enumerated
 [Branch]
-success: reconcile-perf
+success: cover
 failure: derive
+
+[STEP] cover
+[StepJob]
+Now COVER the whole project test suite: build and index every test binary so the facts index
+carries the project's tests, not just the one binary derive proved. This is the purpose of the
+bootstrap — full coverage, so a clean checkout can run any suite AND the index knows every test.
+Build the project's test targets THROUGH `arbiter cc` (the same compiler-launcher wiring from
+derive), so every test translation unit is journaled and indexed. The facts index merges
+INCREMENTALLY across builds, so you do NOT rebuild from scratch each time and you do NOT need a
+separate run per binary: drive one (or a few) PARALLEL cc-interposed builds of the whole test tree
+— the build's aggregate unit-test target, or the test subdirectory, with `-j` — and the index
+accumulates every compiled test. You do NOT need the tests to PASS, only to BUILD and index (the
+gate measures coverage of declared-vs-built, never pass/fail). Some binaries may not build on this
+host (platform-guarded, or a broken unrelated TU); skip those and keep going — cover as much of the
+suite as the host can build. When the index carries the suite, submit suite-covered: the referee
+re-runs `discovery.coverage()` over the live snapshot and passes only at substantial project
+coverage (built / declared, vendored third-party excluded). A run that indexed only the one derive
+binary scores ~0 and fails; cover the suite to pass. If it fails, read the reported ratio, build
+more of the suite, and submit again.
+[CheckList]
+- Built the project's test targets through `arbiter cc` (one or a few parallel builds of the whole test tree), so their tests entered the facts index — not one binary at a time, not a non-interposed build
+- Skipped only the binaries the host genuinely cannot build (platform-guarded / unrelated breakage), covering as much of the suite as possible
+- Submit suite-covered — the referee measures built/declared project coverage from the live index; report the ratio reached
+[Submit] suite-covered
+[Branch]
+success: reconcile-perf
+failure: cover
 
 [STEP] reconcile-perf
 [StepJob]
