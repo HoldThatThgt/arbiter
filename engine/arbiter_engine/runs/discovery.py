@@ -156,23 +156,37 @@ def _in_project_scope(file: str) -> bool:
 
 
 def coverage(repo_root: Path | str, *, limit: int = 200_000) -> dict[str, Any]:
-    """Build coverage over the project scope: built declared tests / declared tests.
+    """Per-BINARY build coverage over the project scope: built test files / declared test files.
 
-    ``declared`` is the build-INDEPENDENT AST scan (every gtest case in source);
-    ``built`` is how many of those the facts index actually carries — which is
-    produced ONLY by a real ``arbiter cc``-interposed build, so the ratio cannot
-    be faked. Vendored third-party trees are excluded from both counts. A bootstrap
-    that proves only one small binary scores ~0; covering the suite drives it to ~1.
+    Coverage is measured at FILE granularity — one test source file is the unit of a
+    test binary, so each binary counts once regardless of how many cases it holds. A
+    file counts as ``built`` when the facts index carries at least one of its declared
+    gtest cases (running even a few of a binary's tests builds + indexes that file).
+    This weights every binary equally: a couple of huge binaries cannot satisfy the
+    bar while many small ones stay uncovered.
+
+    ``declared`` files come from the build-INDEPENDENT AST scan; ``built`` is produced
+    ONLY by a real ``arbiter cc``-interposed build, so the ratio cannot be faked.
+    Vendored third-party trees are excluded. Proving one binary scores ~0; covering
+    the binaries drives it to ~1. ``*_tests`` are reported for context only.
     """
     declared = [t for t in discover_declared_tests(repo_root) if _in_project_scope(t.file)]
     built_keys = {
         (candidate.suite, candidate.name)
         for candidate in discover_test_candidates(repo_root, limit=limit)
     }
-    n_declared = len(declared)
-    n_built = sum(1 for t in declared if (t.suite, t.name) in built_keys)
+    declared_files = {t.file for t in declared}
+    built_files = {t.file for t in declared if (t.suite, t.name) in built_keys}
+    n_declared = len(declared_files)
+    n_built = len(built_files)
     ratio = (n_built / n_declared) if n_declared else 0.0
-    return {"declared": n_declared, "built": n_built, "ratio": round(ratio, 4)}
+    return {
+        "declared": n_declared,
+        "built": n_built,
+        "ratio": round(ratio, 4),
+        "declared_tests": len(declared),
+        "built_tests": sum(1 for t in declared if (t.suite, t.name) in built_keys),
+    }
 
 
 def _union(repo_root: Path | str) -> Tuple[TestCandidate, ...]:

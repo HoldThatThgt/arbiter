@@ -27,12 +27,14 @@ expect: {"facts":{"published":true}}
 fact: _Test
 expect: {"min_results":1}
 
-# Full-suite coverage gate: how many of the project's DECLARED gtest cases the facts index
-# actually carries (built / declared over the project scope, vendored third-party excluded).
-# `declared` is the build-independent AST scan of source; `built` is produced ONLY by a real
-# arbiter cc-interposed build, so the ratio cannot be faked — proving one small binary scores
-# ~0, building+indexing the whole suite drives it up. The referee re-runs discovery.coverage()
-# against the live snapshot; pass requires substantial coverage (tune the 0.50 floor per repo).
+# Per-binary coverage gate: of the project's test BINARIES (test source files, one per binary,
+# counted once each regardless of how many cases they hold), how many the facts index carries —
+# a file counts as built once >=1 of its cases is indexed, which a single cc-interposed run of
+# that binary achieves. `declared` files come from the build-independent AST scan; `built` is
+# produced ONLY by a real arbiter cc-interposed build, so the ratio cannot be faked. Vendored
+# third-party is excluded. Covering one binary scores ~0; covering the binaries drives it up.
+# The referee re-runs discovery.coverage() against the live snapshot; pass requires substantial
+# per-binary coverage (tune the 0.50 floor per repo).
 [Verify] suite-covered
 shell: PYTHONPATH=.arbiter/engine python3 -c 'import sys; from arbiter_engine.runs import discovery as d; c=d.coverage("."); sys.stderr.write("suite-covered "+repr(c)+chr(10)); sys.exit(0 if c["ratio"]>=0.50 else 1)'
 timeout_s: 900
@@ -330,26 +332,29 @@ failure: derive
 
 [STEP] cover
 [StepJob]
-Now COVER the whole project test suite: build and index every test binary so the facts index
-carries the project's tests, not just the one binary derive proved. This is the purpose of the
-bootstrap — full coverage, so a clean checkout can run any suite AND the index knows every test.
-Build the project's test targets THROUGH `arbiter cc` (the same compiler-launcher wiring from
-derive), so every test translation unit is journaled and indexed. The facts index merges
-INCREMENTALLY across builds, so you do NOT rebuild from scratch each time and you do NOT need a
-separate run per binary: drive one (or a few) PARALLEL cc-interposed builds of the whole test tree
-— the build's aggregate unit-test target, or the test subdirectory, with `-j` — and the index
-accumulates every compiled test. You do NOT need the tests to PASS, only to BUILD and index (the
-gate measures coverage of declared-vs-built, never pass/fail). Some binaries may not build on this
-host (platform-guarded, or a broken unrelated TU); skip those and keep going — cover as much of the
-suite as the host can build. When the index carries the suite, submit suite-covered: the referee
-re-runs `discovery.coverage()` over the live snapshot and passes only at substantial project
-coverage (built / declared, vendored third-party excluded). A run that indexed only the one derive
-binary scores ~0 and fails; cover the suite to pass. If it fails, read the reported ratio, build
-more of the suite, and submit again.
+Now COVER every project test binary: build and RUN each one so the facts index carries the whole
+suite, not just the one binary derive proved. This is the bootstrap's purpose — full coverage, so a
+clean checkout can run any suite AND the index knows every binary works. Coverage is measured
+PER BINARY (per test source file), each counted once: you do NOT have to run all of a binary's
+cases — many hold hundreds — you only run a FEW per binary to prove that binary builds and runs.
+Drive `run` over each registered target with a SMALL gtest filter (one suite, or a handful of cases
+— `tests: ["Suite.*"]` or a couple of `Suite.Case`), built through `arbiter cc` (the launcher
+wiring from derive). Each such run compiles that binary's test file — which indexes ALL of its cases
+into the facts snapshot (the index comes from the compile, so a few executed cases still cover the
+whole file) — and confirms the binary actually runs. The index merges INCREMENTALLY, so runs
+accumulate; loop over the binaries you registered at enumerate (generate the calls programmatically
+for a large suite rather than by hand). You do NOT need the cases to PASS, only the binary to build
+and run (the gate measures per-binary coverage, never pass/fail). Some binaries cannot build on this
+host (platform-guarded, or unrelated breakage); skip those and keep going — cover as many binaries
+as the host can build. When the index carries the binaries, submit suite-covered: the referee
+re-runs `discovery.coverage()` over the live snapshot and passes only at substantial per-binary
+coverage (built test files / declared test files, vendored third-party excluded). Covering one
+binary scores ~0; cover the binaries to pass. If it fails, read the reported ratio, run more
+binaries, and submit again.
 [CheckList]
-- Built the project's test targets through `arbiter cc` (one or a few parallel builds of the whole test tree), so their tests entered the facts index — not one binary at a time, not a non-interposed build
-- Skipped only the binaries the host genuinely cannot build (platform-guarded / unrelated breakage), covering as much of the suite as possible
-- Submit suite-covered — the referee measures built/declared project coverage from the live index; report the ratio reached
+- Ran each registered test binary through `arbiter cc` with a small filter (a few cases per binary, not all) so it built + ran and its file entered the facts index — covering binaries, not re-running hundreds of cases
+- Skipped only the binaries the host genuinely cannot build (platform-guarded / unrelated breakage), covering as many binaries as possible
+- Submit suite-covered — the referee measures per-binary (built/declared test files) project coverage from the live index; report the ratio reached
 [Submit] suite-covered
 [Branch]
 success: reconcile-perf

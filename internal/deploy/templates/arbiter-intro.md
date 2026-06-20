@@ -107,13 +107,12 @@ and the opening's `ShowStepJob` text tells you exactly what to submit:
   facts. This step also REGISTERS the whole suite: a recipe for every test binary the build produces
   (`import_recipes`, one target per binary) so a clean checkout can `run` any suite from the
   committed book — registered here, built+indexed at the next step.
-- **cover** → `suite-covered`: build and INDEX the whole project test suite through `arbiter cc` (one
-  or a few parallel cc-interposed builds of the test tree; the facts index merges incrementally), so
-  the index carries the project's tests, not just the one derive binary. The referee measures
-  built/declared coverage over the project scope (vendored third-party excluded) and passes only at
-  substantial coverage — proving one binary scores ~0. This is the bootstrap's FULL-COVERAGE purpose;
-  it does not require tests to pass, only to build+index, and skips host-unbuildable binaries.
-  (arbiter-executor.)
+- **cover** → `suite-covered`: build and RUN every project test binary through `arbiter cc` — a FEW
+  cases per binary (not all of its often-hundreds), each run building+indexing that binary's file. The
+  referee measures PER-BINARY coverage (built/declared test files, vendored third-party excluded) and
+  passes only at substantial coverage — covering one binary scores ~0. This is the bootstrap's
+  FULL-COVERAGE purpose; it does not require cases to pass, only each binary to build+run, and skips
+  host-unbuildable binaries. (arbiter-executor.)
 - **reconcile-perf** → `perf-static-scan`: the referee runs `perf.scan_c` over the project (a REAL
   static analysis, not `perf.toolchain_probe`). In the same step also call `perf.measure_command`
   and `perf.explain_finding` and report their typed results. (arbiter-debugger.)

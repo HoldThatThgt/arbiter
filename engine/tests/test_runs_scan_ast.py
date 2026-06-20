@@ -145,23 +145,28 @@ TEST(Suite, Fail) { SUCCEED(); }
             tests = {t["test"] for t in structured["targets"]}
             self.assertIn("A.B", tests)
 
-    def test_coverage_excludes_vendored_and_counts_built_from_facts(self):
-        # Coverage = built/declared over the PROJECT scope: vendored third-party
-        # (extra/, etc.) is excluded from the denominator, and `built` is counted
-        # only from real facts (cannot be faked). This backs the suite-covered gate.
+    def test_coverage_is_per_file_excludes_vendored_built_from_facts(self):
+        # Coverage is per-FILE (one binary = one file, counted once regardless of how
+        # many cases it holds): vendored third-party (extra/, etc.) is excluded, and a
+        # file is "built" iff the facts index carries >=1 of its cases (real facts only,
+        # cannot be faked). This backs the per-binary suite-covered gate.
         with tempfile.TemporaryDirectory() as tmp:
-            _write(tmp, "unittest/calc_test.cc",
-                   b"#include <gtest/gtest.h>\nTEST(Calc, A) { SUCCEED(); }\nTEST(Calc, B) { SUCCEED(); }\n")
-            # A vendored test must NOT count toward declared.
-            _write(tmp, "extra/abseil/x_test.cc",
-                   b"#include <gtest/gtest.h>\nTEST(Vend, Z) { SUCCEED(); }\n")
-            # Only Calc.A has a published fact -> built == 1 of 2 project tests.
-            _publish(tmp, [_test_body_fact("Calc", "A", "unittest/calc_test.cc", 2, "code:t:1")])
+            # Project file A holds TWO cases; project file B holds one. A vendored file too.
+            _write(tmp, "unittest/a_test.cc",
+                   b"#include <gtest/gtest.h>\nTEST(A, One) { SUCCEED(); }\nTEST(A, Two) { SUCCEED(); }\n")
+            _write(tmp, "unittest/b_test.cc",
+                   b"#include <gtest/gtest.h>\nTEST(B, One) { SUCCEED(); }\n")
+            _write(tmp, "extra/abseil/v_test.cc",
+                   b"#include <gtest/gtest.h>\nTEST(V, Z) { SUCCEED(); }\n")
+            # Only file A is built (one of its cases is in the index); file B is not.
+            _publish(tmp, [_test_body_fact("A", "One", "unittest/a_test.cc", 2, "code:t:1")])
 
             cov = discovery.coverage(tmp)
-            self.assertEqual(cov["declared"], 2)  # vendored Vend.Z excluded
-            self.assertEqual(cov["built"], 1)     # Calc.A is the only built one
-            self.assertAlmostEqual(cov["ratio"], 0.5)
+            self.assertEqual(cov["declared"], 2)        # files: a_test, b_test (vendored excluded)
+            self.assertEqual(cov["built"], 1)           # only a_test has a built case
+            self.assertAlmostEqual(cov["ratio"], 0.5)   # 1 of 2 binaries covered
+            self.assertEqual(cov["declared_tests"], 3)  # A.One, A.Two, B.One
+            self.assertEqual(cov["built_tests"], 1)     # A.One only — but file A still counts once
 
     def test_coverage_zero_when_nothing_built(self):
         with tempfile.TemporaryDirectory() as tmp:
