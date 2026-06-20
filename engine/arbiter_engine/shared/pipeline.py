@@ -15,7 +15,7 @@ from arbiter_engine.facts.extractor.code import CodeFactExtractor
 # InitError in _shim — the single source of truth shared by this module, facts.incremental, and
 # facts.view. Re-exported here so existing callers (gtest.run_target, tests) keep using it.
 from arbiter_engine.facts.extractor.code._shim import ExtractorConfig, InitError, TOOLCHAIN_FAILURE_CODES
-from arbiter_engine.facts.store import FileFactStore
+from arbiter_engine.facts.store import FileFactStore, StorageError, open_fact_store
 from arbiter_engine.shared import compile_db
 
 
@@ -39,6 +39,52 @@ class PipelineResult:
             "hidden_ms": self.hidden_ms,
             "tail_ms": self.tail_ms,
         }
+
+
+def _fact_file(object_source: str) -> str:
+    """The source file an object_source (``rel_path:line``) points at."""
+    path, sep, line = object_source.rpartition(":")
+    return path if (sep and path and line.isdigit()) else object_source
+
+
+def _merge_after_build(root, new_facts, new_relatives, new_inventory):
+    """Union this build's facts with the prior snapshot, BY SOURCE FILE.
+
+    A cc-interposed build indexes only the translation units it compiled. Replacing
+    the whole snapshot would drop every previously-indexed file, so a multi-binary
+    coverage pass (recipe-derivation's `cover` step) could never accumulate — each
+    binary's run would overwrite the last. Merge incrementally instead: keep prior
+    facts/inventory for files this build did NOT touch, take this build's entries for
+    the files it did (a rebuilt file's facts are refreshed, never duplicated), and
+    keep only relatives whose endpoints both survive. A cold repo (no prior snapshot)
+    just returns the new build's entries unchanged.
+    """
+    new_files = {entry.rel_path for entry in new_inventory}
+    try:
+        store = open_fact_store(Path(root), mode="r")
+        prior_facts = list(store.iter_facts())
+        prior_relatives = list(store.iter_relatives())
+        prior_inventory = list(store.iter_source_inventory())
+    except StorageError:
+        return list(new_facts), list(new_relatives), list(new_inventory)
+
+    merged_facts = [f for f in prior_facts if _fact_file(f.object_source) not in new_files]
+    merged_facts.extend(new_facts)
+    merged_inventory = [e for e in prior_inventory if e.rel_path not in new_files]
+    merged_inventory.extend(new_inventory)
+
+    live_ids = {f.object_id for f in merged_facts}
+    merged_relatives = []
+    seen: set = set()
+    for relative in list(prior_relatives) + list(new_relatives):
+        if (
+            relative.relative_id not in seen
+            and relative.from_fact_id in live_ids
+            and relative.to_fact_id in live_ids
+        ):
+            seen.add(relative.relative_id)
+            merged_relatives.append(relative)
+    return merged_facts, merged_relatives, merged_inventory
 
 
 def publish_after_build(
@@ -133,8 +179,11 @@ def publish_after_build(
     extract_ms = _elapsed_ms(extract_start, monotonic)
 
     facts = [fact.to_fact_record() for fact in result.facts]
+    merged_facts, merged_relatives, merged_inventory = _merge_after_build(
+        root, facts, result.relatives, result.source_inventory
+    )
     manifest = FileFactStore(root, mode="w", log_enabled=False).replace_snapshot(
-        facts, result.relatives, result.source_inventory
+        merged_facts, merged_relatives, merged_inventory
     )
     # Persist the published compile-db at a stable, recipe-independent location so the incremental
     # coordinator's reconcile (facts/view.py, facts/incremental.py) can re-extract dirty sources with

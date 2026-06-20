@@ -63,6 +63,34 @@ class PipelineSeamTest(unittest.TestCase):
             # The snapshot is published where view._base_snapshot_id + the query layer read it.
             self.assertTrue((root / ".arbiter" / "facts" / "snapshots" / "current").exists())
 
+    def test_publish_merges_with_prior_snapshot_by_file(self):
+        # A cc-interposed build indexes only the TUs it compiled. publish_after_build
+        # now MERGES by file with the prior snapshot, so a multi-binary coverage pass
+        # accumulates instead of each run overwriting the last. (Was the e2e blocker:
+        # per-binary cover runs replaced the snapshot, so coverage never climbed.)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "src" / "a.c").write_text("int a_fn(void){return 1;}\n", encoding="utf-8")
+            (root / "src" / "b.c").write_text("int b_fn(void){return 2;}\n", encoding="utf-8")
+            cdb = root / "compile_commands.json"
+            config = write_fake_toolchain(root, compile_database_path=cdb)
+
+            ja = root / ".arbiter" / "facts" / "run" / "compile-journal.a.jsonl"
+            _write_journal(ja, {"argv": ["clang", "-c", "src/a.c", "-o", "build/a.o"], "cwd": str(root), "src": "src/a.c", "out": "build/a.o"})
+            self.assertTrue(pipeline.publish_after_build(root, [ja], cdb, extractor_config=config).published)
+            after_a = {e.rel_path for e in open_fact_store(root, mode="r").iter_source_inventory()}
+            self.assertEqual(after_a, {"src/a.c"})
+
+            # Build a DIFFERENT file: the merged snapshot must keep src/a.c (replace would drop it).
+            jb = root / ".arbiter" / "facts" / "run" / "compile-journal.b.jsonl"
+            _write_journal(jb, {"argv": ["clang", "-c", "src/b.c", "-o", "build/b.o"], "cwd": str(root), "src": "src/b.c", "out": "build/b.o"})
+            rb = pipeline.publish_after_build(root, [jb], cdb, extractor_config=config)
+            self.assertTrue(rb.published)
+            after_b = {e.rel_path for e in open_fact_store(root, mode="r").iter_source_inventory()}
+            self.assertEqual(after_b, {"src/a.c", "src/b.c"})  # accumulated, not replaced
+            self.assertEqual(rb.files, 2)  # the merged snapshot's file count
+
     def test_miss_marker_fails_closed_without_snapshot_publish(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
