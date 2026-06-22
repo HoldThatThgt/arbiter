@@ -448,7 +448,31 @@ def _publish_compile_facts(
             tail_ms=0,
         ).to_json()
     journals = _compile_journals(root, target, stage_name)
-    if not any(path.exists() for path in journals):
+    # The target's source TUs, for the cache-independent index fallback: a cmake no-op
+    # (already built, or built as another target's dependency) leaves the cc journal empty,
+    # so publish recovers these files' real commands from the build's compile_commands.json
+    # rather than indexing nothing — a built binary still indexes without a recompile.
+    recover_sources = tuple(
+        path
+        for pattern in (target.sources or ())
+        for path in root.glob(pattern)
+        if path.is_file()
+    )
+    if not recover_sources:
+        # Batch-registered cover targets often declare no `sources`. Default the
+        # cache-independent fallback to the project's DECLARED test files (the AST scan,
+        # vendored third-party excluded) so a built binary still indexes the suite — the
+        # journal stays authoritative whenever the build actually compiled something.
+        from arbiter_engine.runs import discovery as _discovery
+
+        recover_sources = tuple(
+            {
+                root / candidate.file
+                for candidate in _discovery.discover_declared_tests(root)
+                if _discovery._in_project_scope(candidate.file)
+            }
+        )
+    if not any(path.exists() for path in journals) and not recover_sources:
         return pipeline.PipelineResult(
             published=False,
             snapshot_id=None,
@@ -467,6 +491,7 @@ def _publish_compile_facts(
         pool=facts_pool,
         profile="+".join(profiles) if profiles else "default",
         extractor_config=extractor_config,
+        recover_sources=recover_sources,
     )
     payload = result.to_json()
     # A `binary:` that does not resolve after a green build silently disables the build cache

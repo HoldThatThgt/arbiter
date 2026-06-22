@@ -68,12 +68,27 @@ def _merge_after_build(root, new_facts, new_relatives, new_inventory):
     except StorageError:
         return list(new_facts), list(new_relatives), list(new_inventory)
 
-    merged_facts = [f for f in prior_facts if _fact_file(f.object_source) not in new_files]
-    merged_facts.extend(new_facts)
-    merged_inventory = [e for e in prior_inventory if e.rel_path not in new_files]
-    merged_inventory.extend(new_inventory)
+    # Dedup by object_id / source_id: this build's entries win on any collision (fresher).
+    # Facts can come from headers shared across translation units that source_inventory (TUs
+    # only) does not list, so a kept prior fact and a re-indexed fact can carry the same
+    # content-addressed object_id — the snapshot writer rejects duplicates, so merge by id.
+    merged_by_id: dict = {}
+    for fact in prior_facts:
+        if _fact_file(fact.object_source) not in new_files:
+            merged_by_id[fact.object_id] = fact
+    for fact in new_facts:
+        merged_by_id[fact.object_id] = fact
+    merged_facts = list(merged_by_id.values())
 
-    live_ids = {f.object_id for f in merged_facts}
+    inventory_by_id: dict = {}
+    for entry in prior_inventory:
+        if entry.rel_path not in new_files:
+            inventory_by_id[entry.source_id] = entry
+    for entry in new_inventory:
+        inventory_by_id[entry.source_id] = entry
+    merged_inventory = list(inventory_by_id.values())
+
+    live_ids = set(merged_by_id)
     merged_relatives = []
     seen: set = set()
     for relative in list(prior_relatives) + list(new_relatives):
@@ -98,6 +113,7 @@ def publish_after_build(
     pool: Optional[int] = None,
     build_succeeded: bool = True,
     lock_timeout_s: float = 30.0,
+    recover_sources: Sequence[Path | str] = (),
     cpu_count: Callable[[], Optional[int]] = os.cpu_count,
     monotonic: Callable[[], float] = time.monotonic,
 ) -> PipelineResult:
@@ -138,7 +154,19 @@ def publish_after_build(
             tail_ms=tail_ms,
         )
 
-    compile_db.emit(journals, compile_db_path)
+    emitted = compile_db.emit(journals, compile_db_path, recover_sources=recover_sources)
+    if emitted.entries == 0:
+        # Neither this build's journal nor the recover fallback yielded any compile
+        # command — there is genuinely nothing to index for this target.
+        return PipelineResult(
+            published=False,
+            snapshot_id=None,
+            files=0,
+            warnings=[{"kind": "journal_miss", "message": "compile journal was not produced"}],
+            extract_ms=0,
+            hidden_ms=0,
+            tail_ms=tail_ms,
+        )
     workers = pool if isinstance(pool, int) and pool > 0 else (cpu_count() or 1)
     # Production auto-detects the toolchain (clang/libclang via toolchain.py) unless
     # .arbiter/config.yml facts.toolchain pins it (indexer-only); tests inject a
