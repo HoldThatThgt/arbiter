@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Mapping, Optional, Sequence, Tuple
 
@@ -15,6 +16,12 @@ from arbiter_engine.facts.extractor.code._shim import ExtractorConfig, InitError
 from arbiter_engine.runs import runner
 from arbiter_engine.runs.guidance import GuidanceEntry
 from arbiter_engine.shared import pipeline
+
+# The build-booted gate (recipe-derivation.md) runs src_compile under this no-match sentinel filter:
+# it matches no real test (so the test run is a no-op needing no environment) AND signals run_target
+# to capture the boot datum (`<binary:> --gtest_list_tests`). Must stay in sync with the predicate's
+# `tests:` filter in the template.
+BOOT_FILTER = "__arbiter_boot__"
 
 
 @dataclass(frozen=True)
@@ -40,6 +47,11 @@ class RunResult:
     failure: Optional[str] = None
     stdout_tail: str = ""
     stderr_tail: str = ""
+    # boot evidence: the process exit + listed-test count of `<binary:> --gtest_list_tests`
+    # (a dedicated enumeration subprocess). None ⇒ no binary launched, so the boot clause
+    # fails closed in the referee (internal/verify CompareRun).
+    boot_exit_code: Optional[int] = None
+    listed_tests: Optional[int] = None
 
     def to_json(self) -> dict:
         out = {
@@ -74,6 +86,13 @@ class RunResult:
             out["guidance"] = [entry.to_json() for entry in self.guidance]
         if self.facts is not None:
             out["facts"] = dict(self.facts)
+        # boot fields only when measured (non-None) so a run that never reached a binary keeps
+        # its existing shape; the referee evaluates the boot clause off these when a predicate
+        # asserts it (build-booted), and fails closed when they are absent.
+        if self.boot_exit_code is not None:
+            out["boot_exit_code"] = self.boot_exit_code
+        if self.listed_tests is not None:
+            out["listed_tests"] = self.listed_tests
         return out
 
 
@@ -155,6 +174,10 @@ def run_target(
     stage = target.stages["test_run"]
     env = runner._stage_env(os.environ, target, stage, book, profiles, "test_run", arbiter_bin)
     stage_timeout = timeout_s if timeout_s is not None else stage.timeout_s
+    # boot datum, computed AFTER test_run.pre succeeds (below) — declared here so the pre-failure
+    # return can carry it (None: a failed pre means no boot was attempted, fail-closed).
+    boot_exit_code: Optional[int] = None
+    listed_tests: Optional[int] = None
     # test_run.pre carries the runtime setup the test needs (start a service, generate
     # config/data, derive state) and must run BEFORE the test binary, sharing the stage's
     # env + workdir. The test path used to run only stage.cmd, so any test_run.pre was
@@ -174,7 +197,21 @@ def run_target(
                 failure="test_run_pre_failed",
                 stdout_tail=pre_proc.stdout_tail,
                 stderr_tail=pre_proc.stderr_tail,
+                boot_exit_code=boot_exit_code,
+                listed_tests=listed_tests,
             )
+    # The build published facts and test_run.pre established the env; NOW capture the boot datum so
+    # the build-booted gate can read it. The referee runs `<binary:> --gtest_list_tests` itself — a
+    # DEDICATED subprocess, never the filtered test run whose exit gtest trivially zeroes — AFTER pre
+    # so the binary loads in its established env. Stamped onto every post-build RunResult below: a
+    # crash-on-boot binary lands on the exit_code / missing-result path (proc.exit_code != 0 is caught
+    # before the no-match path), which would otherwise carry no boot datum.
+    # ONLY the build-booted gate consumes boot evidence, and it is the only caller that runs under the
+    # no-match BOOT_FILTER; gating the enumeration on that filter keeps candidate-proven / cover runs
+    # (the cover step loops `run` over every binary) from paying an extra `--gtest_list_tests`
+    # subprocess — and its worst-case timeout — on every run for a datum no predicate would read.
+    if target.binary and list(tests) == [BOOT_FILTER]:
+        boot_exit_code, listed_tests = _boot_enumerate(root / target.binary, workdir, env, stage_timeout)
     run_dir = root / ".arbiter" / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     xml_path = run_dir / f"{target_id}.xml"
@@ -201,6 +238,8 @@ def run_target(
             failure="timeout",
             stdout_tail=proc.stdout_tail,
             stderr_tail=proc.stderr_tail,
+            boot_exit_code=boot_exit_code,
+            listed_tests=listed_tests,
         )
     if not xml_path.exists():
         return RunResult(
@@ -213,6 +252,8 @@ def run_target(
             failure="missing_result_file",
             stdout_tail=proc.stdout_tail,
             stderr_tail=proc.stderr_tail,
+            boot_exit_code=boot_exit_code,
+            listed_tests=listed_tests,
         )
     try:
         result = parse_xml(xml_path, run_id=run_id)
@@ -227,6 +268,8 @@ def run_target(
             failure="invalid_result_file",
             stdout_tail=proc.stdout_tail,
             stderr_tail=proc.stderr_tail,
+            boot_exit_code=boot_exit_code,
+            listed_tests=listed_tests,
         )
     if proc.exit_code != 0 and result.failed == 0:
         # The suite built and ran (results parsed) but the process still exited
@@ -246,6 +289,8 @@ def run_target(
             failure="exit_code",
             stdout_tail=proc.stdout_tail,
             stderr_tail=proc.stderr_tail,
+            boot_exit_code=boot_exit_code,
+            listed_tests=listed_tests,
         )
     if result.passed + result.failed + result.skipped == 0:
         # The filter matched no tests, so the recipe obtained no verdict at all -
@@ -264,12 +309,14 @@ def run_target(
             failure="no_tests_ran",
             stdout_tail=proc.stdout_tail,
             stderr_tail=proc.stderr_tail,
+            boot_exit_code=boot_exit_code,
+            listed_tests=listed_tests,
         )
     if facts.get("facts") is not None:
         result = _with_facts(result, facts["facts"])
     if result.overall == "failed":
-        return _with_guidance(result, guidance.for_result(root, result))
-    return result
+        result = _with_guidance(result, guidance.for_result(root, result))
+    return replace(result, boot_exit_code=boot_exit_code, listed_tests=listed_tests)
 
 
 def parse_xml(path: Path | str, *, run_id: str) -> RunResult:
@@ -374,6 +421,52 @@ def _indexer_unavailable_message(exc: InitError) -> str:
         "The code index is mandatory — install a matching clang/libclang, or pin one for the "
         "indexer via .arbiter/config.yml facts.toolchain (clang / libclang / clang_args)."
     )
+
+
+def _boot_enumerate(
+    binary: Path,
+    workdir: Path,
+    env: Mapping[str, str],
+    timeout_s: Optional[int],
+) -> Tuple[Optional[int], Optional[int]]:
+    """Prove the cc-built binary BOOTS by running `<binary> --gtest_list_tests`.
+
+    Returns (exit_code, listed_tests). The process exit code proves the binary links and
+    loads its shared libraries; the listed-test count proves it is a genuine gtest binary
+    that enumerates >=1 case — together they close the cmd:[true]/echo cheat (which exits 0
+    but lists nothing) WITHOUT requiring any test to pass (that is the prove step). Returns
+    (None, None) when `binary:` does not resolve to a file, so the boot verdict fails closed.
+    Enumeration only loads the binary (static init + TEST registration); it never runs a test
+    body, so it needs no runtime environment of its own.
+    """
+    if not binary.is_file():
+        return None, None
+    try:
+        proc = subprocess.run(
+            [str(binary), "--gtest_list_tests"],
+            cwd=str(workdir),
+            env=dict(env),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout_s,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return 124, 0
+    except OSError:
+        return 127, 0
+    return proc.returncode, _count_listed_tests(proc.stdout)
+
+
+def _count_listed_tests(listing: str) -> int:
+    """Count cases in `--gtest_list_tests` output: a flush-left line is a suite header, an
+    indented line is a test case. A non-gtest `true`/`echo` prints nothing, yielding 0."""
+    count = 0
+    for line in listing.splitlines():
+        if line.strip() and line[0].isspace():
+            count += 1
+    return count
 
 
 def _run_compile_stages(

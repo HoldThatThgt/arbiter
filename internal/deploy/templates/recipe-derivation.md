@@ -11,17 +11,20 @@ run: src_compile
 tests: ["*"]
 expect: {"overall":{"one_of":["passed","failed"]}}
 
-# The derive (author) gate: the cc-interposed build PUBLISHED the facts index. It runs src_compile
-# under a filter that matches no test (so no test environment is needed yet — that is the prove
-# step), and asserts ONLY facts.published: the build compiled the test sources and the index
-# published. Deliberately NO "overall" clause — a no-match run is overall=errored, and the build,
-# not the test, is what this step proves; the prove step proves the suite runs. facts.published
-# cannot be faked (the index is built by libclang from the journaled translation units), so this is
-# a real build proof, not a green-by-zero-tests shortcut.
-[Verify] build-published
+# The gear-up gate: the cc-interposed build PUBLISHED the facts index AND the binary it produced
+# BOOTS. Two clauses on one no-match run. facts.published — the build compiled the test sources and
+# libclang indexed the journaled translation units (unforgeable; an emptied src_compile, or a build
+# you ran in Bash / via your own run call, leaves it false). boot — exited_zero AND listed_tests>=1
+# from a DEDICATED `<binary:> --gtest_list_tests` the referee runs against binary:, proving the
+# binary links, loads its shared libraries, and is a genuine gtest binary that enumerates >=1 case;
+# this closes the cmd:[true]/echo cheat (exits 0, lists ZERO) WITHOUT requiring any test to pass
+# (that is the prove step). Deliberately NO "overall" clause — a no-match run is overall=errored, and
+# the BUILD+BOOT, not the suite, is what gear-up proves; Pass() honors the typed verdict over the
+# no_tests_ran failure code.
+[Verify] build-booted
 run: src_compile
-tests: ["src_compile"]
-expect: {"facts":{"published":true}}
+tests: ["__arbiter_boot__"]
+expect: {"facts":{"published":true},"boot":{"exited_zero":true,"listed_tests_min":1}}
 
 [Verify] tests-enumerated
 fact: _Test
@@ -65,12 +68,22 @@ expect: [{"path":"schema_version","op":"eq","value":"perf-mcp.measure.v1"}]
 shell: T=$(mktemp -d); printf 'int main(){int x=41; volatile int y=x+1; return y-42;}\n' > "$T/g.c"; CC=$(command -v cc || command -v gcc || command -v gcc-12 || command -v gcc-10 || command -v clang || command -v clang-16); if [ -z "$CC" ]; then echo "gdb gate: no C compiler on host — reported, not gated"; exit 0; fi; "$CC" -g -O0 "$T/g.c" -o "$T/g" 2>/dev/null || { echo "gdb gate: trivial compile failed — reported, not gated"; exit 0; }; if ! command -v gdb >/dev/null 2>&1; then echo "gdb gate: gdb absent — reported, not gated"; exit 0; fi; O=$(gdb -nx -batch -ex 'break main' -ex run -ex next -ex 'print x' -ex quit "$T/g" 2>&1); if echo "$O" | grep -q '= 41'; then echo "gdb gate: PROVED real debugging — break main, run, read live x=41"; else echo "gdb gate: gdb present but could not debug on this host (host limitation) — reported, not gated: $(echo "$O" | tr -d '\n' | tail -c 160)"; fi; exit 0
 timeout_s: 180
 
-[STEP] derive
+[STEP] gear-up
 [StepJob]
-Author a recipe whose cc-interposed build PUBLISHES the facts index. Do these in order; do not skip
-or fake a sub-step — the only thing that finishes this step is a real cc-interposed build that
-publishes facts (the prove step that follows runs the suite). Probe and wire first, write the build
-half of the recipe, then submit the build proof.
+Produce a WORKING, INDEXED binary: the cc-interposed build PUBLISHES the facts index AND the binary
+it builds BOOTS. Two phases — FIRST a native smoke (no arbiter cc) to de-risk and discover the build,
+THEN wire arbiter cc, write the build half of the recipe, and submit the build+boot proof. Do these
+in order; do not skip or fake a sub-step — the only thing that finishes this step is a real
+cc-interposed build that publishes facts AND a binary the referee can boot (the prove step that
+follows runs the whole suite in its runtime environment).
+A. NATIVE SMOKE (no arbiter cc, NOT submitted). Before wiring anything, build the project with its
+   OWN build entry and run the test binary once with `--gtest_list_tests` to exit 0. This is pure
+   de-risking and discovery: it confirms the project builds on THIS host, and it is how you learn the
+   real configure/build commands, the binary path, and the source globs you wire in phase B. If the
+   cc build later fails where this native build succeeded, the launcher wiring is at fault, not the
+   project. Nothing here is submitted — only the cc-interposed predicate counts.
+B. WIRE + AUTHOR + SUBMIT. Probe and wire arbiter cc, write the build half of the recipe, then submit
+   build-booted:
 1. Probe the native build system (read its build files) to learn the configure command, the build
    command, the test binary it produces, the globs of sources it compiles, AND the project's real
    C and C++ compilers (the ones the build would use — e.g. what `cc`/`c++` resolve to, or what the
@@ -90,7 +103,16 @@ half of the recipe, then submit the build proof.
    host, not merely compile: a test source may guard all of its cases behind a platform/architecture
    `#if` (an x86-only or Windows-only test), so on a different host it compiles to a binary with ZERO
    tests — that target builds and publishes facts here, but can never be proven in the prove step.
-   Favor a small target whose test cases are unconditional / portable.
+   Favor a small target whose test cases are unconditional / portable. A negative build-file claim
+   ("requires X", "not built on this platform", a disabled-by-default option) is a HYPOTHESIS, not a
+   verdict — before abandoning a gated target, three legal moves only: (1) READ the gate to see what
+   it wants; (2) if it is an untried assumption, satisfy it the PROJECT'S OWN documented way — pass
+   the `-D<OPTION>=ON` it defines, set the documented env var, install the named dependency — which
+   changes only your invocation, never a tracked file; (3) if it is a real host limitation, pick a
+   DIFFERENT target. Editing the project's guard / `#if`, or stubbing the dependency, is NEVER legal:
+   arbiter evaluates the project, it does not patch it. Prefer a smaller unconditional target over
+   flipping a knob; "install the dependency" is best-effort (it may be impossible offline) and never
+   blocks the step. Record a move-3 skip with a NotePlaybook gotcha.
 2. Wire that build through `arbiter cc` so every translation unit is journaled — that journal is
    what the facts index is built from. `arbiter cc` is a compiler LAUNCHER: given
    `arbiter cc --root ABS_REPO -- <compiler> <args>` it records the compile, then execs
@@ -154,21 +176,23 @@ half of the recipe, then submit the build proof.
    not point at the real output file disables that cache and makes the publish snapshot incomplete.
    Then call register {"path": ".arbiter/recipes.yaml"}. register's error names the offending
    line/field — fix that one line, do not re-guess from scratch.
-4. Prove the BUILD by SUBMITTING build-published — call SubmitTask with
-   result `{"verify": "build-published"}`. The REFEREE runs the recipe for you: it BUILDS through
-   `arbiter cc` and confirms the facts index published. It runs the binary under a filter that
-   matches no test (`tests: ["src_compile"]`), so this proves the BUILD and the index WITHOUT needing
-   the test's runtime environment yet — that is the prove step's job, next. (The run is overall
-   `errored` because no test matched; that is expected — this gate asserts only that facts published,
-   which the cc-interposed build does on its own.) Do NOT try to satisfy this by calling the `run`
-   tool yourself, or by building in Bash — a snapshot built outside a submitted predicate does not
-   count, and the match stays at facts.published=false no matter how many times you build. Your
-   recipe MUST keep a real `src_compile` stage that compiles through `arbiter cc` (via the
-   launcher / prefix / shim form from step 2). A recipe with only a `test_run` stage builds nothing —
-   so the `_Test` index stays empty and every later step fails forever (facts never publish, because
-   `arbiter cc` was never invoked). The cc-interposed build here is what publishes the first facts
-   snapshot; do NOT drop, empty, or comment out the `src_compile` stage to get a green — the build
-   stage is the point.
+4. Prove the BUILD+BOOT by SUBMITTING build-booted — call SubmitTask with
+   result `{"verify": "build-booted"}`. The REFEREE runs the recipe for you: it BUILDS through
+   `arbiter cc`, confirms the facts index published, AND runs `<binary:> --gtest_list_tests` itself to
+   confirm the binary boots (exits 0) and enumerates >=1 case. It runs the test under a filter that
+   matches no test (`tests: ["__arbiter_boot__"]`), so this proves the BUILD + the index + that the
+   binary LINKS and is a real gtest binary, WITHOUT needing the test's runtime environment yet — that
+   is the prove step's job, next. (The run is overall `errored` because no test matched; that is
+   expected — this gate asserts only facts.published AND the boot datum, both of which the
+   cc-interposed build produces on its own.) Do NOT try to satisfy this by calling the `run` tool
+   yourself, or by building in Bash — a snapshot built outside a submitted predicate does not count,
+   and the match stays at facts.published=false no matter how many times you build. Your recipe MUST
+   keep a real `src_compile` stage that compiles through `arbiter cc` (via the launcher / prefix /
+   shim form from step 2), and `binary:` MUST point at the artifact that build writes — boot runs THAT
+   binary. A recipe with only a `test_run` stage builds nothing — so the `_Test` index stays empty and
+   every later step fails forever (facts never publish, because `arbiter cc` was never invoked). The
+   cc-interposed build here is what publishes the first facts snapshot; do NOT drop, empty, or comment
+   out the `src_compile` stage to get a green — the build stage is the point.
 
     compile_db:
       path: build/compile_commands.json
@@ -180,6 +204,7 @@ half of the recipe, then submit the build proof.
         workdir: .                          # dir the test runs from (filled at the prove step); OMIT to default to the repo root
         env:                                # env vars the test needs to run (filled at the prove step); OMIT the whole key if none
           SOME_VAR: some-value
+        notes: "trap: <symptom> -> cause: <root cause> -> fix: <recipe field changed> | <next trap>"   # one clause per runtime trap you hit-and-fixed at the prove step; a single double-quoted line, OMIT if the suite proves first try
         src_compile:
           pre:
             - [cmake, -S, ., -B, build, "-DCMAKE_C_COMPILER_LAUNCHER=arbiter;cc;--root;ABS_REPO;--", "-DCMAKE_CXX_COMPILER_LAUNCHER=arbiter;cc;--root;ABS_REPO;--", -DCMAKE_BUILD_TYPE=Debug]
@@ -193,10 +218,10 @@ half of the recipe, then submit the build proof.
 Copy that shape verbatim and substitute ONLY the CAPS placeholders: `ABS_REPO` = the repository's
 absolute path, `TEST_BINARY` = the test binary's name, `SRC_GLOB_*` = the source globs the build
 compiles (e.g. `src/*.cc`, `include/*.h`). Everything else — the key names, the nesting, the argv
-lists — is literal — EXCEPT the runtime-environment slots `workdir:`, `env:`, and `test_run.pre`,
-which you fill at the PROVE step (the `SOME_VAR` / `setup-test-env.sh` shown are illustrative —
-replace or remove them): at derive, leave them blank or drop each line, since the build proof
-(build-published) runs the binary under a no-match filter and needs no test environment.
+lists — is literal — EXCEPT the runtime-environment slots `workdir:`, `env:`, `test_run.pre`, and
+`notes:`, which you fill at the PROVE step (the `SOME_VAR` / `setup-test-env.sh` / `notes` shown are
+illustrative — replace or remove them): at gear-up, leave them blank or drop each line, since the
+build+boot proof (build-booted) runs the binary under a no-match filter and needs no test environment.
 The shape shows the CMake compiler-launcher form (sub-step 2, first bullet); for
 a make/autotools build, drop the `-D…LAUNCHER` flags and instead carry the `CC`/`CXX` prefix tokens
 on the build command, e.g. `cmd: [make, "CC=arbiter cc --root ABS_REPO -- REAL_CC", "CXX=arbiter cc
@@ -206,7 +231,7 @@ NOT do these:
   DIRECTLY under the target, exactly as shown.
 - A target is keyed by `id:`, never `name:`. `targets:` is a sequence — each target is a `- id:`
   list item. The target's `id:` MUST be exactly `src_compile` — that is the id the
-  `candidate-proven` and `gear-up-published` predicates run (`run: src_compile`). Keep `id:
+  `candidate-proven` and `build-booted` predicates run (`run: src_compile`). Keep `id:
   src_compile` verbatim; do NOT rename the target after the test binary or a stage, or the
   predicate cannot find it and the submit fails with `recipe_pin_mismatch`.
 - Inside a stage the only keys are `pre`/`cmd`/`post`/`timeout_s`. `pre`/`post` are lists of argv
@@ -223,83 +248,20 @@ NOT do these:
   (so the build journals nothing → `journal_miss`). The entire cmake invocation is a SINGLE
   `- [...]` list item.
 [CheckList]
+- RED FLAG self-check (the REFEREE re-builds and is the only gate; this list only tells you when NOT to waste a submit): do NOT submit if your recipe has no real cc-interposed src_compile stage, or you emptied / dropped / commented it out to force a green — a recipe with no cc-interposed compile publishes NO facts and the `_Test` index stays empty forever
+- RED FLAG: do NOT submit a build you made outside this predicate — a `run` call you made, or a Bash / make / cmake build in your own shell — a snapshot built outside the submitted predicate leaves facts.published=false no matter how many times you build
+- RED FLAG: do NOT submit a file-exists check, a marker file, or any shell shortcut as the build proof; and a binary that exits 0 but lists ZERO tests (a cmd:[true]/echo, or `binary:` pointed at the wrong artifact) is not a real gtest binary — boot requires >=1 listed case from the binary src_compile actually built
+- Ran the native smoke FIRST (the project's own build + `<binary> --gtest_list_tests` exited 0) so you discovered the real build commands / binary / globs and confirmed the project builds on this host
 - The recipe begins with a top-level `compile_db:` section (sibling of `targets:`, `path:` pointing at the build's compile_commands.json) — without it the recipe builds but NEVER publishes facts, and the publish step fails forever
 - The build REUSES the project's own build entry (build.sh / test wrapper / the CI build command) when one exists, instead of a hand-reconstructed command string; the compile is routed through `arbiter cc` by the least invasive form that entry offers — a compiler-launcher hook (CMake: CMAKE_C/CXX_COMPILER_LAUNCHER), a CC/CXX prefix (make/autotools or a wrapper that honors them), or standalone shim scripts only as a last resort — keeping the project's own compilers; every form includes `--root ABS_REPO`
 - recipe_search, then write .arbiter/recipes.yaml (build half: compile_db + a real cc-interposed src_compile stage + a bare test_run.cmd) in the shape above, then register {"path": ".arbiter/recipes.yaml"}
-- Submit build-published from a REAL cc-interposed build that publishes the facts index — never a Bash build, a file-exists check, or a marker file; a recipe with no real src_compile stage publishes nothing
-[Submit] build-published
+- Submit build-booted from a REAL cc-interposed build whose binary boots — never a Bash build, a file-exists check, or a marker file; `binary:` points at the artifact src_compile built
+[Submit] build-booted
 [Branch]
-success: prove
-failure: derive
+success: scan-tests
+failure: gear-up
 
-[STEP] prove
-[StepJob]
-The build is proven and the facts index published; now make the test actually RUN and prove the
-suite end to end. Discover the runtime environment the test needs, add it to the recipe you wrote at
-derive, and submit candidate-proven.
-1. Discover what the test needs to RUN CORRECTLY, not merely compile — and make it RECIPE CONTENT so
-   a clean checkout runs the test from the recipe alone. The setup a test assumes is rarely in the
-   build files; look where the project documents how it RUNS its tests. START at the CI config — it is
-   the AUTHORITATIVE record of how the project builds AND runs its tests on a clean machine — and only
-   then fall back to docs and the test sources, in order: (a) the CI config
-   (`.github/workflows/*.yml`, `.gitlab-ci.yml`, `azure-pipelines.yml`, a `Jenkinsfile`): the env vars
-   it exports, the services/containers it starts, and the setup/bootstrap/env scripts it runs before
-   the test step. When CI `source`s (or `.`-includes) an env/bootstrap script before testing, that
-   script — not your shell — is where the test's environment comes from: OPEN it and read the
-   variables it EXPORTS, because `source`-ing it inside a recipe `pre` does NOT persist into the test
-   process (each stage command is a separate process; see `env:` below). Lift those exported variables
-   into `env:` directly. (b) test/contributor docs and `scripts/`/`tools/` setup or env scripts, and
-   any sample config the tests read; (c) the test sources themselves — env vars they read, config/data
-   files they open (usually relative to a working directory), and fixture `SetUp()` prerequisites. Put
-   each finding in the recipe field that carries it (the slots shown in the derive shape):
-   - **Environment variables the test needs → the target's `env:` map.** Each stage runs its `pre`,
-     `cmd`, and `post` as SEPARATE processes that share this `env:` map — so a variable set by
-     `source some-env.sh` inside a `pre` command does NOT carry over to the test. If the project
-     sources an env script, read the variables it exports and put them in `env:` directly.
-   - **Services, data directories, config-file generation, one-time setup (any side effect beyond an
-     env var) → `test_run.pre`.** Each `pre` item is one argv list; for a shell snippet (sourcing,
-     `&&`) use `[sh, -c, "<snippet>"]`. `pre` runs before `cmd`; a non-zero `pre` fails the stage,
-     which cleanly says "the environment broke," not "the test failed."
-   - **The directory the test must run from → the target's `workdir:`** (tests often open data/config
-     relative to cwd).
-   Keep `test_run.cmd` the BARE binary — setup goes in `env`/`pre`/`workdir`, never folded into `cmd`
-   (the harness appends `--gtest_*` to that argv). "Works only if your shell happens to have X set" is
-   an INCOMPLETE recipe; a test failing on an unset variable or an unstarted service is a RECIPE
-   defect, not a test defect.
-2. Add what you found to the recipe — fill the `env:` / `test_run.pre` / `workdir:` slots you left
-   blank at derive — re-register, then prove the suite by SUBMITTING candidate-proven: SubmitTask with
-   result `{"verify": "candidate-proven"}`. The REFEREE runs the WHOLE suite (`tests: ["*"]`) for you;
-   that submission advances the step. Do NOT try to satisfy this by calling the `run` tool yourself, or
-   by building in Bash — only a submitted predicate counts. If you do call the `run` tool to
-   sanity-check, its `tests` are gtest patterns (`Suite.Case`, `Suite.*`) or `["*"]` for the whole
-   suite — never the test binary's filename, which matches no suite and returns `no_tests_ran`. The
-   gtest harness injects its own `--gtest_output`; the recipe's `test_run` cmd is just the binary. A
-   pass or a fail both prove the harness; an errored or zero-test run does not.
-   A zero-test WHOLE-SUITE run (`no_tests_ran` on `tests: ["*"]`) is NOT an environment problem to fix
-   here: it means the target you proved at derive has no test cases that run on this host (they are
-   platform-guarded out at compile time, so the binary is empty). That target cannot be proven on this
-   host — do not loop trying to fix it. This step's failure returns to derive; go back there and pick a
-   different small target whose tests run on this host.
-   candidate-proven passes on a `passed` OR a `failed` run, but a run that "failed" only because the
-   environment from sub-step 1 was never set up is an INCOMPLETE recipe, not a result — even though it
-   satisfies the predicate. Before treating a failing run as done, triage it: an environment-shaped
-   failure — "connection refused" / cannot connect, "No such file or directory", an unset/empty env
-   variable, permission denied, a fixture `SetUp()` failing, or EVERY test failing the same way in a
-   fresh recipe — means the recipe is missing `env` / `test_run.pre` / `workdir`; add it to the recipe
-   (this step's failure returns to derive, where you re-author with the env and re-prove) and record
-   the trap in the target's `notes`. Only a genuine assertion outcome
-   (`EXPECT_*` / `ASSERT_*` on the code, in an environment that is demonstrably up — e.g. sibling
-   tests pass) is a real result. The dividing question: would this test pass for a developer whose
-   machine is set up correctly? If yes, that setup was the recipe's job.
-[CheckList]
-- The recipe declares the runtime environment the test needs to RUN — env vars in `env:`, services/setup in `test_run.pre`, the right `workdir:` — discovered CI-config-FIRST (any env script CI sources is opened and its exports lifted into `env:`, not just named), then test docs / test sources, not guessed
-- Submit candidate-proven from a real run (structured gtest output only) — never a file-exists check, marker file, or shell shortcut; an environment-shaped failure is a recipe defect to fix and re-run, not a reported test result
-[Submit] candidate-proven
-[Branch]
-success: enumerate
-failure: derive
-
-[STEP] enumerate
+[STEP] scan-tests
 [StepJob]
 Prove the published snapshot is queryable and carries the project's test set — publication is not
 searchability. Call scan {"scope": "*"} to pull the facts-derived test inventory (each gtest case
@@ -328,21 +290,21 @@ and indexes those binaries so the whole project test suite enters the facts inde
 [Submit] tests-enumerated
 [Branch]
 success: cover
-failure: derive
+failure: gear-up
 
 [STEP] cover
 [StepJob]
 Now COVER every project test binary: build and RUN each one so the facts index carries the whole
-suite, not just the one binary derive proved. This is the bootstrap's purpose — full coverage, so a
+suite, not just the one binary gear-up proved. This is the bootstrap's purpose — full coverage, so a
 clean checkout can run any suite AND the index knows every binary works. Coverage is measured
 PER BINARY (per test source file), each counted once: you do NOT have to run all of a binary's
 cases — many hold hundreds — you only run a FEW per binary to prove that binary builds and runs.
 Drive `run` over each registered target with a SMALL gtest filter (one suite, or a handful of cases
 — `tests: ["Suite.*"]` or a couple of `Suite.Case`), built through `arbiter cc` (the launcher
-wiring from derive). Each such run compiles that binary's test file — which indexes ALL of its cases
+wiring from gear-up). Each such run compiles that binary's test file — which indexes ALL of its cases
 into the facts snapshot (the index comes from the compile, so a few executed cases still cover the
 whole file) — and confirms the binary actually runs. The index merges INCREMENTALLY, so runs
-accumulate; loop over the binaries you registered at enumerate (generate the calls programmatically
+accumulate; loop over the binaries you registered at scan-tests (generate the calls programmatically
 for a large suite rather than by hand). You do NOT need the cases to PASS, only the binary to build
 and run (the gate measures per-binary coverage, never pass/fail). Some binaries cannot build on this
 host (platform-guarded, or unrelated breakage); skip those and keep going — cover as many binaries
@@ -357,8 +319,81 @@ binaries, and submit again.
 - Submit suite-covered — the referee measures per-binary (built/declared test files) project coverage from the live index; report the ratio reached
 [Submit] suite-covered
 [Branch]
-success: reconcile-perf
+success: prove
 failure: cover
+
+[STEP] prove
+[StepJob]
+The build is proven, the binary booted, the facts index published, and the whole suite is covered;
+now make the suite actually RUN and prove it ASSERTS end to end in its runtime environment. boot
+already caught the link / load / static-init failures at gear-up, so what remains is fixture-level
+runtime setup: discover the environment the suite needs, add it to the recipe you wrote at gear-up,
+and submit candidate-proven.
+1. Discover what the test needs to RUN CORRECTLY, not merely compile — and make it RECIPE CONTENT so
+   a clean checkout runs the test from the recipe alone. The setup a test assumes is rarely in the
+   build files; look where the project documents how it RUNS its tests. START at the CI config — it is
+   the AUTHORITATIVE record of how the project builds AND runs its tests on a clean machine — and only
+   then fall back to docs and the test sources, in order: (a) the CI config
+   (`.github/workflows/*.yml`, `.gitlab-ci.yml`, `azure-pipelines.yml`, a `Jenkinsfile`): the env vars
+   it exports, the services/containers it starts, and the setup/bootstrap/env scripts it runs before
+   the test step. When CI `source`s (or `.`-includes) an env/bootstrap script before testing, that
+   script — not your shell — is where the test's environment comes from: OPEN it and read the
+   variables it EXPORTS, because `source`-ing it inside a recipe `pre` does NOT persist into the test
+   process (each stage command is a separate process; see `env:` below). Lift those exported variables
+   into `env:` directly. (b) test/contributor docs and `scripts/`/`tools/` setup or env scripts, and
+   any sample config the tests read; (c) the test sources themselves — env vars they read, config/data
+   files they open (usually relative to a working directory), and fixture `SetUp()` prerequisites. Put
+   each finding in the recipe field that carries it (the slots shown in the gear-up shape):
+   - **Environment variables the test needs → the target's `env:` map.** Each stage runs its `pre`,
+     `cmd`, and `post` as SEPARATE processes that share this `env:` map — so a variable set by
+     `source some-env.sh` inside a `pre` command does NOT carry over to the test. If the project
+     sources an env script, read the variables it exports and put them in `env:` directly.
+   - **Services, data directories, config-file generation, one-time setup (any side effect beyond an
+     env var) → `test_run.pre`.** Each `pre` item is one argv list; for a shell snippet (sourcing,
+     `&&`) use `[sh, -c, "<snippet>"]`. `pre` runs before `cmd`; a non-zero `pre` fails the stage,
+     which cleanly says "the environment broke," not "the test failed."
+   - **The directory the test must run from → the target's `workdir:`** (tests often open data/config
+     relative to cwd).
+   Keep `test_run.cmd` the BARE binary — setup goes in `env`/`pre`/`workdir`, never folded into `cmd`
+   (the harness appends `--gtest_*` to that argv). "Works only if your shell happens to have X set" is
+   an INCOMPLETE recipe; a test failing on an unset variable or an unstarted service is a RECIPE
+   defect, not a test defect.
+2. Add what you found to the recipe — fill the `env:` / `test_run.pre` / `workdir:` slots you left
+   blank at gear-up — re-register, then prove the suite by SUBMITTING candidate-proven: SubmitTask with
+   result `{"verify": "candidate-proven"}`. The REFEREE runs the WHOLE suite (`tests: ["*"]`) for you;
+   that submission advances the step. Do NOT try to satisfy this by calling the `run` tool yourself, or
+   by building in Bash — only a submitted predicate counts. If you do call the `run` tool to
+   sanity-check, its `tests` are gtest patterns (`Suite.Case`, `Suite.*`) or `["*"]` for the whole
+   suite — never the test binary's filename, which matches no suite and returns `no_tests_ran`. The
+   gtest harness injects its own `--gtest_output`; the recipe's `test_run` cmd is just the binary. A
+   pass or a fail both prove the harness; an errored or zero-test run does not.
+   A zero-test WHOLE-SUITE run (`no_tests_ran` on `tests: ["*"]`) is NOT an environment problem to fix
+   here: it means the target you proved at gear-up has no test cases that run on this host (they are
+   platform-guarded out at compile time, so the binary is empty). That target cannot be proven on this
+   host — do not loop trying to fix it. This step's failure returns to gear-up; go back there and pick a
+   different small target whose tests run on this host.
+   candidate-proven passes on a `passed` OR a `failed` run, but a run that "failed" only because the
+   environment from sub-step 1 was never set up is an INCOMPLETE recipe, not a result — even though it
+   satisfies the predicate. Before treating a failing run as done, triage it: an environment-shaped
+   failure — "connection refused" / cannot connect, "No such file or directory", an unset/empty env
+   variable, permission denied, a fixture `SetUp()` failing, or EVERY test failing the same way in a
+   fresh recipe — means the recipe is missing `env` / `test_run.pre` / `workdir`; add it to the recipe
+   (this step's failure returns to gear-up, where you re-author with the env and re-prove). As you fix
+   EACH such trap, append one clause to that target's `notes:` in the form
+   `trap: <symptom> -> cause: <cause> -> fix: <recipe field>`, joined with ` | ` inside the one
+   double-quoted string — your recipes.yaml on disk is the deliverable (register validates it, it does
+   not commit), so the notes persist; a first-try-clean suite needs none. Only a genuine assertion
+   outcome
+   (`EXPECT_*` / `ASSERT_*` on the code, in an environment that is demonstrably up — e.g. sibling
+   tests pass) is a real result. The dividing question: would this test pass for a developer whose
+   machine is set up correctly? If yes, that setup was the recipe's job.
+[CheckList]
+- The recipe declares the runtime environment the test needs to RUN — env vars in `env:`, services/setup in `test_run.pre`, the right `workdir:` — discovered CI-config-FIRST (any env script CI sources is opened and its exports lifted into `env:`, not just named), then test docs / test sources, not guessed
+- Submit candidate-proven from a real run (structured gtest output only) — never a file-exists check, marker file, or shell shortcut; an environment-shaped failure is a recipe defect to fix and re-run, not a reported test result
+[Submit] candidate-proven
+[Branch]
+success: reconcile-perf
+failure: gear-up
 
 [STEP] reconcile-perf
 [StepJob]

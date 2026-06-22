@@ -349,6 +349,54 @@ func TestCompareRunFactsOnlyIgnoresErroredOverall(t *testing.T) {
 	}
 }
 
+// The recipe-derivation `build-booted` gate: facts published AND the cc-built binary boots
+// (exits 0) AND enumerates >=1 case. The boot datum comes from a dedicated --gtest_list_tests
+// the referee runs against `binary:`, so — like facts — a deliberate no-match filter
+// (overall=errored) still proves build+index+boot. listed_tests_min closes the cmd:[true]/echo
+// cheat (exits 0, lists nothing), and nil boot evidence fails closed.
+func TestCompareRunBootGate(t *testing.T) {
+	expect, err := ParseRunExpect(mustRaw(t, `{"facts":{"published":true},"boot":{"exited_zero":true,"listed_tests_min":1}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	boot := func(exit, listed int) RunEvidence {
+		return RunEvidence{Overall: "errored", Facts: &RunFactsEvidence{Published: true}, BootExitCode: &exit, ListedTests: &listed}
+	}
+	if ok, report := CompareRun(expect, boot(0, 12)); !ok {
+		t.Fatalf("boot gate rejected a booting gtest binary that lists 12 cases: %#v", report)
+	}
+	if ok, _ := CompareRun(expect, boot(0, 0)); ok {
+		t.Fatal("boot gate passed a binary that lists ZERO tests (the true/echo cheat)")
+	}
+	if ok, _ := CompareRun(expect, boot(127, 0)); ok {
+		t.Fatal("boot gate passed a binary that failed to launch (non-zero exit)")
+	}
+	if ok, report := CompareRun(expect, RunEvidence{Overall: "errored", Facts: &RunFactsEvidence{Published: true}}); ok {
+		t.Fatalf("boot gate passed with no boot evidence (must fail closed): %#v", report)
+	}
+}
+
+func TestParseRunExpectBootClause(t *testing.T) {
+	for _, ok := range []string{
+		`{"boot":{"exited_zero":true,"listed_tests_min":1}}`,
+		`{"boot":{"exited_zero":true}}`, // boot alone satisfies the at-least-one-clause guard
+		`{"facts":{"published":true},"boot":{"exited_zero":true,"listed_tests_min":1}}`,
+	} {
+		if _, err := ParseRunExpect(mustRaw(t, ok)); err != nil {
+			t.Fatalf("well-formed boot expect rejected: %s (%v)", ok, err)
+		}
+	}
+	for _, bad := range []string{
+		`{"boot":{}}`,                            // empty boot clause
+		`{"boot":{"listed_tests_min":-1}}`,       // negative floor
+		`{"boot":{"exited_zero":true,"junk":1}}`, // unknown key (strictDecode)
+	} {
+		if _, err := ParseRunExpect(mustRaw(t, bad)); err == nil {
+			t.Fatalf("malformed boot expect accepted: %s", bad)
+		}
+	}
+}
+
 func TestCompareFactClauses(t *testing.T) {
 	expect, err := ParseFactExpect(mustRaw(t, `{"min_results":1,"max_results":3,"complete":true,"reachable":true,"total_at_least":2}`))
 	if err != nil {

@@ -373,16 +373,18 @@ func runRun(parent context.Context, root string, spec ResultSpec, meta map[strin
 		return result, nil
 	}
 	var payload struct {
-		RunID      string            `json:"run_id"`
-		Overall    string            `json:"overall"`
-		Passed     int               `json:"passed"`
-		Failed     int               `json:"failed"`
-		PerTest    []RunPerTest      `json:"per_test"`
-		Facts      *RunFactsEvidence `json:"facts"`
-		Failure    string            `json:"failure"`
-		StderrTail string            `json:"stderr_tail"`
-		IsError    bool              `json:"isError"`
-		Content    json.RawMessage   `json:"content"`
+		RunID        string            `json:"run_id"`
+		Overall      string            `json:"overall"`
+		Passed       int               `json:"passed"`
+		Failed       int               `json:"failed"`
+		PerTest      []RunPerTest      `json:"per_test"`
+		Facts        *RunFactsEvidence `json:"facts"`
+		BootExitCode *int              `json:"boot_exit_code"`
+		ListedTests  *int              `json:"listed_tests"`
+		Failure      string            `json:"failure"`
+		StderrTail   string            `json:"stderr_tail"`
+		IsError      bool              `json:"isError"`
+		Content      json.RawMessage   `json:"content"`
 	}
 	if err := json.Unmarshal(envelope.Result, &payload); err != nil {
 		result.Failure = "engine_error"
@@ -415,6 +417,8 @@ func runRun(parent context.Context, root string, spec ResultSpec, meta map[strin
 		FirstFailureName: FirstRunFailure(payload.PerTest),
 		TestResults:      RunTestResults(payload.PerTest),
 		Facts:            payload.Facts,
+		BootExitCode:     payload.BootExitCode,
+		ListedTests:      payload.ListedTests,
 	}
 	rawEvidence, err := json.Marshal(evidence)
 	if err != nil {
