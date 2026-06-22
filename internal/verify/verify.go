@@ -126,13 +126,19 @@ func Validate(spec ResultSpec) error {
 }
 
 func Pass(result Result) bool {
-	if result.Failure != "" {
-		return false
-	}
-	// 类型化判定优先:run/fact 的 verdict 是唯一信号(#33)。
-	// shell/mcp 语义保持原样,不受影响。
+	// 类型化判定优先:run/fact 的 verdict 是唯一信号(#33),必须先于 Failure 检查。
+	// run 谓词成功完成时会把诊断 failure code(如 no_tests_ran)挂在 Failure 上做审计,
+	// 但 Verdict 已由 expect 子句裁定 —— 一个只断言 facts.published 的构建门即便整体
+	// errored/no_tests_ran 也应通过,诊断码绝不能反过来否决已通过的 verdict。
+	// run/fact 成功路径只会设 Verdict、不设 Failure;Failure 与 Verdict 同时出现仅见于
+	// run(诊断码),因此这一重排只改 run 这一种情形,shell/mcp 语义不受影响。
 	if result.Verdict != nil {
 		return *result.Verdict
+	}
+	// 未走类型化裁定(shell/mcp)或基础设施失败(spawn/timeout/transport/engine error
+	// 留下 Verdict==nil):failure code 一律 fail-closed。
+	if result.Failure != "" {
+		return false
 	}
 	if result.ExitCode != nil {
 		return *result.ExitCode == 0

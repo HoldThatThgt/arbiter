@@ -160,6 +160,15 @@ def _volatile_paths(request: Dict[str, Any]) -> List[str]:
             return ["result.structuredContent.overlay_id"]
         if params.get("name") == "run":
             return ["error.data.detail"]
+        if params.get("name") == "scan":
+            # Discovery mode depends on whether the optional tree-sitter [scan]
+            # extra is installed in the interpreter running the engine, so it is
+            # not stable across environments; the runs.scan unit tests pin the
+            # exact mode per-environment instead.
+            return [
+                "result.structuredContent.discovery",
+                "result.structuredContent.scan_unavailable",
+            ]
     return []
 
 

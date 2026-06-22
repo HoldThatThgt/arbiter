@@ -131,6 +131,47 @@ class CompileDBTest(unittest.TestCase):
             self.assertTrue(result.fallback_used)
             self.assertEqual(result.entries, 1)
 
+    def test_recover_from_compile_db_strips_launcher_and_filters_sources(self):
+        # When the cc journal is empty (an already-built binary cmake did not recompile),
+        # emit recovers the target's real commands from the existing compile_commands.json:
+        # the arbiter cc launcher is stripped, and only the target's sources are kept.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "src" / "a.cc").write_text("int a;\n", encoding="utf-8")
+            (root / "src" / "b.cc").write_text("int b;\n", encoding="utf-8")
+            out = root / "compile_commands.json"
+            # cmake's compile_commands.json: a.cc launcher-wrapped, b.cc plain (and unwanted).
+            out.write_text(
+                json.dumps([
+                    {
+                        "directory": str(root),
+                        "file": str(root / "src" / "a.cc"),
+                        "command": f"/usr/local/bin/arbiter cc --root {root} -- cc -c src/a.cc -o build/a.o",
+                    },
+                    {
+                        "directory": str(root),
+                        "file": str(root / "src" / "b.cc"),
+                        "arguments": ["cc", "-c", "src/b.cc", "-o", "build/b.o"],
+                    },
+                ]),
+                encoding="utf-8",
+            )
+
+            # Empty journal (nonexistent) -> recover from compile_commands.json for a.cc only.
+            result = compile_db.emit(
+                [root / "missing.jsonl"], out, recover_sources=[root / "src" / "a.cc"]
+            )
+
+            self.assertEqual(result.entries, 1)  # only the requested source
+            self.assertFalse(result.fallback_used)
+            data = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual([e["file"] for e in data], [str(root / "src" / "a.cc")])
+            # Launcher stripped: the command starts at the real compiler, not "arbiter".
+            self.assertEqual(data[0]["arguments"][0], "cc")
+            self.assertNotIn("arbiter", data[0]["arguments"])
+            self.assertNotIn("--root", data[0]["arguments"])
+
     def write_journal(self, path, *entries):
         path.write_text(
             "".join(json.dumps(entry, separators=(",", ":")) + "\n" for entry in entries),

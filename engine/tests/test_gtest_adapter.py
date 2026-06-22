@@ -355,6 +355,61 @@ targets:
             self.assertEqual((result.passed, result.failed, result.skipped), (0, 0, 0))
             self.assertFalse((Path(tmp) / "outside").exists())
 
+    def test_src_compile_tests_filter_matches_nothing_so_run_is_errored(self):
+        # The gear-up-published predicate runs `src_compile` with tests:["src_compile"].
+        # On a real recipe whose test_run binary holds actual gtest cases, that filter
+        # selects NO test (no suite is named "src_compile"), so gtest writes a zero-test
+        # result and run_target reports overall="errored"/no_tests_ran. A gate expecting
+        # overall="passed" can therefore never be satisfied — a build proof must assert
+        # only facts.published (see the build-published predicate in recipe-derivation).
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake = root / "filtering_gtest.sh"
+            # Honors --gtest_filter like real gtest: it has one real case (Suite.Case)
+            # and emits it only when the filter selects it (absent or "*"); any other
+            # filter (e.g. "src_compile") yields an empty result file.
+            fake.write_text(
+                "#!/bin/sh\n"
+                'filter=""\n'
+                'for arg in "$@"; do\n'
+                '  case "$arg" in\n'
+                '    --gtest_output=xml:*) out="${arg#--gtest_output=xml:}" ;;\n'
+                '    --gtest_filter=*) filter="${arg#--gtest_filter=}" ;;\n'
+                "  esac\n"
+                "done\n"
+                'mkdir -p "$(dirname "$out")"\n'
+                'if [ -z "$filter" ] || [ "$filter" = "*" ] || [ "$filter" = "Suite.Case" ]; then\n'
+                '  printf \'%s\' \'<testsuites tests="1" failures="0" skipped="0">'
+                '<testsuite name="Suite" tests="1" failures="0" skipped="0">'
+                '<testcase classname="Suite" name="Case" time="0"/></testsuite></testsuites>\' > "$out"\n'
+                "else\n"
+                '  printf \'%s\' \'<testsuites tests="0" failures="0" skipped="0"/>\' > "$out"\n'
+                "fi\n",
+                encoding="utf-8",
+            )
+            fake.chmod(0o755)
+            book = recipes.parse(
+                f"""
+targets:
+  - id: src_compile
+    binary: filtering_gtest.sh
+    harness:
+      kind: gtest
+    test_run:
+      cmd: [{str(fake)}]
+"""
+            )
+
+            # Sanity: the whole suite is a real pass, so the errored result below is
+            # caused by the no-match filter, not a broken binary.
+            whole = gtest.run_target(root, book, "src_compile", run_id="r-all", tests=["*"])
+            self.assertEqual(whole.overall, "passed")
+
+            # The exact gear-up call: tests:["src_compile"] matches nothing -> errored.
+            gated = gtest.run_target(root, book, "src_compile", run_id="r-gate", tests=["src_compile"])
+            self.assertEqual(gated.overall, "errored")
+            self.assertEqual(gated.failure, "no_tests_ran")
+
     def test_src_compile_runs_plain_and_sanitizer_profiles(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

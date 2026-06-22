@@ -25,6 +25,7 @@ PY39_STDLIB_FALLBACK = {
 
 OPTIONAL_EXTRA_IMPORTS = {
     ("runs/scan.py", "tree_sitter"),
+    ("runs/scan.py", "tree_sitter_cpp"),
 }
 
 

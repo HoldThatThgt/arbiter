@@ -70,7 +70,7 @@ func TestBaseOpeningTemplatesParse(t *testing.T) {
 			entry:      "derive",
 			capability: "recipes",
 			policy:     "named",
-			verify:     []string{"candidate-proven", "tests-enumerated", "perf-static-scan", "perf-command-measured", "gdb-debugs-real-binary"},
+			verify:     []string{"build-published", "candidate-proven", "tests-enumerated", "suite-covered", "perf-static-scan", "perf-command-measured", "gdb-debugs-real-binary"},
 		},
 		{
 			file:        "regression-triage.md",
@@ -158,7 +158,7 @@ func TestBaseOpeningTemplatesParse(t *testing.T) {
 
 	// recipe-derivation no longer sets an early [SetGoal]. The old goal (tests-enumerated)
 	// checkmated the match the instant facts published — at the derive step — which skipped the
-	// reconciliation steps entirely. The match now runs derive → publish → enumerate →
+	// reconciliation steps entirely. The match now runs derive → prove → enumerate → cover →
 	// reconcile-perf → reconcile-diag → confirm → END, binding a referee-verified predicate to
 	// every gated step so every wired surface is proven on its REAL function before END (not a
 	// version probe). tests-enumerated survives as the enumerate step's bound predicate, so the
@@ -188,15 +188,20 @@ func TestBaseOpeningTemplatesParse(t *testing.T) {
 		t.Fatalf("gdb-debugs-real-binary should be a shell predicate; got %#v", rd.Verify["gdb-debugs-real-binary"])
 	}
 	// Every gated step pins its predicate via [Submit]; the confirm step is a human [Checkpoint].
-	// derive's cc-interposed build publishes facts as a side effect, so enumerate (tests-enumerated)
-	// is the facts-published proof — there is no separate re-running "publish" step (a second
-	// src_compile run would be incremental and never republish: it fails facts.published forever).
+	// derive proves the cc-interposed build PUBLISHES facts (build-published, run under a no-match
+	// filter so it needs no test env; it asserts only facts.published, not overall); prove then
+	// proves the suite RUNS (candidate-proven, with the runtime environment discovered). enumerate
+	// (tests-enumerated) is the facts-published proof —
+	// there is no separate re-running "publish" step (a second src_compile run would be incremental
+	// and never republish: it fails facts.published forever).
 	if _, ok := rd.Steps["publish"]; ok {
 		t.Fatalf("recipe-derivation should not have a separate publish step (derive publishes; enumerate proves it)")
 	}
 	for step, want := range map[string]string{
-		"derive":         "candidate-proven",
+		"derive":         "build-published",
+		"prove":          "candidate-proven",
 		"enumerate":      "tests-enumerated",
+		"cover":          "suite-covered",
 		"reconcile-perf": "perf-static-scan",
 		"reconcile-diag": "gdb-debugs-real-binary",
 	} {
