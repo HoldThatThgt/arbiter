@@ -20,6 +20,7 @@ import time
 import uuid
 from collections import Counter
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, wait
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import FrozenInstanceError, dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Dict, FrozenSet, Iterable, Iterator, List, Optional, Sequence, Set, Tuple, Union
@@ -1109,6 +1110,8 @@ class _StreamingExtraction:
             for seq, source in enumerate(self._sources):
                 self._extract_source_facts(seq, source)
             return
+        merged_sources: set = set()
+        broke = False
         with executor:
             def submit_available() -> None:
                 nonlocal next_submit
@@ -1122,13 +1125,30 @@ class _StreamingExtraction:
                 while futures:
                     done, _pending = wait(futures, return_when=FIRST_COMPLETED)
                     for future in done:
-                        futures.pop(future)
+                        item = futures.pop(future)
                         self._merge_file_outcome(future.result())
+                        merged_sources.add(item.source)
                         submit_available()
+            except BrokenProcessPool:
+                # A worker process died abruptly — almost always OOM-killed parsing one heavy
+                # TU at this parallelism, which poisons the whole pool. Extraction is stateless
+                # per file, so nothing is lost but the one in-flight TU: finish the rest SERIALLY
+                # (one TU at a time bounds memory), best-effort, rather than aborting the index.
+                broke = True
+                for future in futures:
+                    future.cancel()
             except Exception:
                 for future in futures:
                     future.cancel()
                 raise
+        if broke:
+            for seq, source in enumerate(self._sources):
+                if source in merged_sources:
+                    continue
+                try:
+                    self._extract_source_facts(seq, source)
+                except Exception:
+                    continue
 
     def _make_work_item(self, seq: int, source: Path) -> _FileWorkItem:
         rel_source = _relative_source(self.extractor.target_repo, source)
