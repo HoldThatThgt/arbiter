@@ -67,10 +67,10 @@ func TestBaseOpeningTemplatesParse(t *testing.T) {
 		{
 			file:       "recipe-derivation.md",
 			name:       "recipe-derivation",
-			entry:      "derive",
+			entry:      "gear-up",
 			capability: "recipes",
 			policy:     "named",
-			verify:     []string{"build-published", "candidate-proven", "tests-enumerated", "suite-covered", "perf-static-scan", "perf-command-measured", "gdb-debugs-real-binary"},
+			verify:     []string{"build-booted", "candidate-proven", "tests-enumerated", "suite-covered", "perf-static-scan", "perf-command-measured", "gdb-debugs-real-binary"},
 		},
 		{
 			file:        "regression-triage.md",
@@ -157,11 +157,11 @@ func TestBaseOpeningTemplatesParse(t *testing.T) {
 	}
 
 	// recipe-derivation no longer sets an early [SetGoal]. The old goal (tests-enumerated)
-	// checkmated the match the instant facts published — at the derive step — which skipped the
-	// reconciliation steps entirely. The match now runs derive → prove → enumerate → cover →
+	// checkmated the match the instant facts published — at the build step — which skipped the
+	// reconciliation steps entirely. The match now runs gear-up → scan-tests → cover → prove →
 	// reconcile-perf → reconcile-diag → confirm → END, binding a referee-verified predicate to
 	// every gated step so every wired surface is proven on its REAL function before END (not a
-	// version probe). tests-enumerated survives as the enumerate step's bound predicate, so the
+	// version probe). tests-enumerated survives as the scan-tests step's bound predicate, so the
 	// referee still re-queries the published _Test index itself (libclang records each gtest case
 	// as its generated Suite_Name_Test fixture TYPE, which only a published snapshot carries; no
 	// transcript trust) — it is a step gate now, not the checkmate.
@@ -188,19 +188,19 @@ func TestBaseOpeningTemplatesParse(t *testing.T) {
 		t.Fatalf("gdb-debugs-real-binary should be a shell predicate; got %#v", rd.Verify["gdb-debugs-real-binary"])
 	}
 	// Every gated step pins its predicate via [Submit]; the confirm step is a human [Checkpoint].
-	// derive proves the cc-interposed build PUBLISHES facts (build-published, run under a no-match
-	// filter so it needs no test env; it asserts only facts.published, not overall); prove then
-	// proves the suite RUNS (candidate-proven, with the runtime environment discovered). enumerate
-	// (tests-enumerated) is the facts-published proof —
+	// gear-up proves the cc-interposed build PUBLISHES facts AND the binary BOOTS (build-booted, run
+	// under a no-match filter so it needs no test env; it asserts facts.published + the boot datum,
+	// not overall); prove then proves the suite RUNS (candidate-proven, with the runtime environment
+	// discovered). scan-tests (tests-enumerated) re-queries the published _Test index —
 	// there is no separate re-running "publish" step (a second src_compile run would be incremental
 	// and never republish: it fails facts.published forever).
 	if _, ok := rd.Steps["publish"]; ok {
-		t.Fatalf("recipe-derivation should not have a separate publish step (derive publishes; enumerate proves it)")
+		t.Fatalf("recipe-derivation should not have a separate publish step (gear-up publishes; scan-tests proves it)")
 	}
 	for step, want := range map[string]string{
-		"derive":         "build-published",
+		"gear-up":        "build-booted",
 		"prove":          "candidate-proven",
-		"enumerate":      "tests-enumerated",
+		"scan-tests":     "tests-enumerated",
 		"cover":          "suite-covered",
 		"reconcile-perf": "perf-static-scan",
 		"reconcile-diag": "gdb-debugs-real-binary",

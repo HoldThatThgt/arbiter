@@ -32,6 +32,10 @@ type RunEvidence struct {
 	FirstFailureName string            `json:"first_failure_name,omitempty"`
 	TestResults      map[string]string `json:"test_results,omitempty"`
 	Facts            *RunFactsEvidence `json:"facts,omitempty"`
+	// boot 证据:src_compile 产出的二进制以 `--gtest_list_tests` 启动后的进程退出码与列出的
+	// 用例数(engine gtest.py 的独立枚举子进程)。二进制未产出/未解析时为 nil ⇒ boot 子句 fail-closed。
+	BootExitCode *int `json:"boot_exit_code,omitempty"`
+	ListedTests  *int `json:"listed_tests,omitempty"`
 }
 
 type RunFactsEvidence struct {
@@ -141,10 +145,21 @@ type RunExpect struct {
 	MinPassed *int            `json:"min_passed,omitempty"`
 	Test      *TestExpect     `json:"test,omitempty"`
 	Facts     *RunFactsExpect `json:"facts,omitempty"`
+	Boot      *RunBootExpect  `json:"boot,omitempty"`
 }
 
 type RunFactsExpect struct {
 	Published *bool `json:"published,omitempty"`
+}
+
+// RunBootExpect 是 boot 子句:断言 src_compile 产出的二进制能启动并枚举用例,而不要求任何
+// 测试通过(那是 prove)。referee 直接对 binary: 跑 `--gtest_list_tests`,读其进程退出码与列出的
+// 用例数 —— exited_zero 证明它链接成功、加载了共享库;listed_tests_min 证明它是真正的 gtest
+// 二进制(封死 cmd:[true]/echo 这类作弊:退出 0 却列出 0 个用例)。
+type RunBootExpect struct {
+	ExitedZero     *bool `json:"exited_zero,omitempty"`
+	ExitCode       *int  `json:"exit_code,omitempty"`
+	ListedTestsMin *int  `json:"listed_tests_min,omitempty"`
 }
 
 type FactExpect struct {
@@ -184,7 +199,7 @@ func ParseRunExpect(raw json.RawMessage) (RunExpect, error) {
 	if err := strictDecode(raw, &expect, "run expect"); err != nil {
 		return expect, err
 	}
-	if expect.Overall == nil && expect.MaxFailed == nil && expect.MinPassed == nil && expect.Test == nil && expect.Facts == nil {
+	if expect.Overall == nil && expect.MaxFailed == nil && expect.MinPassed == nil && expect.Test == nil && expect.Facts == nil && expect.Boot == nil {
 		return expect, badResult("run expect must contain at least one clause")
 	}
 	if expect.MaxFailed != nil && *expect.MaxFailed < 0 {
@@ -198,6 +213,14 @@ func ParseRunExpect(raw json.RawMessage) (RunExpect, error) {
 	}
 	if expect.Facts != nil && expect.Facts.Published == nil {
 		return expect, badResult("run expect facts clause needs published")
+	}
+	if expect.Boot != nil {
+		if expect.Boot.ExitedZero == nil && expect.Boot.ExitCode == nil && expect.Boot.ListedTestsMin == nil {
+			return expect, badResult("run expect boot clause needs exited_zero, exit_code, or listed_tests_min")
+		}
+		if expect.Boot.ListedTestsMin != nil && *expect.Boot.ListedTestsMin < 0 {
+			return expect, badResult("run expect boot listed_tests_min must be >= 0")
+		}
 	}
 	return expect, nil
 }
@@ -334,6 +357,48 @@ func CompareRun(expect RunExpect, ev RunEvidence) (bool, []ClauseReport) {
 			Value: *expect.Facts.Published, Actual: actual,
 			OK: ok,
 		})
+	}
+	// boot 子句:nil 证据 ⇒ fail-closed(二进制没启动/没解析到 binary:,绝不能误判通过)。
+	if expect.Boot != nil {
+		if expect.Boot.ExitedZero != nil {
+			var actual any
+			ok := false
+			if ev.BootExitCode != nil {
+				actual = *ev.BootExitCode
+				ok = (*ev.BootExitCode == 0) == *expect.Boot.ExitedZero
+			}
+			report = append(report, ClauseReport{
+				Path: "boot.exited_zero", Op: "eq",
+				Value: *expect.Boot.ExitedZero, Actual: actual,
+				OK: ok,
+			})
+		}
+		if expect.Boot.ExitCode != nil {
+			var actual any
+			ok := false
+			if ev.BootExitCode != nil {
+				actual = *ev.BootExitCode
+				ok = *ev.BootExitCode == *expect.Boot.ExitCode
+			}
+			report = append(report, ClauseReport{
+				Path: "boot.exit_code", Op: "eq",
+				Value: *expect.Boot.ExitCode, Actual: actual,
+				OK: ok,
+			})
+		}
+		if expect.Boot.ListedTestsMin != nil {
+			var actual any
+			ok := false
+			if ev.ListedTests != nil {
+				actual = *ev.ListedTests
+				ok = *ev.ListedTests >= *expect.Boot.ListedTestsMin
+			}
+			report = append(report, ClauseReport{
+				Path: "boot.listed_tests_min", Op: "ge",
+				Value: *expect.Boot.ListedTestsMin, Actual: actual,
+				OK: ok,
+			})
+		}
 	}
 	return allOK(report), report
 }

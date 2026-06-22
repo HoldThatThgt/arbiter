@@ -58,6 +58,77 @@ targets:
             self.assertEqual(result.per_test[1].message, "bad")
             self.assertIn("--gtest_output=xml:", (root / "args.log").read_text(encoding="utf-8"))
 
+    def test_count_listed_tests_parses_gtest_listing(self):
+        # A flush-left line is a suite header; an indented line is a test case.
+        listing = "Suite.\n  CaseA\n  CaseB\nOther/Typed.\n  Foo/0  # GetParam() = 1\n"
+        self.assertEqual(gtest._count_listed_tests(listing), 3)
+        # A non-gtest true/echo prints nothing (or a flush-left line) -> 0, which fails
+        # the build-booted listed_tests_min:1 floor.
+        self.assertEqual(gtest._count_listed_tests(""), 0)
+        self.assertEqual(gtest._count_listed_tests("not a gtest binary\n"), 0)
+
+    def test_boot_enumerate_missing_binary_is_none(self):
+        # `binary:` does not resolve to a file -> no boot evidence -> the verdict fails closed.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertEqual(gtest._boot_enumerate(root / "nope", root, {}, 5), (None, None))
+
+    def test_boot_datum_records_exit_and_listed_count(self):
+        # run_target runs `<binary:> --gtest_list_tests` itself and stamps its exit + count onto
+        # the result, so the build-booted predicate can read a real launch+enumerate datum.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake = root / "fake_gtest.sh"
+            fake.write_text(
+                "#!/bin/sh\n"
+                "for arg in \"$@\"; do\n"
+                "  case \"$arg\" in\n"
+                "    --gtest_list_tests) printf 'Suite.\\n  Case1\\n  Case2\\n  Case3\\n'; exit 0 ;;\n"
+                "  esac\n"
+                "done\n"
+                "for arg in \"$@\"; do\n"
+                "  case \"$arg\" in\n"
+                "    --gtest_output=xml:*) out=\"${arg#--gtest_output=xml:}\" ;;\n"
+                "  esac\n"
+                "done\n"
+                "mkdir -p \"$(dirname \"$out\")\"\n"
+                "cat > \"$out\" <<'XML'\n"
+                "<testsuites tests=\"1\" failures=\"0\" skipped=\"0\">\n"
+                "  <testsuite name=\"Suite\" tests=\"1\" failures=\"0\" skipped=\"0\">\n"
+                "    <testcase classname=\"Suite\" name=\"Case1\" time=\"0.001\"/>\n"
+                "  </testsuite>\n"
+                "</testsuites>\n"
+                "XML\n"
+                "exit 0\n",
+                encoding="utf-8",
+            )
+            fake.chmod(0o755)
+            book = recipes.parse(
+                f"""
+targets:
+  - id: unit
+    binary: fake_gtest.sh
+    harness:
+      kind: gtest
+    test_run:
+      cmd: [{str(fake)}]
+"""
+            )
+
+            # The build-booted gate runs under the no-match BOOT_FILTER; boot is captured there.
+            result = gtest.run_target(root, book, "unit", run_id="boot", tests=[gtest.BOOT_FILTER])
+            self.assertEqual(result.boot_exit_code, 0)
+            self.assertEqual(result.listed_tests, 3)
+            self.assertEqual(result.to_json()["boot_exit_code"], 0)
+            self.assertEqual(result.to_json()["listed_tests"], 3)
+
+            # Any other filter (candidate-proven's ["*"], cover's ["Suite.*"]) does NOT consume boot,
+            # so the dedicated enumeration is skipped — no wasted subprocess, fields stay None.
+            other = gtest.run_target(root, book, "unit", run_id="nonboot", tests=["Suite.Case1"])
+            self.assertIsNone(other.boot_exit_code)
+            self.assertIsNone(other.listed_tests)
+            self.assertNotIn("boot_exit_code", other.to_json())
+
     def test_test_run_pre_runs_before_the_binary(self):
         # Runtime setup declared in test_run.pre (start a service, generate config/data) MUST run
         # before the test binary. The fake gtest reports pass only if pre created the sentinel.

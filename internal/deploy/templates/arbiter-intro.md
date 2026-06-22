@@ -41,7 +41,7 @@ the referee ends the match:
    hands you a task; you write it. CreateTask returns a `task_id`.
 3. **Dispatch the right executor subagent** with the Task tool, putting that `task_id` on a
    "task id:" line in the prompt along with the request. Route by step: the recipe/facts steps
-   (`derive`, `prove`, `enumerate`, `cover`) go to **arbiter-executor** (`register`, `import_recipes`,
+   (`gear-up`, `scan-tests`, `cover`, `prove`) go to **arbiter-executor** (`register`, `import_recipes`,
    `scan` are its capability-gated tools, live only while a `capabilities:[recipes]` opening is
    loaded); the diagnostic reconcile steps (`reconcile-perf`, `reconcile-diag`) go to
    **arbiter-debugger**, the only subagent wired with the `perf-mcp` and `gdb-mcp` companion tools
@@ -91,16 +91,16 @@ predicate, so a surface that was wired but is actually broken fails its step ins
 discovered later. The `recipe-derivation` opening walks these steps; drive each with the loop above
 and the opening's `ShowStepJob` text tells you exactly what to submit:
 
-- **derive** → `build-published`: author a recipe and prove its `arbiter cc`-interposed build
-  PUBLISHES the first facts snapshot — the build half only, run under a no-match filter so it needs
-  no test environment yet (so there is no separate "publish" step). (arbiter-executor.)
-- **prove** → `candidate-proven`: discover the runtime environment the test needs (CI config first),
-  add it to the recipe, and prove the whole suite actually RUNS through the recipe — this is where an
-  environment-shaped failure means a recipe defect to fix, not a test result. (arbiter-executor.)
-- **enumerate** → `tests-enumerated`: the referee re-queries the published `_Test` index itself,
+- **gear-up** → `build-booted`: first a native smoke (build the project with its OWN entry and run
+  `<binary> --gtest_list_tests` to exit 0 — de-risk + discover the build, NOT submitted), then wire
+  `arbiter cc`, author the build half of the recipe, and prove it: the cc-interposed build PUBLISHES
+  the first facts snapshot AND the binary it built BOOTS — the referee runs `<binary:> --gtest_list_tests`
+  itself and requires exit 0 with >=1 listed case. Run under a no-match filter so it needs no test
+  environment yet (so there is no separate "publish" step). (arbiter-executor.)
+- **scan-tests** → `tests-enumerated`: the referee re-queries the published `_Test` index itself,
   proving facts published WITH the project's test set (recorded as the generated `Suite_Case_Test`
   fixture types) — enumerated from the index, never trusted from your transcript. An empty index
-  means the derive build was not cc-interposed (or the recipe had no real `src_compile` stage) —
+  means the gear-up build was not cc-interposed (or the recipe had no real `src_compile` stage) —
   fix that, do not loop. Call `scan {"scope":"*"}` for the authoritative test set to report. If
   facts publication is blocked only by a missing capable Clang (LLVM ≥ 16 / Apple ≥ 15) — not a
   build failure — report the typed reason; builds, matches, and shell/mcp predicates work without
@@ -113,6 +113,10 @@ and the opening's `ShowStepJob` text tells you exactly what to submit:
   passes only at substantial coverage — covering one binary scores ~0. This is the bootstrap's
   FULL-COVERAGE purpose; it does not require cases to pass, only each binary to build+run, and skips
   host-unbuildable binaries. (arbiter-executor.)
+- **prove** → `candidate-proven`: with the suite built and covered, discover the runtime environment
+  the test needs (CI config first), add it to the recipe, and prove the whole suite actually RUNS
+  through the recipe — this is where an environment-shaped failure means a recipe defect to fix, not a
+  test result. (arbiter-executor.)
 - **reconcile-perf** → `perf-static-scan`: the referee runs `perf.scan_c` over the project (a REAL
   static analysis, not `perf.toolchain_probe`). In the same step also call `perf.measure_command`
   and `perf.explain_finding` and report their typed results. (arbiter-debugger.)
@@ -128,7 +132,7 @@ and the opening's `ShowStepJob` text tells you exactly what to submit:
 
 Three things the opening leaves to you — do them and fold them into the final report:
 - **Probe the build system** before loading the opening (make/cmake entry points, compiler, gtest
-  binary, build dir, and which test target to prove) so your derive task is concrete. When the
+  binary, build dir, and which test target to prove) so your gear-up task is concrete. When the
   project exposes MANY test executables, do NOT pick an aggregate / "merged" / "all-tests" target
   and do NOT build the whole project — those compile a large fraction of the codebase, so the
   proving build is slow and frequently breaks on an unrelated translation unit. Choose the SMALLEST
