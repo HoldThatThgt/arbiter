@@ -1,6 +1,9 @@
 package playbook
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"sort"
+)
 
 const (
 	EndTarget = "END"
@@ -54,7 +57,6 @@ const (
 
 	DefaultTimeoutS    = 600
 	MaxTimeoutS        = 3600
-	MaxExpectClauses   = 8
 	DefaultOutputLines = 256
 	MaxOutputLines     = 10000
 	MaxOutputBytes     = 1024 * 1024
@@ -203,9 +205,16 @@ func (p Playbook) OrderedSteps() []Step {
 	for _, id := range p.order {
 		out = append(out, p.Steps[id])
 	}
+	// order 不带 JSON tag,从对局状态反序列化的 Playbook 会丢失它;此时退回
+	// 按 step id 排序遍历,避免裸 map 遍历带来的不确定顺序。
 	if len(out) == 0 && len(p.Steps) > 0 {
-		for _, step := range p.Steps {
-			out = append(out, step)
+		ids := make([]string, 0, len(p.Steps))
+		for id := range p.Steps {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			out = append(out, p.Steps[id])
 		}
 	}
 	return out

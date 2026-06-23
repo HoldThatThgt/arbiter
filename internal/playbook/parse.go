@@ -552,6 +552,8 @@ func validatePredicateSpec(spec *ResultSpec, name string) string {
 			return "incomplete mcp"
 		}
 		// 对应 internal/verify/typed.go ParseMCPExpect:mcp expect 必须是 JSON 数组。
+		// 仅校验外形(数组);子句数量上限与逐句操作符校验是有意留在执行期
+		// (internal/verify/typed.go ParseMCPExpect),解析期只 fail 结构性错误。
 		if len(spec.Expect) != 0 {
 			var clauses []json.RawMessage
 			if err := json.Unmarshal(spec.Expect, &clauses); err != nil {
@@ -747,17 +749,14 @@ func validateCapabilities(file string, values []string) []Issue {
 	return issues
 }
 
+// identifierPattern mirrors FORMAT.md:122 ([Verify]/[Submit] names, verify:
+// refs, capabilities are ASCII [A-Za-z0-9_-]+) — like recipeIDPattern above,
+// the grammar is ASCII-only, so unicode.IsLetter/IsDigit would over-accept
+// confusable/homoglyph names the documented grammar forbids.
+var identifierPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
 func validIdentifier(value string) bool {
-	if value == "" {
-		return false
-	}
-	for _, r := range value {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-' {
-			continue
-		}
-		return false
-	}
-	return true
+	return identifierPattern.MatchString(value)
 }
 
 func parseHeader(file string, lines []string) (frontmatter, int, []Issue) {
