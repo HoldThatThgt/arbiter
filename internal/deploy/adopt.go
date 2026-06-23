@@ -109,7 +109,7 @@ func adoptRecipes(root string) (bool, error) {
 	}
 	out := []byte("# Migrated from " + filepath.ToSlash(src) + ".\n")
 	out = append(out, data...)
-	if err := atomicWrite(filepath.Join(root, fileRecipes), out, 0o644); err != nil {
+	if err := writeMigrated(filepath.Join(root, fileRecipes), out); err != nil {
 		return false, err
 	}
 	_ = os.Remove(filepath.Join(root, src))
@@ -126,7 +126,7 @@ func adoptCipherConfig(root string) (bool, error) {
 		return false, err
 	}
 	config := renderFactsConfig(string(data))
-	if err := atomicWrite(filepath.Join(root, fileConfig), []byte(config), 0o644); err != nil {
+	if err := writeMigrated(filepath.Join(root, fileConfig), []byte(config)); err != nil {
 		return false, err
 	}
 	_ = os.Remove(src)
@@ -140,11 +140,11 @@ func renderFactsConfig(legacy string) string {
 	var b strings.Builder
 	b.WriteString("# Migrated from .cipher/config.yml.\n")
 	b.WriteString("# cipher-2's extractor.worker_count maps to index_on_build.pool (the live knob);\n")
-	b.WriteString("# facts.incremental is carried as a reserved key — the cipher-2 incremental\n")
-	b.WriteString("# overlay-reconcile lands in the M4 facts absorption, no effect today (ADR-0004/0013).\n")
+	b.WriteString("# facts.incremental is now a live section (ADR-0018) — cipher-2's incremental.enabled\n")
+	b.WriteString("# carries to facts.incremental.enabled, which drives the background incremental index.\n")
 	b.WriteString("facts:\n")
 	if hasIncremental {
-		fmt.Fprintf(&b, "  incremental: %t\n", incremental)
+		fmt.Fprintf(&b, "  incremental:\n    enabled: %t\n", incremental)
 	}
 	if pool > 0 {
 		fmt.Fprintf(&b, "  index_on_build:\n    pool: %d\n", pool)
@@ -261,6 +261,20 @@ func moveFile(src, dst string) error {
 		return err
 	}
 	return os.Remove(src)
+}
+
+// writeMigrated writes migrated content to dst, refusing to clobber differing
+// state the same way moveFile does: if dst already exists and differs, it
+// returns an adopt_conflict error so init/derivation-owned files are preserved.
+// An identical target is a no-op (keeps adopt idempotent).
+func writeMigrated(dst string, data []byte) error {
+	if existing, err := os.ReadFile(dst); err == nil {
+		if !bytes.Equal(existing, data) {
+			return &Error{Kind: "adopt_conflict", Message: "adopt target differs: " + dst}
+		}
+		return nil
+	}
+	return atomicWrite(dst, data, 0o644)
 }
 
 func firstExisting(root string, rels []string) (string, bool) {
