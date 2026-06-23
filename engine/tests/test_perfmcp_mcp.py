@@ -80,6 +80,61 @@ class MCPProtocolTests(unittest.TestCase):
         )
         self.assertEqual(response["error"]["code"], -32602)  # type: ignore[index]
 
+    def _call(self, name: str, arguments: dict) -> dict:
+        return MCPServer().handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": name, "arguments": arguments},
+            }
+        )
+
+    def test_unknown_argument_key_is_rejected(self) -> None:
+        response = self._call("perf.toolchain_probe", {"totally_unknown_key": 123})
+        self.assertNotIn("result", response)
+        error = response["error"]  # type: ignore[index]
+        self.assertEqual(error["code"], -32602)
+        self.assertEqual(error["data"]["kind"], "invalid_arguments")
+        self.assertEqual(error["data"]["reason"], "unknown_arguments")
+        self.assertEqual(error["data"]["fields"], ["totally_unknown_key"])
+
+    def test_out_of_range_value_is_rejected_not_clamped(self) -> None:
+        response = self._call(
+            "perf.measure_command",
+            {"command": ["true"], "repeat": 99999, "timeout_seconds": 999999},
+        )
+        self.assertNotIn("result", response)
+        error = response["error"]  # type: ignore[index]
+        self.assertEqual(error["code"], -32602)
+        self.assertEqual(error["data"]["kind"], "invalid_arguments")
+        self.assertEqual(error["data"]["reason"], "too_large")
+        self.assertEqual(error["data"]["field"], "repeat")
+
+    def test_missing_required_argument_is_rejected(self) -> None:
+        response = self._call("perf.measure_command", {"repeat": 1})
+        self.assertNotIn("result", response)
+        error = response["error"]  # type: ignore[index]
+        self.assertEqual(error["code"], -32602)
+        self.assertEqual(error["data"]["reason"], "missing_required")
+        self.assertEqual(error["data"]["field"], "command")
+
+    def test_valid_in_range_arguments_still_dispatch(self) -> None:
+        response = self._call("perf.toolchain_probe", {})
+        self.assertFalse(response["result"]["isError"])  # type: ignore[index]
+
+    def test_null_optional_argument_uses_default_not_rejected(self) -> None:
+        # Explicit null on an optional field is treated as "use default", matching the
+        # handlers that read arguments.get(key) and fall back when it is None.
+        response = self._call("perf.toolchain_probe", {"root": None})
+        self.assertFalse(response["result"]["isError"])  # type: ignore[index]
+
+    def test_null_required_argument_is_rejected(self) -> None:
+        response = self._call("perf.measure_command", {"command": None})
+        self.assertNotIn("result", response)
+        self.assertEqual(response["error"]["data"]["reason"], "bad_type")  # type: ignore[index]
+        self.assertEqual(response["error"]["data"]["field"], "command")  # type: ignore[index]
+
 
 if __name__ == "__main__":
     unittest.main()
