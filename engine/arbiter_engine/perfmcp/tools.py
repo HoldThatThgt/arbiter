@@ -208,6 +208,13 @@ def list_tools() -> list[dict[str, Any]]:
     return TOOLS
 
 
+def tool_schema(name: str) -> dict[str, Any]:
+    for tool in TOOLS:
+        if tool["name"] == name:
+            return tool["inputSchema"]
+    raise KeyError(name)
+
+
 def call_tool(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
     if arguments is None:
         arguments = {}

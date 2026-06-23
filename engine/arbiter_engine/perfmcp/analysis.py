@@ -6,6 +6,7 @@ import os
 import platform
 import re
 import shutil
+import signal
 import subprocess
 import time
 from dataclasses import dataclass
@@ -737,25 +738,35 @@ def _run_once(
     before_usage = resource.getrusage(resource.RUSAGE_CHILDREN) if resource else None
     started = time.perf_counter()
     timed_out = False
+    # start_new_session=True puts the child in its own process group so that, on
+    # timeout, os.killpg reaps the whole tree (grandchildren too), not just the
+    # direct child as plain subprocess.run would.
+    proc = subprocess.Popen(
+        command,
+        cwd=str(cwd),
+        env=env,
+        text=True,
+        errors="replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
     try:
-        completed = subprocess.run(
-            command,
-            cwd=str(cwd),
-            env=env,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=timeout_seconds,
-            check=False,
-        )
-        exit_code: int | None = completed.returncode
-        stdout = completed.stdout
-        stderr = completed.stderr
-    except subprocess.TimeoutExpired as exc:
+        stdout, stderr = proc.communicate(timeout=timeout_seconds)
+        exit_code: int | None = proc.returncode
+    except subprocess.TimeoutExpired:
         timed_out = True
         exit_code = None
-        stdout = _coerce_output(exc.stdout)
-        stderr = _coerce_output(exc.stderr)
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            proc.kill()
+        # Bound the post-kill drain: if a survivor (e.g. a grandchild that escaped the
+        # group) still holds the pipe open, do not let communicate() block the server.
+        try:
+            stdout, stderr = proc.communicate(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            stdout, stderr = "", ""
     wall = time.perf_counter() - started
     after_usage = resource.getrusage(resource.RUSAGE_CHILDREN) if resource else None
     user_seconds = None
@@ -785,15 +796,8 @@ def _rss_to_kb(value: int) -> int:
     return int(value)
 
 
-def _coerce_output(value: str | bytes | None) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
-    return value
-
-
-def _truncate(value: str, max_chars: int) -> str:
+def _truncate(value: str | None, max_chars: int) -> str:
+    value = value or ""
     if len(value) <= max_chars:
         return value
     return value[: max_chars - 80] + f"\n... truncated {len(value) - max_chars + 80} chars ..."
