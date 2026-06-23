@@ -1,6 +1,6 @@
 ---
 name: recipe-derivation
-description: Capability-gated opening for deriving and proving committed run recipes, then proving every wired tool surface on its real function.
+description: Use when deriving and proving committed run recipes, then proving every wired tool surface on its real function — a capability-gated opening.
 capabilities: [recipes]
 max_steps: 64
 verify_policy: named

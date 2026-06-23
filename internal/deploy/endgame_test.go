@@ -168,22 +168,33 @@ func runIntroRecipeProbe(t *testing.T, root string) recipeProbe {
 
 func runFreeplayFix(t *testing.T, root string) ([]string, string) {
 	t.Helper()
+	// freeplay's gear-up step is now [Submit]-bound to the curated gear-up-published
+	// predicate (run: src_compile, expect facts.published), so it no longer accepts an
+	// inline shell — the player must drive a real cc-interposed src_compile run whose
+	// facts publish. Seed a hermetic build gate the referee's engine run can publish from
+	// (a fake clang pinned via facts.toolchain + the in-process JSON libclang backend), so
+	// this fixture proves the bound gate end to end instead of asserting a snapshot file.
+	seedFreeplayBuildGate(t, root)
+
 	store := match.New(root, "player")
 	if _, err := store.LoadPlayBook("freeplay"); err != nil {
 		t.Fatal(err)
 	}
 	steps := []struct {
 		request string
+		// Exactly one of verify (a [Submit]-bound curated predicate) or command (an inline
+		// shell predicate) drives the step; gear-up is bound, the rest are inline.
+		verify  string
 		command string
 		before  func()
 	}{
-		{"gear up from the proven src_compile snapshot", "test -f .arbiter/facts/snapshots/current", nil},
-		{"orient on the broken fixture and snapshot evidence", "grep -q 'int broken' src/bug.c && grep -q 'sha256-' .arbiter/facts/snapshots/current", nil},
-		{"plan one refereed fixture edit", "test -f .arbiter/playbook/freeplay.md && test -f .arbiter/recipes.yaml", nil},
-		{"fix broken fixture return value", "grep -q 'return 1;' src/bug.c", func() {
+		{"gear up from the proven src_compile snapshot", "gear-up-published", "", nil},
+		{"orient on the broken fixture and snapshot evidence", "", "grep -q 'int broken' src/bug.c && grep -q 'sha256-' .arbiter/facts/snapshots/current", nil},
+		{"plan one refereed fixture edit", "", "test -f .arbiter/playbook/freeplay.md && test -f .arbiter/recipes.yaml", nil},
+		{"fix broken fixture return value", "", "grep -q 'return 1;' src/bug.c", func() {
 			writeText(t, filepath.Join(root, "src", "bug.c"), "int broken(void) { return 1; }\n")
 		}},
-		{"record the terminal evidence", "test -s src/bug.c", nil},
+		{"record the terminal evidence", "", "test -s src/bug.c", nil},
 	}
 	verdicts := make([]string, 0, len(steps))
 	terminal := ""
@@ -198,7 +209,11 @@ func runFreeplayFix(t *testing.T, root string) ([]string, string) {
 		if step.before != nil {
 			step.before()
 		}
-		submitted, err := store.SubmitTask(context.Background(), task.TaskID, "predicate passed", step.request, verify.ResultSpec{Kind: "shell", Command: step.command})
+		spec := verify.ResultSpec{Kind: "shell", Command: step.command}
+		if step.verify != "" {
+			spec = verify.ResultSpec{Verify: step.verify}
+		}
+		submitted, err := store.SubmitTask(context.Background(), task.TaskID, "predicate passed", step.request, spec)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -213,6 +228,114 @@ func runFreeplayFix(t *testing.T, root string) ([]string, string) {
 	}
 	return verdicts, terminal
 }
+
+// seedFreeplayBuildGate materializes a hermetic src_compile build gate the referee's
+// engine `run` can publish facts from, so freeplay's [Submit]-bound gear-up step
+// (gear-up-published → run: src_compile, expect facts.published) passes in-process.
+//
+// The engine `run` tool resolves its extractor toolchain from .arbiter/config.yml's
+// facts.toolchain (it cannot be handed a fake ExtractorConfig the way the out-of-band
+// probe is), so we pin facts.toolchain.clang to the same JSON-AST fake clang the probe
+// uses and install the in-process JSON libclang backend in the spawned engine via a
+// sitecustomize.py that imports the c2 test package. The recipe needs only a top-level
+// compile_db, a trivially green src_compile, and real `sources:` — publish recovers and
+// indexes the journaled/recovered TUs through the JSON backend without a real toolchain.
+func seedFreeplayBuildGate(t *testing.T, root string) {
+	t.Helper()
+	module := moduleRoot(t)
+	// engine/ for arbiter_engine, engine/tests for the c2 test package, .arbiter/site for
+	// the sitecustomize.py that imports it (installing the in-process JSON libclang
+	// backend). Preserve any host PYTHONPATH on the end — same contract runIntroRecipeProbe
+	// uses — so a box that needs deps on PYTHONPATH keeps them for both extraction paths.
+	host := os.Getenv("PYTHONPATH")
+	parts := []string{
+		filepath.Join(module, "engine"),
+		filepath.Join(module, "engine", "tests"),
+		filepath.Join(root, ".arbiter", "site"),
+	}
+	if host != "" {
+		parts = append(parts, host)
+	}
+	enginePythonPath := strings.Join(parts, string(os.PathListSeparator))
+
+	script := filepath.Join(root, "freeplay_gate_setup.py")
+	writeText(t, script, freeplayGateSetupScript)
+	cmd := exec.Command("python3", script, root)
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "PYTHONPATH="+enginePythonPath)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("seed freeplay build gate: %v\n%s", err, out)
+	}
+	// The match-store engine (engineclient.Spawn RoleExec, cwd=root) sets
+	// PYTHONPATH=<root>/engine + this inherited value, so the run-predicate spawn resolves
+	// the engine source, the c2 backend, and the host deps the same way the setup did.
+	t.Setenv("PYTHONPATH", enginePythonPath)
+}
+
+// freeplayGateSetupScript writes, under root: the JSON-AST fake clang (from the c2 test
+// helper, so it satisfies the indexer's capability probe), a facts.toolchain pin at it, a
+// compile_commands.json for the real source, a publishable src_compile recipe, a fake
+// gtest binary, and a sitecustomize.py that installs the in-process JSON libclang backend.
+const freeplayGateSetupScript = `import sys
+from pathlib import Path
+
+from c2.toolchain_helpers import _fake_clang_script
+
+root = Path(sys.argv[1])
+(root / "src").mkdir(parents=True, exist_ok=True)
+(root / "src" / "fixture.c").write_text("int fixture(void){return 1;}\n", encoding="utf-8")
+
+toolchain = root / ".arbiter" / "toolchain"
+toolchain.mkdir(parents=True, exist_ok=True)
+clang = toolchain / "clang"
+clang.write_text(_fake_clang_script("16.0.6"), encoding="utf-8")
+clang.chmod(0o755)
+
+(root / ".arbiter" / "config.yml").write_text(
+    "facts:\n  toolchain:\n    clang: %s\n" % clang, encoding="utf-8"
+)
+
+src = root / "src" / "fixture.c"
+(root / "compile_commands.json").write_text(
+    '[{"directory":"%s","file":"%s","arguments":["%s","-c","%s"]}]\n' % (root, src, clang, src),
+    encoding="utf-8",
+)
+
+gtest = root / "fake_gtest.sh"
+gtest.write_text(
+    '#!/bin/sh\n'
+    'for arg in "$@"; do case "$arg" in --gtest_output=xml:*) out="${arg#--gtest_output=xml:}" ;; esac; done\n'
+    'mkdir -p "$(dirname "$out")"\n'
+    'cat > "$out" <<XML\n'
+    '<testsuites tests="1" failures="0"><testsuite name="Suite"><testcase classname="Suite" name="Pass" time="0.001"/></testsuite></testsuites>\n'
+    'XML\n',
+    encoding="utf-8",
+)
+gtest.chmod(0o755)
+
+(root / ".arbiter" / "recipes.yaml").write_text(
+    "compile_db:\n  path: compile_commands.json\n"
+    "targets:\n"
+    "  - id: src_compile\n"
+    "    binary: src/fixture.c\n"
+    "    harness:\n      kind: gtest\n"
+    '    src_compile:\n      cmd: ["true"]\n'
+    '    test_run:\n      cmd: ["%s"]\n'
+    "    sources: [src/*.c]\n" % gtest,
+    encoding="utf-8",
+)
+
+site = root / ".arbiter" / "site"
+site.mkdir(parents=True, exist_ok=True)
+(site / "sitecustomize.py").write_text(
+    "try:\n"
+    "    import c2  # installs the in-process JSON libclang backend as an import side effect\n"
+    "except Exception as exc:  # pragma: no cover - surfaced via the failing run predicate\n"
+    "    import sys\n"
+    "    sys.stderr.write('freeplay gate sitecustomize: c2 import failed: %r\\n' % exc)\n",
+    encoding="utf-8",
+)
+`
 
 func deployedOpenings(t *testing.T, root string) []string {
 	t.Helper()
