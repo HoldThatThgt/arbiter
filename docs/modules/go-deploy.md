@@ -36,8 +36,10 @@ Writes/merges, all idempotent and atomic (temp+rename), merge-preserving for for
   entry, agent frontmatter server, and the Stop-hook command carries an explicit absolute
   `--root` (ADR-0014) — spawn cwd is never load-bearing.
 - `.claude/settings.json`: deny rules — `Read(.arbiter/playbook/**)`, `Read(.arbiter/match/**)`,
-  `Read(.claude/agents/arbiter-*.md)`; Edit/Write deny on `.arbiter/engine/**` when
-  `--embedded-engine`. Stop hook claimed by **exact command match**, plus reclamation of provably
+  `Read(.claude/agents/arbiter-*.md)`, plus **unconditional** Edit/Write deny on the same three
+  zones (`.arbiter/playbook/**`, `.arbiter/match/**`, `.claude/agents/arbiter-*.md`) — ADR-0015;
+  and Edit/Write deny on `.arbiter/engine/**` **in embedded mode (flag or automatic fallback)**.
+  Stop hook claimed by **exact command match**, plus reclamation of provably
   dead entries (first-token basename `arbiter` + ` hook stop` suffix + the binary no longer
   exists on disk) — a live foreign hook is never hijacked.
 - `.gitignore`: `.arbiter/` derived-state entries.

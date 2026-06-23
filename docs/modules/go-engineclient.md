@@ -25,7 +25,8 @@ e.Close()                                                    // EOF stdin, wait,
 ## Design
 - Transport: one JSON object per line on stdin/stdout; stderr is engine logging, passed through
   to the seat's stderr (never parsed).
-- Requests carry `_meta:{match_id?, round?, task_id?}`; responses are validated for `id` match
+- Requests carry `_meta:{match_id?, round_seq?, predicate?}` (opaque passthrough — the engine
+  treats `_meta` as advisory, never a correlation key); responses are validated for `id` match
   and JSON-RPC error shape; engine-typed errors (`no_snapshot`, `briefing_unresolved`, …) are
   surfaced as typed Go errors, not strings.
 - Timeouts per call (default 600s, max 3600s aligned with ResultSpec); a timed-out call poisons

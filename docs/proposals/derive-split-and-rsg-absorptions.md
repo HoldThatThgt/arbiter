@@ -1,6 +1,7 @@
 # Proposal: split `derive`, combine native+cc into one `gear-up`, and absorb 4 rsg conventions
 
-Status: implemented on branch `derive-split-rsg-absorptions` (pending review/merge)
+Status: **landed** — merged to main as PR #131 (current HEAD). The prose below is the as-built
+plan.
 
 Builds on the PR #130 `derive → prove` split. Relates to ADR-0004 (build-driven
 indexing — "compile done ⇒ index done"), ADR-0017 (result integrity: curated,

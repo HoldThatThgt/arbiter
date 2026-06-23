@@ -35,7 +35,10 @@ PROCESS.md).
 Every tool returns typed `structuredContent` plus a display-only text summary — the property
 mcp-kind `expect[]` predicates adjudicate against (`{path, op: eq|ne|ge|le|exists, value}`,
 go-referee.md). Both servers keep their upstream invariants: closed input schemas, bounded
-outputs/timeouts, root-confined paths, fail-closed errors, no runtime network, no daemons.
+outputs/timeouts, fail-closed errors, no runtime network, no daemons. **Root confinement is
+scoped, not universal:** gdb-mcp confines paths to the project root unless launched with
+`--allow-outside-root`; perf-mcp confines only its *relative* `paths[]` arguments and does **not**
+confine its top-level `root`/`cwd` (by design — a Bash-class host capability, like Bash itself).
 Executors (typically the deploy-written `arbiter-debugger` agent) use the tools for evidence;
 the referee compares the fields.
 

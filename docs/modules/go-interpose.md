@@ -20,9 +20,12 @@ Never invoked by users or models directly.
    through regardless. Response files (`@file`) are expanded for classification and journaling;
    the original argv is what gets exec'd.
 2. **Journal**: append `{argv, cwd, src, out, ts}` as one line to the build-local journal
-   (`.arbiter/facts/run/compile-journal.<build_id>.jsonl`). Appends are O_APPEND single-write
-   sized under PIPE_BUF or guarded by a journal flock — safe under `make -jN`. The journaled set
-   is the authoritative TU set for this build (strictly stronger than a static
+   (`.arbiter/facts/run/compile-journal.<build_id>.jsonl`). Each record is a single
+   `O_APPEND` write (no flock); on a local POSIX filesystem `O_APPEND` keeps concurrent writers
+   from interleaving offsets under `make -jN`. Caveat: POSIX only guarantees atomic positioning,
+   not tear-free payloads above `PIPE_BUF` on every filesystem (notably NFS / other networked
+   mounts) — `arbiter init` refuses such mounts (ADR-0009), keeping the build journal local. The
+   journaled set is the authoritative TU set for this build (strictly stronger than a static
    compile_commands.json: it is what was *actually built*).
 3. **Enqueue**: the journal IS the queue; the engine's pipeline consumer (engine-shared) tails it.
    The shim never blocks on the engine.

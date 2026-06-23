@@ -29,7 +29,9 @@ semantics are **not redesigned**.
                                                           # scalars, closed ops, no wildcards
 {kind:"run", recipe?, tests:[...], options?,
  expect:{overall: enum|one_of[...], max_failed?, min_passed?, test?:{name,result},
-         facts?:{published}}}
+         facts?:{published},
+         boot?:{exited_zero?, exit_code?, listed_tests_min?}}}   # gear-up gate;
+                                                                 # nil evidence ⇒ fail-closed
 {kind:"fact", query:"<search mini-language>",
  expect:{min_results?, max_results?, complete?, reachable?, total_at_least?}}
 + timeout_s (default 600, max 3600), output_lines
@@ -41,8 +43,9 @@ semantics are **not redesigned**.
   `ReviewTask`.
 - **Deny-self guard (ADR-0006):** any mcp-kind target whose resolved command
   (LookPath → Abs → EvalSymlinks) equals `os.Executable()` → `reserved_server`, full stop.
-- `Result.evidence` is typed per kind: run → `{run_id, overall, passed, failed,
-  first_failure_name}`; fact → `{snapshot_id, overlay_id, view_state, result_count, complete}`.
+- `Result.evidence` is typed per kind and includes (non-exhaustive): run → `{run_id, overall,
+  passed, failed, first_failure_name, test_results, facts, boot_exit_code, listed_tests}`;
+  fact → `{snapshot_id, overlay_id, view_state, result_count, complete, reachable, total_results}`.
   **Adjudication consumes only verdict enums and counters; evidence enriches review, never the
   verdict.**
 
@@ -64,9 +67,10 @@ semantics are **not redesigned**.
 - Tokenizer stays regex-free; grammar changes require fixture updates in the same PR.
 
 ### Match-state extensions (`internal/match`)
-- `Match.recipes_pin{book_sha256, targets{id:sha256}}` written at LoadPlayBook; run-kind
-  predicates verify the pinned hash before execution and fail with journaled
-  `recipe_pin_mismatch` on drift.
+- `Match.recipes_pin{book_sha256, targets{id}}` written at LoadPlayBook; `targets` is a set of
+  target ids (per-target sha values are retained empty) — whole-book integrity is via
+  `book_sha256`. Run-kind predicates verify the pinned hash before execution and fail with
+  journaled `recipe_pin_mismatch` on drift.
 - `Task.briefing[]` (resolved fact cards, ≤8KB total, pruned from archived rounds — the journal
   retains them), `Result.evidence`, `expect_report[]`, `Match.goal_memo`, `Match.goal_pending`.
 - Async goals: first `CheckStepJob` after step success starts the goal via `arbiter/startRun`
