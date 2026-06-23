@@ -274,10 +274,6 @@ def _read_records(journals: Sequence[Path | str]) -> list[Mapping[str, Any]]:
     return records
 
 
-def _has_miss_marker(records: Sequence[Mapping[str, Any]]) -> bool:
-    return any(record.get("miss") is True for record in records)
-
-
 def _elapsed_ms(start: float, monotonic: Callable[[], float]) -> int:
     return max(0, int(round((monotonic() - start) * 1000)))
 
