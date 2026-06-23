@@ -221,6 +221,59 @@ targets:
             self.assertEqual(result.overall, "passed")
             self.assertEqual((result.passed, result.failed, result.skipped), (0, 0, 0))
 
+    def test_disabled_testcase_counted_as_skipped_not_passed(self):
+        # A DISABLED_ test never runs: gtest emits it as status="notrun" with no
+        # <failure>/<error>/<skipped> child. It must count as skipped, not inflate
+        # the passed total (and the run still passes since nothing failed).
+        with tempfile.TemporaryDirectory() as tmp:
+            xml = Path(tmp) / "disabled.xml"
+            xml.write_text(
+                """
+<testsuites tests="2" failures="0" disabled="1">
+  <testsuite name="Suite" tests="2" failures="0" disabled="1">
+    <testcase classname="Suite" name="Runs" status="run" time="0.001"/>
+    <testcase classname="Suite" name="DISABLED_Off" status="notrun"/>
+  </testsuite>
+</testsuites>
+""",
+                encoding="utf-8",
+            )
+
+            result = gtest.parse_xml(xml, run_id="r4")
+
+            self.assertEqual((result.passed, result.failed, result.skipped), (1, 0, 1))
+            self.assertEqual(result.overall, "passed")
+            statuses = {case.name: case.status for case in result.per_test}
+            self.assertEqual(statuses, {"Runs": "passed", "DISABLED_Off": "skipped"})
+
+    def test_disabled_named_test_that_ran_is_not_misreported_as_skipped(self):
+        # A DISABLED_-named case that actually executed (e.g. under
+        # --gtest_also_run_disabled_tests) reports status="run", not "notrun". The
+        # name prefix alone must NOT demote it to skipped — it is a real pass/fail.
+        # The status-less form (no `status` attr) is the normal passing shape and
+        # must likewise stay passed despite the DISABLED_ name.
+        with tempfile.TemporaryDirectory() as tmp:
+            xml = Path(tmp) / "ran_disabled.xml"
+            xml.write_text(
+                """
+<testsuites tests="2" failures="0">
+  <testsuite name="Suite" tests="2" failures="0">
+    <testcase classname="Suite" name="DISABLED_Ran" status="run" time="0.001"/>
+    <testcase classname="Suite" name="DISABLED_NoStatus" time="0.002"/>
+  </testsuite>
+</testsuites>
+""",
+                encoding="utf-8",
+            )
+
+            result = gtest.parse_xml(xml, run_id="r5")
+
+            self.assertEqual((result.passed, result.failed, result.skipped), (2, 0, 0))
+            statuses = {case.name: case.status for case in result.per_test}
+            self.assertEqual(
+                statuses, {"DISABLED_Ran": "passed", "DISABLED_NoStatus": "passed"}
+            )
+
     def test_missing_result_file_fails_closed_without_stdout_scrape(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

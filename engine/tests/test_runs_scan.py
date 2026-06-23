@@ -1,9 +1,11 @@
 import io
 import json
+import logging
 import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from arbiter_engine import rpc
 from arbiter_engine.facts.store import FactRecord, open_fact_store
@@ -150,6 +152,41 @@ class DiscoveryTest(unittest.TestCase):
 
             self.assertEqual(discovery.discover_test_candidates(root), ())
             self.assertEqual(discovery.scan(root, "tests"), ())
+
+    def test_truncated_discovery_logs_a_warning(self):
+        # search returns only the ranked top-`limit` with no cursor, so a result
+        # that fills the cap may have dropped cases. discover_test_candidates must
+        # surface that (log a warning) instead of silently under-discovering.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(
+                root,
+                [
+                    _test_body_fact("A", "One", "a.cc", 1, "code:type:1"),
+                    _test_body_fact("B", "Two", "b.cc", 2, "code:type:2"),
+                    _test_body_fact("C", "Three", "c.cc", 3, "code:type:3"),
+                ],
+            )
+
+            with self.assertLogs("arbiter_engine.runs.discovery", level="WARNING") as logs:
+                capped = discovery.discover_test_candidates(root, limit=2)
+            self.assertTrue(any("capped" in line for line in logs.output))
+            # Still returns what it found, just flagged as incomplete.
+            self.assertEqual(len(capped), 2)
+
+    def test_complete_discovery_logs_nothing(self):
+        # A result below the cap is complete; no spurious truncation warning.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, [_test_body_fact("A", "One", "a.cc", 1, "code:type:1")])
+
+            logger = logging.getLogger("arbiter_engine.runs.discovery")
+            with mock.patch.object(logger, "warning") as warn:
+                found = discovery.discover_test_candidates(root, limit=1000)
+            # A real (non-empty) result below the cap: proves the no-warning path was
+            # actually exercised, not vacuously satisfied by an empty/early return.
+            self.assertEqual(len(found), 1)
+            warn.assert_not_called()
 
 
 class ScanToolTest(unittest.TestCase):
