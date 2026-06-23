@@ -107,10 +107,22 @@ func (s *Store) readState() (*Match, error) {
 }
 
 func (s *Store) writeState(m *Match) error {
+	// state.json is the authoritative source of truth and must commit
+	// durably; its failure aborts the write.
 	if err := atomicJSON(s.statePath(), m, 0o600); err != nil {
 		return err
 	}
-	return atomicJSON(s.statusPath(), projectStatus(m), 0o644)
+	// status.json is a best-effort projection of state.json for CLI/UI
+	// consumers (readState only ever reads state.json). Once state.json has
+	// committed the match has durably advanced, so a status.json write
+	// failure must not be reported as an error — doing so would tell the
+	// caller the write failed while the new state is already live. Swallow
+	// it (recording the failure in the journal); the projection may then lag
+	// state.json until the next successful write refreshes it.
+	if err := atomicJSON(s.statusPath(), projectStatus(m), 0o644); err != nil {
+		s.append("status_write_failed", map[string]any{"error": err.Error()})
+	}
+	return nil
 }
 
 func atomicJSON(path string, value any, perm os.FileMode) error {
@@ -155,6 +167,10 @@ func atomicFile(path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 	ok = true
+	// Best-effort parent-dir fsync so the rename's new directory entry is
+	// crash-durable (POSIX rename is not durable until the containing dir is
+	// fsync'd). Matches the "fsync'd" state-file doc claim.
+	shared.SyncDir(filepath.Dir(path))
 	return nil
 }
 
