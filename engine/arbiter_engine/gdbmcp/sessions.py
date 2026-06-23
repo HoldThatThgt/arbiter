@@ -136,7 +136,17 @@ class GDBSession:
                 self._apply_record(record)
                 waiter = self._waiters.get(record.token)
                 if waiter is not None:
-                    waiter.put(record)
+                    # Non-blocking delivery. The waiter is a maxsize=1 queue and
+                    # tokens are strictly monotonic, so the happy path always has
+                    # room. Guard against a protocol-violating duplicate ^result
+                    # for the same token (or a reused token) wedging the reader
+                    # thread forever on a full queue: the reader MUST keep draining
+                    # stdout (events, and the EOF _wake_waiters path), so drop the
+                    # surplus record and record it for forensics rather than block.
+                    try:
+                        waiter.put_nowait(record)
+                    except queue.Full:
+                        self._append_event({"kind": "duplicate_result", "token": record.token})
             elif record.kind in {"exec", "status", "notify"}:
                 self._apply_record(record)
                 self._append_event(record.to_json())

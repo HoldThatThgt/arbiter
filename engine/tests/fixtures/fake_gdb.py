@@ -36,6 +36,14 @@ def handle(token: str, command: str) -> None:
         # WITHOUT emitting a result record for this token, so a blocked
         # command() must be woken by the EOF path, not by a reply.
         raise SystemExit(0)
+    if command.startswith("-arb-dup"):
+        # Simulate GDB emitting two ^result records with the SAME token (a
+        # protocol violation). The reader's per-token waiter is a maxsize=1
+        # queue, so the surplus record must be dropped rather than block the
+        # reader thread on a full queue.
+        print(f"{token}^done", flush=True)
+        print(f"{token}^done", flush=True)
+        return
     if command.startswith("-gdb-set") or command.startswith("-environment-cd"):
         print(f"{token}^done", flush=True)
         return

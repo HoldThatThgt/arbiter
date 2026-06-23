@@ -109,6 +109,22 @@ class SessionTest(unittest.TestCase):
         # for slow CI, but nowhere near the full 8s timeout).
         self.assertLess(elapsed, 2.0)
 
+    def test_duplicate_token_result_does_not_wedge_reader(self):
+        # GDB emitting two ^result records with the SAME token (a protocol
+        # violation the MI parser does not dedupe) must not wedge the reader
+        # thread on a full maxsize=1 waiter queue. The first result is delivered
+        # normally; the surplus is dropped (non-blocking put), and the reader
+        # keeps draining stdout so a subsequent command still completes.
+        started = self.manager.start(target="demo", cwd=".")
+        session = self.manager.get(started["session_id"])
+        result = session.command("-arb-dup", timeout_ms=2000)
+        self.assertEqual(result.record.cls, "done")
+        # A follow-up command must complete (it would hang to timeout if the
+        # duplicate had blocked the reader thread), and the reader stays alive.
+        again = session.command("-arb-dup", timeout_ms=2000)
+        self.assertEqual(again.record.cls, "done")
+        self.assertTrue(session._reader.is_alive(), "reader thread wedged by duplicate-token result")
+
     def test_multistatement_console_command_is_rejected(self):
         # A dangerous keyword hidden past the first token must not slip through
         # the deny-by-default console guard, whatever separator hides it:
