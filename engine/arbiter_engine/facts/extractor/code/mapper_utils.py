@@ -95,20 +95,26 @@ def _compile_guard_conditions_by_line(target_repo: Path, rel_source: str) -> Dic
         if directive is not None:
             name, expression, branch = directive
             if name in {"if", "ifdef", "ifndef"}:
+                source = f"{rel_source}:{line_number}"
                 stack.append(
                     _ConditionAnnotation(
                         kind="compile_guard",
-                        expression=_compact_condition_text(expression),
+                        expression=_budget_condition_expression(
+                            "compile_guard", _compact_condition_text(expression), branch, source
+                        ),
                         branch=branch,
-                        source=f"{rel_source}:{line_number}",
+                        source=source,
                     )
                 )
             elif name in {"elif", "else"} and stack:
+                source = f"{rel_source}:{line_number}"
                 stack[-1] = _ConditionAnnotation(
                     kind="compile_guard",
-                    expression=_compact_condition_text(expression),
+                    expression=_budget_condition_expression(
+                        "compile_guard", _compact_condition_text(expression), branch, source
+                    ),
                     branch=branch,
-                    source=f"{rel_source}:{line_number}",
+                    source=source,
                 )
             elif name == "endif" and stack:
                 stack.pop()
@@ -211,13 +217,75 @@ def _render_condition_expression(node: Optional[Dict[str, JSONValue]]) -> Option
     return _expr_name(node) or (str(kind) if isinstance(kind, str) and kind else None)
 
 
+_CONDITION_TRUNCATION_MARKER = "..."
+
+
 def _compact_condition_text(expression: Optional[str]) -> Optional[str]:
     if expression is None:
         return None
     text = re.sub(r"\s+", " ", expression).strip()
     if len(text) <= CONDITION_TEXT_MAX_CHARS:
         return text
-    return text[: CONDITION_TEXT_MAX_CHARS - 3].rstrip() + "..."
+    return text[: CONDITION_TEXT_MAX_CHARS - len(_CONDITION_TRUNCATION_MARKER)].rstrip() + _CONDITION_TRUNCATION_MARKER
+
+
+def _condition_json_bytes(
+    kind: str,
+    expression: Optional[str],
+    branch: Optional[str],
+    source: Optional[str],
+) -> int:
+    payload = {"kind": kind, "expression": expression, "branch": branch, "source": source}
+    return len(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    )
+
+
+def _budget_condition_expression(
+    kind: str,
+    expression: Optional[str],
+    branch: Optional[str],
+    source: Optional[str],
+) -> Optional[str]:
+    """Truncate ``expression`` so the serialized condition stays under the cap.
+
+    The store enforces ``CONDITION_MAX_BYTES`` on the whole canonical-JSON
+    RelativeCondition (kind + expression + branch + source), not just the
+    expression text. ``_compact_condition_text`` only bounds the expression
+    character count, so a long expression combined with a long ``source``
+    ("path:line") could still overflow and raise a non-recoverable
+    StorageError. This budgets the expression against the remaining room after
+    the fixed fields, falling back to dropping the expression entirely (an
+    otherwise-unconditional condition) when even an empty expression would not
+    fit.
+    """
+    limit = CONDITION_MAX_BYTES - CONDITION_BYTES_HEADROOM
+    if expression is None:
+        return None
+    if _condition_json_bytes(kind, expression, branch, source) <= limit:
+        return expression
+    # Bytes consumed by the condition with no expression text; the remainder is
+    # what the (UTF-8) expression body may occupy.
+    fixed_bytes = _condition_json_bytes(kind, "", branch, source)
+    available = limit - fixed_bytes
+    marker_bytes = len(_CONDITION_TRUNCATION_MARKER.encode("utf-8"))
+    if available <= marker_bytes:
+        # No meaningful room for any expression text; degrade to no expression.
+        return None
+    body_budget = available - marker_bytes
+    encoded = expression.encode("utf-8")
+    if len(encoded) <= body_budget:
+        truncated = expression
+    else:
+        # Truncate on a UTF-8 character boundary so the result stays valid text.
+        truncated = encoded[:body_budget].decode("utf-8", errors="ignore").rstrip()
+    candidate = (truncated + _CONDITION_TRUNCATION_MARKER) if truncated else _CONDITION_TRUNCATION_MARKER
+    # JSON escaping of control characters can inflate the byte length beyond the
+    # raw UTF-8 size used for body_budget (e.g. "\x01" -> "\\u0001"), so confirm
+    # the candidate actually fits and drop the expression if it still does not.
+    if _condition_json_bytes(kind, candidate, branch, source) <= limit:
+        return candidate
+    return None
 
 
 def _condition_source_parts(condition: _ConditionAnnotation) -> Tuple[Optional[str], int]:
@@ -412,6 +480,17 @@ def _object_identity_payload(
         )
     elif fact_kind == "code_file":
         base["canonical_source"] = name
+    elif fact_kind == "macro":
+        # Keyed on location + name only (no ordinal): the same header macro
+        # included by two translation units must dedup to one fact at the
+        # reducer, so its identity must not fold the per-mapper traversal
+        # ordinal the way the generic branch below does.
+        base.update(
+            {
+                "canonical_source": canonical_source,
+                "line": line_number,
+            }
+        )
     else:
         base.update(
             {
@@ -712,16 +791,42 @@ def _header_materialization_key_from_ast_node(
 
 def _condition_for_node(node: Dict[str, JSONValue]) -> Optional[RelativeCondition]:
     condition = node.get("cipher2_condition")
-    if isinstance(condition, dict):
-        return RelativeCondition.from_json(condition)
-    return None
+    if not isinstance(condition, dict):
+        return None
+    kind = condition.get("kind")
+    expression = condition.get("expression")
+    branch = condition.get("branch")
+    source = condition.get("source")
+    if (
+        isinstance(kind, str)
+        and (expression is None or isinstance(expression, str))
+        and (branch is None or isinstance(branch, str))
+        and (source is None or isinstance(source, str))
+        and _condition_json_bytes(kind, expression, branch, source) > CONDITION_MAX_BYTES
+    ):
+        # Even with the expression already budgeted, the fixed fields (notably an
+        # extremely long `source` path) can push the serialized condition past
+        # the store's hard ceiling, which would raise a non-recoverable
+        # StorageError. Fall back to an unconditional relative rather than emit
+        # an oversized condition.
+        return None
+    return RelativeCondition.from_json(condition)
 
 
 def _walk_dicts(node: Dict[str, JSONValue]) -> Iterator[Dict[str, JSONValue]]:
-    yield node
-    for child in _node_children(node):
-        if isinstance(child, dict):
-            yield from _walk_dicts(child)
+    # Iterative pre-order traversal. AST depth on generated parsers (e.g. a
+    # 1500-term `a+b+c...` chain) can exceed Python's recursion limit, so an
+    # explicit stack is used instead of self-recursion. Children are pushed in
+    # reverse so the leftmost child is visited first, matching the previous
+    # recursive order.
+    stack: List[Dict[str, JSONValue]] = [node]
+    while stack:
+        current = stack.pop()
+        yield current
+        children = _node_children(current)
+        for child in reversed(children):
+            if isinstance(child, dict):
+                stack.append(child)
 
 
 def _field_access_kinds(
@@ -816,9 +921,18 @@ def _location_has_macro_expansion(value: Dict[str, JSONValue]) -> bool:
 
 
 def _contains_dict(root: Dict[str, JSONValue], target: Dict[str, JSONValue]) -> bool:
-    if root is target:
-        return True
-    return any(isinstance(child, dict) and _contains_dict(child, target) for child in _node_children(root))
+    # Iterative DFS over an explicit stack: deeply-nested expression subtrees
+    # would otherwise overflow Python's recursion limit on large generated
+    # parsers.
+    stack: List[Dict[str, JSONValue]] = [root]
+    while stack:
+        current = stack.pop()
+        if current is target:
+            return True
+        for child in _node_children(current):
+            if isinstance(child, dict):
+                stack.append(child)
+    return False
 
 
 def _member_name(node: Dict[str, JSONValue]) -> Optional[str]:

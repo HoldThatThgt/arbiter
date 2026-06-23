@@ -355,6 +355,218 @@ class CodeExtractorFixturesTest(unittest.TestCase):
         self.assertNotIn("ordinal", first)
         self.assertNotIn("source_id", first)
 
+    def test_macro_identity_is_location_keyed_and_ignores_ordinal(self):
+        # The same header macro reached by two translation units must dedup to a
+        # single fact at the reducer, so its object identity must depend only on
+        # canonical_source + line + name, never on the per-mapper traversal
+        # ordinal (which differs by how many facts precede it in each TU).
+        first = code_extractor._object_identity_payload(
+            fact_kind="macro",
+            name="DATA_LIMIT",
+            line_number=12,
+            caller=None,
+            callee=None,
+            profile="debug",
+            payload={"canonical_source": "include/limits.h", "ordinal": 7},
+        )
+        second = code_extractor._object_identity_payload(
+            fact_kind="macro",
+            name="DATA_LIMIT",
+            line_number=12,
+            caller=None,
+            callee=None,
+            profile="debug",
+            payload={"canonical_source": "include/limits.h", "ordinal": 4221},
+        )
+
+        self.assertEqual(first, second)
+        self.assertEqual(first["canonical_source"], "include/limits.h")
+        self.assertEqual(first["line"], 12)
+        self.assertNotIn("ordinal", first)
+
+    def test_deeply_nested_expression_skips_one_tu_without_aborting_snapshot(self):
+        # A translation unit whose AST nests far deeper than Python's recursion
+        # limit (the shape clang emits for a long `a + b + c ...` chain found in
+        # generated DBMS parsers) must be skipped and recorded, not abort the
+        # whole snapshot. A healthy sibling TU in the same run must still index.
+        def _deep_binary_chain(depth: int, line: int) -> dict:
+            node = {"kind": "DeclRefExpr", "name": "a", "loc": _loc(line)}
+            for _ in range(depth):
+                node = {
+                    "kind": "BinaryOperator",
+                    "opcode": "+",
+                    "loc": _loc(line),
+                    "inner": [node, {"kind": "IntegerLiteral", "loc": _loc(line)}],
+                }
+            return node
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            deep_source = target / "src" / "deep.c"
+            healthy_source = target / "src" / "healthy.c"
+            _write(deep_source, "int boom(void) { return 0; }\n")
+            _write(healthy_source, "int fine(void) { return 1; }\n")
+
+            deep_ast = {
+                "kind": "TranslationUnitDecl",
+                "inner": [
+                    {
+                        "kind": "FunctionDecl",
+                        "name": "boom",
+                        "loc": _loc(1, "src/deep.c"),
+                        "isThisDeclarationADefinition": True,
+                        "inner": [
+                            {
+                                "kind": "CompoundStmt",
+                                "inner": [
+                                    {
+                                        "kind": "ReturnStmt",
+                                        "loc": _loc(2),
+                                        "inner": [_deep_binary_chain(1500, 2)],
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+            healthy_ast = {
+                "kind": "TranslationUnitDecl",
+                "inner": [
+                    {
+                        "kind": "FunctionDecl",
+                        "name": "fine",
+                        "loc": _loc(1, "src/healthy.c"),
+                        "isThisDeclarationADefinition": True,
+                        "inner": [{"kind": "CompoundStmt", "inner": [{"kind": "ReturnStmt", "loc": _loc(1)}]}],
+                    }
+                ],
+            }
+            ast_by_rel = {"src/deep.c": deep_ast, "src/healthy.c": healthy_ast}
+
+            extractor = _SyntheticAstExtractor(target, load_config(target, observe=False), ast_by_rel)
+            # The whole point: collect() returns instead of propagating RecursionError.
+            result = extractor.collect([deep_source, healthy_source], "debug")
+
+            function_names = {fact.object_name for fact in result.facts if fact.fact_kind == "function"}
+            self.assertIn("fine", function_names)
+            self.assertNotIn("boom", function_names)
+            recorded = {(getattr(error, "code", None), getattr(error, "source", None)) for error in result.errors}
+            self.assertIn(("map_failed", "src/deep.c"), recorded)
+
+    def test_iterative_ast_walkers_handle_depth_beyond_recursion_limit(self):
+        # Direct guard on the hot walkers themselves: at a depth that overflows
+        # an equivalent recursive walk they must traverse without raising.
+        depth = 1500
+        node = {"kind": "DeclRefExpr", "name": "a"}
+        for index in range(depth):
+            node = {
+                "kind": "BinaryOperator",
+                "opcode": "+",
+                "inner": [node, {"kind": "DeclRefExpr", "name": f"v{index}"}],
+            }
+        deepest = node
+        for _ in range(depth):
+            deepest = code_extractor._node_children(deepest)[0]
+
+        visited = sum(1 for _ in code_extractor._walk_dicts(node))
+        self.assertEqual(visited, depth * 2 + 1)
+        self.assertTrue(code_extractor._contains_dict(node, deepest))
+
+    def test_oversized_relative_condition_is_budgeted_below_storage_cap(self):
+        # _compact_condition_text caps only the expression text; a long
+        # expression plus a long "path:line" source still overflows the store's
+        # 1 KB RelativeCondition ceiling and raises a non-recoverable
+        # StorageError. The mapper budgets the condition holistically so it can
+        # be constructed, truncating (or dropping) the expression as needed.
+        long_source = "src/backend/" + "nested/dir/" * 40 + "file.c:98765"
+        compacted = code_extractor._compact_condition_text("value_field + " * 64)
+        self.assertEqual(len(compacted), code_extractor.CONDITION_TEXT_MAX_CHARS)
+
+        naive_bytes = len(
+            json.dumps(
+                {"kind": "branch", "expression": compacted, "branch": "then", "source": long_source},
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")
+        )
+        self.assertGreater(naive_bytes, code_extractor.CONDITION_MAX_BYTES)
+
+        budgeted = code_extractor._budget_condition_expression("branch", compacted, "then", long_source)
+        self.assertIsNotNone(budgeted)
+        self.assertLess(len(budgeted), len(compacted))
+        # Must construct without raising StorageError and stay within the cap.
+        condition = RelativeCondition(kind="branch", expression=budgeted, branch="then", source=long_source)
+        encoded = json.dumps(condition.to_json(), sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        self.assertLessEqual(len(encoded), code_extractor.CONDITION_MAX_BYTES)
+
+    def test_oversized_condition_falls_back_to_no_expression_when_source_fills_budget(self):
+        # When the fixed fields (notably a very long source) already consume the
+        # budget, the expression is dropped entirely rather than overflowing.
+        huge_source = "x/" * 600 + "f.c:1"
+        budgeted = code_extractor._budget_condition_expression(
+            "branch", code_extractor._compact_condition_text("a + b + c"), "then", huge_source
+        )
+        self.assertIsNone(budgeted)
+
+    def test_condition_for_node_drops_condition_when_source_alone_exceeds_cap(self):
+        # Dropping the expression is not enough when `source` alone overflows the
+        # cap: building the RelativeCondition would still raise a non-recoverable
+        # StorageError. _condition_for_node is the single choke point into
+        # RelativeCondition and must fall back to an unconditional relative
+        # (return None) rather than emit an oversized condition.
+        huge_source = "x/" * 600 + "f.c:1"
+        self.assertGreater(len(huge_source.encode("utf-8")), code_extractor.CONDITION_MAX_BYTES)
+        node = {
+            "kind": "CallExpr",
+            "cipher2_condition": {
+                "kind": "branch",
+                "expression": None,
+                "branch": "then",
+                "source": huge_source,
+            },
+        }
+        # Must NOT raise StorageError and must drop the over-cap condition.
+        self.assertIsNone(code_extractor._condition_for_node(node))
+
+        # A normal, within-cap condition still round-trips into a RelativeCondition.
+        ok_node = {
+            "kind": "CallExpr",
+            "cipher2_condition": {
+                "kind": "branch",
+                "expression": "enabled",
+                "branch": "then",
+                "source": "src/main.c:12",
+            },
+        }
+        condition = code_extractor._condition_for_node(ok_node)
+        self.assertIsNotNone(condition)
+        self.assertEqual(condition.expression, "enabled")
+
+    def test_capture_lines_handles_null_inner_child_without_dropping_siblings(self):
+        # clang's JSON AST can place a literal null in an `inner` array for an
+        # omitted optional sub-node. The iterative _capture_lines must traverse
+        # past it and still record every following sibling's line/file context,
+        # exactly as the previous recursive form did.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            mapper = code_extractor._ClangAstMapper(target, "src/main.c", "c", "debug", "source:main")
+            trailing = {"kind": "VarDecl", "name": "z", "loc": _loc(3, "src/main.c")}
+            root = {
+                "kind": "TranslationUnitDecl",
+                "loc": _loc(1, "src/main.c"),
+                "inner": [
+                    {"kind": "VarDecl", "name": "a", "loc": _loc(2, "src/main.c")},
+                    None,
+                    trailing,
+                ],
+            }
+            mapper._capture_lines(root, 1, None)
+            # The sibling after the null child must still be recorded.
+            self.assertEqual(mapper._line_by_node.get(id(trailing)), 3)
+            self.assertEqual(mapper._file_by_node.get(id(trailing)), "src/main.c")
+
     def test_streaming_reducer_spools_snapshot_shaped_fact_lines(self):
         fact = CodeFact(
             fact_kind="function",

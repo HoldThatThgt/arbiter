@@ -304,7 +304,33 @@ class CodeFactExtractor:
             header_resolver_seed=header_resolver_seed,
             header_context_hash=header_context_hash,
         )
-        file_result = mapper.map(load_result.ast)
+        try:
+            file_result = mapper.map(load_result.ast)
+        except _RecoverableExtractError:
+            raise
+        except RecursionError as exc:
+            # A translation unit whose AST nests deeper than Python's recursion
+            # limit (e.g. a huge generated-parser expression) must not abort the
+            # whole snapshot. Convert it to a recoverable error so streaming
+            # records the failure and skips just this TU (ADR-0020 hard stop is
+            # reserved for genuinely unrecoverable indexer faults).
+            raise _RecoverableExtractError(
+                "map_failed",
+                "translation unit mapping exceeded recursion limit",
+                diagnostic_kind="map_error",
+                diagnostic_reason="recursion_limit",
+                details={"rel_source": rel_source},
+            ) from exc
+        except Exception as exc:
+            # Defence in depth: any unexpected per-file mapping failure degrades
+            # to skipping one TU rather than failing the entire extraction.
+            raise _RecoverableExtractError(
+                "map_failed",
+                "translation unit mapping failed",
+                diagnostic_kind="map_error",
+                diagnostic_reason="mapping_exception",
+                details={"rel_source": rel_source, "exception": type(exc).__name__},
+            ) from exc
         traverse_duration_ms = _elapsed_ms(traverse_started)
         if header_materialization_stats is not None:
             file_result = replace(

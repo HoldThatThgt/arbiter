@@ -28,6 +28,7 @@ from arbiter_engine.facts.store._common import JSONValue
 from ._shim import CipherConfig
 from ._shim import InitProgressEvent, InitProgressSink
 from arbiter_engine.facts.store import (
+    MAX_CONDITION_BYTES,
     EncodedFactLine,
     EncodedRelativeLine,
     FactRecord,
@@ -75,6 +76,14 @@ INC_DEC_OPS = {"++", "--", "post++", "post--", "pre++", "pre--"}
 PROBE_FUNCTION_NAME = "cipher2_toolchain_probe"
 CONDITION_TARGET_KINDS = {"CallExpr", "MemberExpr"}
 CONDITION_TEXT_MAX_CHARS = 512
+# The serialized RelativeCondition (kind+expression+branch+source as canonical
+# JSON, UTF-8) must stay at or below this ceiling or store/models.py raises a
+# non-recoverable StorageError. Sourced directly from the store's authoritative
+# constant so the mapper budget can never drift from the value the store
+# enforces. A few bytes of headroom guard against canonical-JSON escaping
+# differences when truncating the expression.
+CONDITION_MAX_BYTES = MAX_CONDITION_BYTES
+CONDITION_BYTES_HEADROOM = 8
 HEADER_DECL_CACHE_KINDS = {
     "FunctionDecl",
     "CXXMethodDecl",
