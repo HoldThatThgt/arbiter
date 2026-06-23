@@ -1,6 +1,6 @@
 ---
 name: freeplay
-description: Generic fact-first Arbiter loop for requests without a more specific opening.
+description: Use when a request has no more specific opening — the generic fact-first Arbiter loop.
 max_steps: 64
 ---
 
@@ -20,6 +20,7 @@ src_compile recipe and produces fresh facts before any implementation work start
 [CheckList]
 - Run the src_compile recipe with the selected profile (and any request-named feature flags) and confirm facts published
 - Record the published snapshot or the typed reason publication failed
+[Submit] gear-up-published
 [Branch]
 success: orient
 failure: gear-up
