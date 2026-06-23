@@ -312,8 +312,13 @@ class McpRelationsTest(unittest.TestCase):
         self.assertEqual(buckets["incoming_defines"]["relatives"][0]["relation_kind"], "defines")
         # dropped: event.counts["relative_rollup_group_count"/"relative_collapsed_instance_count"] (log-only)
 
-    @unittest.skip("dangling relative endpoints are unreachable in arbiter — store + overlay enforce endpoint closure")
-    def test_detail_preview_uses_source_diversity_and_missing_endpoint_defaults(self):
+    def test_detail_preview_uses_source_diversity_under_tight_budget(self):
+        # Re-authored from the original cipher-2 source-diversity / missing-endpoint test: the
+        # missing-endpoint half is dropped (arbiter's store + overlay enforce endpoint closure, so a
+        # dangling relative endpoint is unreachable here), but the source-diversity selection half is
+        # restored with all-resolvable endpoints so that behavior stays covered. Six callers share
+        # src/a.c; under the small budget (bucket_limit 5) the selector must apply the per-source soft
+        # cap (2) and reach across distinct sources rather than greedily filling slots from src/a.c.
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp)
             facts = [_fact("fact:target", "target", source="src/target.c:1")]
@@ -335,13 +340,31 @@ class McpRelationsTest(unittest.TestCase):
                     _relative("rel:b0", "fact:b0", "fact:target", evidence_source="src/b.c:10"),
                     _relative("rel:c0", "fact:c0", "fact:target", evidence_source="src/c.c:10"),
                     _relative("rel:d0", "fact:d0", "fact:target", evidence_source="generated:10"),
-                    _relative("rel:missing", "fact:missing", "fact:target", evidence_source="src/missing.c:10"),
                     _relative("rel:z0", "fact:z0", "fact:target", evidence_source="src/z.c:10"),
                 ]
             )
-            server = open_facts_server(target, fact_view_provider=lambda: _FakeFactView(facts, relatives))
-            detail = server.call_tool("detail", {"fact_id": "fact:target", "budget": "small"})
+            open_fact_store(target, mode="w", log_enabled=False).replace_snapshot(facts, relatives)
+
+            detail = open_facts_server(target).call_tool("detail", {"fact_id": "fact:target", "budget": "small"})
+
         self.assertFalse(detail.is_error)
+        preview = detail.structured_content["relative_preview"]
+        callers = next(bucket for bucket in preview["buckets"] if bucket["bucket"] == "callers")
+        names = [item["endpoint_name"] for item in callers["relatives"]]
+        shown_sources = {item["endpoint_source"].rpartition(":")[0] or item["endpoint_source"] for item in callers["relatives"]}
+
+        # All 10 callers count; only 5 fit the small budget, so the bucket is truncated.
+        self.assertEqual(preview["incoming_counts"]["direct_call"], 10)
+        self.assertEqual(callers["total_count"], 10)
+        self.assertEqual(callers["shown_count"], 5)
+        self.assertTrue(callers["truncated"])
+        # Diversity, not greedy name order: src/a.c is held to the soft cap (2) instead of filling all
+        # five slots, so the shown set reaches b0/c0/d0 (which sort after a2..a5 by endpoint name).
+        self.assertEqual(names, ["a0", "a1", "b0", "c0", "d0"])
+        self.assertEqual(sum(1 for name in names if name.startswith("a")), 2)
+        self.assertEqual(shown_sources, {"src/a.c", "src/b.c", "src/c.c", "generated"})
+        # z0 falls off under the tight budget once the diverse slots are filled.
+        self.assertNotIn("z0", names)
 
     @unittest.skip("dangling relative endpoints are unreachable in arbiter — store + overlay enforce endpoint closure")
     def test_detail_preview_missing_endpoint_profile_is_null(self):

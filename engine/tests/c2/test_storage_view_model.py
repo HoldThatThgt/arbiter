@@ -108,6 +108,25 @@ class StorageViewModelInputTest(unittest.TestCase):
             self.assertEqual(stats.lock_state, "held")
             self.assertEqual(_view_state_from_stats(stats), "empty")
 
+    def test_held_lock_over_populated_store_supports_warning_view_state(self):
+        # The log-write-failure path into "warning" is intentionally not ported (store runs
+        # log-disabled), but "warning" is still reachable in arbiter via the lock branch. The sibling
+        # lock test above sees "empty" only because the zero-fact short-circuit wins; once the store
+        # holds facts, a held lock must surface as "warning" with no reliance on log-write accounting.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            open_fact_store(target, mode="w", log_enabled=False).replace_facts([_fact(1)])
+            lock_dir = target / ".arbiter" / "facts" / "run" / "storage.lock"
+            lock_dir.mkdir(parents=True)
+            (lock_dir / "owner.json").write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
+
+            stats = open_fact_store(target, mode="r", log_enabled=False).stats()
+
+            self.assertEqual(stats.lock_state, "held")
+            self.assertEqual(stats.log_write_failures, 0)
+            self.assertGreater(stats.total_facts, 0)
+            self.assertEqual(_view_state_from_stats(stats), "warning")
+
     def test_corruption_error_is_structured_for_error_view_state(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp)
