@@ -9,9 +9,12 @@ Near-verbatim port of cipher-2's ``cipher2.incremental`` coordinator, adapted to
   UUID, matching arbiter's ``overlay:<digest>`` convention (proposal §6.2.2).
 - paths are relocated under ``.arbiter/facts/run/incremental/`` (cipher-2 used ``.cipher``).
 
-The coordinator is the facts single-writer (player QUERY engine, ADR-0009): a synchronous
-``reconcile_current_sources`` keeps adjudication never-stale, and an optional background
-poll thread keeps the overlay warm between refreshes.
+The coordinator drives the facts overlay for the player QUERY engine (ADR-0009): a synchronous
+``reconcile_current_sources`` keeps adjudication never-stale. The single-writer OVERLAY flock
+that serializes publishes lives in ``view.reconcile`` (and ``view._background_loop``), NOT here —
+in production every reconcile runs under that flock. The intrinsic ``start``/``_poll_loop``
+publish path on this class does not take the flock and is exercised only by tests; it must not
+be wired into production without acquiring ``locks.OVERLAY`` per tick.
 """
 
 from __future__ import annotations
@@ -204,6 +207,7 @@ class IncrementalCoordinator:
         except StorageError as exc:
             return self._fail(exc.code, self.active_view.base_snapshot_id, started)
         if not inventory:
+            self._drop_overlay_if_present("reconcile_empty_inventory")
             self._status = IncrementalStatus("ready", base_snapshot_id)
             self._write_state(self._status)
             return self._status
@@ -235,6 +239,11 @@ class IncrementalCoordinator:
 
         dirty_sources = sorted(dirty_by_source.values(), key=lambda item: (item.rel_path, item.source_id))
         if not dirty_sources:
+            # Sources match the base snapshot again (e.g. a dirty edit reverted between reconciles).
+            # The wired writer builds a fresh coordinator per call, so the in-memory overlay handle
+            # is always None here; clear any dangling on-disk overlay so readers stop merging a stale
+            # patchset and adjudication sees the true base view (ADR-0018).
+            self._drop_overlay_if_present("reconcile_reverted_to_base")
             self._status = IncrementalStatus("ready", base_snapshot_id)
             self._write_state(self._status)
             return self._status
@@ -478,6 +487,10 @@ class IncrementalCoordinator:
         )
         overlay_dir = self._run_path("overlays", overlay_id)
         overlay_dir.mkdir(parents=True, exist_ok=True)
+        # Exactly one overlay is active at a time; reap any sibling patchset dirs left by a prior
+        # publish so they do not accumulate. (_drop_overlay now removes only the active id, so this
+        # is the publish-side replacement for the old whole-overlays/ sweep.)
+        self._reap_orphan_overlays(keep=overlay_id)
         _write_jsonl(overlay_dir / "facts.upsert.jsonl", fact_upserts)
         _write_jsonl(overlay_dir / "facts.tombstone.jsonl", fact_tombstones)
         _write_jsonl(overlay_dir / "relatives.upsert.jsonl", relative_upserts)
@@ -596,12 +609,72 @@ class IncrementalCoordinator:
             counts={"dropped_overlay_count": 1},
             payload={"reason": reason},
         )
-        overlays = self._run_path("overlays")
-        if overlays.exists():
-            shutil.rmtree(overlays, ignore_errors=True)
+        # Drop only the *active* overlay's patchset, not every overlay dir: on the wired
+        # reconcile path the in-memory handle is always None (fresh coordinator per call), so
+        # fall back to the on-disk pointer's id. Only when no id is recoverable do we reap the
+        # whole overlays/ tree (legacy/cleanup behaviour).
+        active_id = self._active_overlay.overlay_id if self._active_overlay is not None else None
+        if active_id is None:
+            active_id = self._pointer_overlay_id()
+        if active_id is not None:
+            shutil.rmtree(self._run_path("overlays", active_id), ignore_errors=True)
+        else:
+            overlays = self._run_path("overlays")
+            if overlays.exists():
+                shutil.rmtree(overlays, ignore_errors=True)
         self._active_overlay = None
-        self.active_view = open_fact_store(self.target_repo, mode="r", log_enabled=False).open_view(None)
+        # Refresh the in-memory base view. Reopening can raise StorageError if a concurrent rebuild
+        # is mid-swapping snapshots/current; on the wired reconcile path this runs after the guarded
+        # initial store read, so let a transient failure keep the previous base view rather than
+        # escape uncaught and turn an otherwise-clean reconcile into an untyped error. The on-disk
+        # pointer is still cleared below, so readers stop merging the dropped overlay regardless.
+        try:
+            self.active_view = open_fact_store(self.target_repo, mode="r", log_enabled=False).open_view(None)
+        except StorageError:
+            pass
         self._clear_overlay_pointer()
+
+    def _drop_overlay_if_present(self, reason: str) -> None:
+        """Clear a dangling on-disk overlay, independent of the in-memory ``_active_overlay``.
+
+        The wired reconcile path builds a fresh coordinator per call, so ``_active_overlay`` is
+        always None even when ``overlay/current.json`` still points at a published patchset. This
+        runs ``_drop_overlay`` only when there is actually something to clear (an in-memory handle
+        or an on-disk pointer), so a steady-stream of clean reconciles does not spam drop events.
+        """
+        if self._active_overlay is None and not overlay_pointer_path(self.target_repo).exists():
+            return
+        self._drop_overlay(reason)
+
+    def _reap_orphan_overlays(self, *, keep: str) -> None:
+        """Remove every overlay patchset dir except ``keep`` (the just-published one).
+
+        Content-addressed publish keeps one active overlay at a time, but a new publish writes a
+        new ``overlays/<id>/`` without removing the previously-active dir; this reaps those orphans
+        so the directory does not grow unboundedly across a long editing session.
+        """
+        overlays_root = self._run_path("overlays")
+        try:
+            entries = list(overlays_root.iterdir())
+        except OSError:
+            return
+        for entry in entries:
+            if entry.name == keep or not entry.is_dir():
+                continue
+            shutil.rmtree(entry, ignore_errors=True)
+
+    def _pointer_overlay_id(self) -> Optional[str]:
+        """Read the persisted overlay id from the on-disk pointer, or None if absent/unreadable.
+
+        Used by the wired reconcile path, where the coordinator is built fresh per call so the
+        in-memory ``_active_overlay`` is always None but a dangling pointer may still exist.
+        """
+        try:
+            raw = json.loads(overlay_pointer_path(self.target_repo).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        overlay_id = raw.get("overlay_id") if isinstance(raw, dict) else None
+        return overlay_id if isinstance(overlay_id, str) and overlay_id else None
 
     def _fail(
         self,
@@ -772,6 +845,14 @@ def load_active_overlay(target_repo: Path) -> Optional[TemporaryOverlay]:
     pointer at ``overlay/current.json``. Readers (rpc search/detail) load it here and pass
     it to ``store.open_view(overlay)`` — the overlay state survives across stateless calls
     and across processes, without reaching into the coordinator's in-memory view.
+
+    An overlay is a delta over one *specific* base snapshot. If the pointer's persisted
+    ``base_snapshot_id`` no longer matches the store's current snapshot (e.g. a full rebuild
+    published a new base), the patchset would apply over the wrong base — surfacing deleted
+    facts and hiding freshly-rebuilt ones — so we treat the snapshot mismatch as "no overlay"
+    and return None (base view). This auto-invalidates a stale pointer regardless of whether
+    the writer has cleaned it up yet, and holds for cross-process readers that take no overlay
+    lock on this path (rpc search/detail).
     """
     pointer = overlay_pointer_path(target_repo)
     try:
@@ -780,6 +861,12 @@ def load_active_overlay(target_repo: Path) -> Optional[TemporaryOverlay]:
         return None
     overlay_id = raw.get("overlay_id")
     if not isinstance(overlay_id, str) or not overlay_id:
+        return None
+    try:
+        current_snapshot_id = open_fact_store(Path(target_repo), mode="r", log_enabled=False).stats().snapshot_id
+    except StorageError:
+        return None
+    if raw.get("base_snapshot_id") != current_snapshot_id:
         return None
     overlay_dir = relocation.facts_dir(Path(target_repo)).joinpath(*RUN_DIR, "overlays", overlay_id)
     if not overlay_dir.is_dir():

@@ -92,11 +92,34 @@ def read_published(repo: Path) -> FactView:
         status = incremental.read_incremental_status(repo)
     except incremental.IncrementalError:
         return FactView(view_state="base", base_snapshot_id=_base_snapshot_id(repo), overlay_id=None)
-    return _view_from_status(repo, status)
+    # A non-writer reader does not reconcile, so state.json can still advertise an "overlay" that
+    # the data path will NOT apply — e.g. after a full rebuild publishes a new base snapshot, the
+    # stale overlay pointer is pinned to the old snapshot and load_active_overlay returns None
+    # (base view). The evidence must match the data the reader will actually serve, so we report
+    # the overlay only when an applicable overlay truly loads for the current snapshot. The writer
+    # path (reconcile) keeps reporting straight from its just-reconciled status.
+    return _view_from_status(repo, status, overlay_loadable=incremental.load_active_overlay(repo) is not None)
 
 
-def _view_from_status(repo: Path, status: "incremental.IncrementalStatus") -> FactView:
-    overlay_active = status.state == "overlay" and bool(status.overlay_id)
+def _view_from_status(
+    repo: Path,
+    status: "incremental.IncrementalStatus",
+    *,
+    overlay_loadable: bool = True,
+) -> FactView:
+    status_overlay = status.state == "overlay" and bool(status.overlay_id)
+    overlay_active = status_overlay and overlay_loadable
+    if status_overlay and not overlay_active:
+        # The status advertises an overlay the reader will NOT apply (stale pointer over a rebuilt
+        # base). Report the live base view so the evidence names the snapshot actually served, not
+        # the status's stale base_snapshot_id/overlay_id.
+        return FactView(
+            view_state="base",
+            base_snapshot_id=_base_snapshot_id(repo) or status.base_snapshot_id,
+            overlay_id=None,
+            stale_source_count=status.stale_source_count,
+            pending_task_count=status.pending_task_count,
+        )
     return FactView(
         view_state="overlay" if overlay_active else "base",
         base_snapshot_id=status.base_snapshot_id or _base_snapshot_id(repo),
