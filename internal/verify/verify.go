@@ -579,10 +579,25 @@ func factEvidenceFromStructured(payload map[string]any) FactEvidence {
 		OverlayID:    stringField(payload, "overlay_id"),
 		ViewState:    stringField(payload, "view_state"),
 		ResultCount:  resultCount,
-		Complete:     boolField(payload, "complete", !boolField(payload, "truncated", false)),
+		Complete:     factComplete(payload),
 		Reachable:    boolField(payload, "reachable", false),
 		TotalResults: intField(payload, "total", resultCount),
 	}
+}
+
+// factComplete fail-closes the completeness signal: an explicit complete key
+// wins; otherwise it derives from truncated. When neither key is present
+// (e.g. a nil/empty payload from structuredContent:null) completeness is
+// treated as NOT complete — absent evidence must not default to the passing
+// polarity.
+func factComplete(payload map[string]any) bool {
+	if complete, ok := payload["complete"].(bool); ok {
+		return complete
+	}
+	if truncated, ok := payload["truncated"].(bool); ok {
+		return !truncated
+	}
+	return false
 }
 
 func refreshDedupeKeys(root string, meta map[string]any) (matchKey, roundKey string, ok bool) {

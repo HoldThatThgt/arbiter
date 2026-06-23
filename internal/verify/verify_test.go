@@ -335,3 +335,26 @@ func copiedSelf(t *testing.T) string {
 	}
 	return target
 }
+
+func TestFactEvidenceFromStructuredCompletePolarity(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload map[string]any
+		want    bool
+	}{
+		{"both absent fail-closed", map[string]any{}, false},
+		{"nil payload fail-closed", nil, false},
+		{"complete true", map[string]any{"complete": true}, true},
+		{"complete false", map[string]any{"complete": false}, false},
+		{"truncated false", map[string]any{"truncated": false}, true},
+		{"truncated true", map[string]any{"truncated": true}, false},
+		{"complete wins over truncated", map[string]any{"complete": false, "truncated": false}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := factEvidenceFromStructured(tc.payload).Complete; got != tc.want {
+				t.Fatalf("Complete = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
