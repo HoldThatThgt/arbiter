@@ -189,15 +189,24 @@ def _libclang_diagnostic_reason(diagnostics: Sequence[Tuple[int, Dict[str, JSONV
     return None
 
 
-def _diagnostic_lines(diagnostics: Sequence[Tuple[int, Dict[str, JSONValue]]]) -> Set[int]:
-    lines: Set[int] = set()
+def _diagnostic_lines(diagnostics: Sequence[Tuple[int, Dict[str, JSONValue]]]) -> Dict[str, Set[int]]:
+    # Scope each error/fatal diagnostic to the FILE it occurred in, keyed by the raw
+    # `location["file"]` spelling (the same `clang_getFileName` output used for node
+    # locations). One TU spans the main source plus its in-repo headers; collapsing all
+    # diagnostics into a single flat line set would let an error on line N in one file
+    # flag clean nodes at line N in a DIFFERENT file of the same TU and silently drop them.
+    lines_by_file: Dict[str, Set[int]] = {}
     for severity, location in diagnostics:
         if severity < CX_DIAGNOSTIC_ERROR:
             continue
         line = location.get("line")
-        if isinstance(line, int):
-            lines.add(line)
-    return lines
+        if not isinstance(line, int):
+            continue
+        file_value = location.get("file")
+        if not isinstance(file_value, str) or not file_value:
+            continue
+        lines_by_file.setdefault(file_value, set()).add(line)
+    return lines_by_file
 
 
 # A build compiler and the index clang can spell the SAME language standard with

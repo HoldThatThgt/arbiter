@@ -672,7 +672,7 @@ class InitializerToolchainTest(unittest.TestCase):
         backend = object.__new__(code_extractor._LibclangAstBackend)
         backend.api = FakeApi()
 
-        ast = backend._cursor_to_ast(root, None, diagnostic_lines=set())
+        ast = backend._cursor_to_ast(root, None, diagnostic_lines_by_file={})
 
         record_node = ast["inner"][0]
         wrapper_node = ast["inner"][1]["inner"][0]["inner"][0]
@@ -777,7 +777,7 @@ class InitializerToolchainTest(unittest.TestCase):
         backend.api = FakeApi()
         backend.target_repo = Path("/tmp/repo")
 
-        ast = backend._cursor_to_ast(root, None, diagnostic_lines=set())
+        ast = backend._cursor_to_ast(root, None, diagnostic_lines_by_file={})
 
         names = [node.get("name") for node in code_extractor._walk_dicts(ast)]
         self.assertNotIn("FILE", names)
@@ -787,6 +787,121 @@ class InitializerToolchainTest(unittest.TestCase):
         self.assertNotIn("FILE", backend.api.visited)
         self.assertNotIn("external_field", backend.api.visited)
         self.assertIn("repo_inline", backend.api.visited)
+
+    def test_diagnostic_lines_scopes_error_lines_per_file(self):
+        diagnostics = [
+            (code_extractor.CX_DIAGNOSTIC_ERROR, {"file": "/tmp/repo/src/a.c", "line": 42}),
+            (code_extractor.CX_DIAGNOSTIC_ERROR, {"file": "/tmp/repo/include/shared.h", "line": 7}),
+            # Below-error severities and file-less diagnostics never scope a node.
+            (code_extractor.CX_DIAGNOSTIC_ERROR - 1, {"file": "/tmp/repo/src/a.c", "line": 99}),
+            (code_extractor.CX_DIAGNOSTIC_ERROR, {"line": 5}),
+        ]
+
+        self.assertEqual(
+            code_extractor._diagnostic_lines(diagnostics),
+            {"/tmp/repo/src/a.c": {42}, "/tmp/repo/include/shared.h": {7}},
+        )
+
+    def test_cursor_to_ast_scopes_error_recovery_per_file_in_one_tu(self):
+        # An error on line 42 in a.c must NOT flag a clean node that happens to sit on line 42
+        # in a different in-repo header of the same translation unit (else its facts are
+        # silently dropped downstream as error-recovery).
+        class FakeCursor:
+            def __init__(self, kind, name="", *, file_path=None, line=1, children=None):
+                self.kind = kind
+                self.name = name
+                self.file_path = file_path
+                self.line = line
+                self.children = list(children or [])
+                self.parent = None
+                for child in self.children:
+                    child.parent = self
+
+        repo_source = "/tmp/repo/src/a.c"
+        repo_header = "/tmp/repo/include/shared.h"
+        errored_field = FakeCursor("FieldDecl", "broken", file_path=repo_source, line=42)
+        errored_record = FakeCursor(
+            "StructDecl",
+            "Broken",
+            file_path=repo_source,
+            line=42,
+            children=[errored_field],
+        )
+        clean_field = FakeCursor("FieldDecl", "value", file_path=repo_header, line=42)
+        clean_record = FakeCursor(
+            "StructDecl",
+            "Shared",
+            file_path=repo_header,
+            line=42,
+            children=[clean_field],
+        )
+        root = FakeCursor("TranslationUnitDecl", children=[errored_record, clean_record])
+
+        class FakeApi:
+            def cursor_kind(self, cursor):
+                return cursor.kind
+
+            def cursor_spelling(self, cursor):
+                return cursor.name
+
+            def cursor_location(self, cursor):
+                location = {"line": cursor.line, "col": 1}
+                if cursor.file_path is not None:
+                    location["file"] = cursor.file_path
+                return location
+
+            def cursor_range_begin(self, cursor):
+                return self.cursor_location(cursor)
+
+            def cursor_type_spelling(self, _cursor):
+                return "int", None
+
+            def cursor_usr(self, _cursor):
+                return ""
+
+            def cursor_is_definition(self, _cursor):
+                return False
+
+            def cursor_linkage(self, _cursor):
+                return None
+
+            def cursor_binary_opcode(self, _cursor):
+                return None
+
+            def cursor_unary_opcode(self, _cursor):
+                return None
+
+            def semantic_parent(self, cursor):
+                return cursor.parent
+
+            def referenced(self, _cursor):
+                return None
+
+            def children(self, cursor):
+                return cursor.children
+
+        backend = object.__new__(code_extractor._LibclangAstBackend)
+        backend.api = FakeApi()
+        backend.target_repo = Path("/tmp/repo")
+
+        diagnostics = [(code_extractor.CX_DIAGNOSTIC_ERROR, {"file": repo_source, "line": 42})]
+        ast = backend._cursor_to_ast(
+            root,
+            None,
+            diagnostic_lines_by_file=code_extractor._diagnostic_lines(diagnostics),
+        )
+
+        nodes_by_name = {
+            node.get("name"): node
+            for node in code_extractor._walk_dicts(ast)
+            if node.get("name")
+        }
+        # The errored file's nodes at line 42 are flagged.
+        self.assertTrue(nodes_by_name["Broken"].get("containsErrors"))
+        self.assertTrue(nodes_by_name["broken"].get("containsErrors"))
+        # The other in-repo file's nodes at the SAME line 42 are NOT flagged (facts preserved).
+        self.assertNotIn("containsErrors", nodes_by_name["Shared"])
+        self.assertNotIn("containsErrors", nodes_by_name["value"])
 
     def test_libclang_probe_keeps_tempfile_ast_outside_target_repo(self):
         class FakeCursor:

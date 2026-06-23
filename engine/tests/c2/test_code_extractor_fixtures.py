@@ -3346,7 +3346,7 @@ int entry(int enabled, struct Context *ctx) {
             root_a = _FakeCursor("TranslationUnitDecl", loc=_loc(1, source_a.as_posix()), children=[header_decl])
 
             with backend.header_materialization_context(context_a):
-                ast_a = backend._cursor_to_ast(root_a, None, diagnostic_lines=set(), translation_unit=None)
+                ast_a = backend._cursor_to_ast(root_a, None, diagnostic_lines_by_file={}, translation_unit=None)
             key = code_extractor._header_materialization_key_from_ast_node(
                 target,
                 target,
@@ -3371,7 +3371,7 @@ int entry(int enabled, struct Context *ctx) {
             root_b = _FakeCursor("TranslationUnitDecl", loc=_loc(1, source_b.as_posix()), children=[header_decl])
 
             with backend.header_materialization_context(context_b):
-                ast_b = backend._cursor_to_ast(root_b, None, diagnostic_lines=set(), translation_unit=None)
+                ast_b = backend._cursor_to_ast(root_b, None, diagnostic_lines_by_file={}, translation_unit=None)
 
         cached_decl = ast_b["inner"][0]
         self.assertEqual(context_b.stats.header_decl_cache_hit_count, 1)
@@ -3534,7 +3534,7 @@ int entry(int enabled, struct Context *ctx) {
                 target,
                 roots,
                 {"src/a.c"},
-                diagnostic_lines_by_source={"src/a.c": {1}},
+                diagnostic_lines_by_source={"src/a.c": {header.as_posix(): {1}}},
             )
             lookup = code_extractor._CompileCommandLookup(
                 configured=False,
@@ -3813,9 +3813,15 @@ class _FakeCursorBackend(code_extractor._AstBackend):
     def __init__(self, target, roots, partial_sources=(), diagnostic_lines_by_source=None):
         self.roots = roots
         self.partial_sources = set(partial_sources)
+        # Per source, a per-FILE diagnostic-line map matching the real backend contract:
+        # {rel_source: {diagnostic_file: {lines}}}. A diagnostic only flags nodes whose own
+        # loc["file"] matches, so cross-file line collisions in one TU can't drop clean facts.
         self.diagnostic_lines_by_source = {
-            source: set(lines)
-            for source, lines in (diagnostic_lines_by_source or {}).items()
+            source: {
+                file_value: set(lines)
+                for file_value, lines in by_file.items()
+            }
+            for source, by_file in (diagnostic_lines_by_source or {}).items()
         }
         self.delegate = object.__new__(code_extractor._LibclangAstBackend)
         self.delegate.target_repo = target
@@ -3830,7 +3836,7 @@ class _FakeCursorBackend(code_extractor._AstBackend):
         ast = self.delegate._cursor_to_ast(
             self.roots[rel_source],
             None,
-            diagnostic_lines=self.diagnostic_lines_by_source.get(rel_source, set()),
+            diagnostic_lines_by_file=self.diagnostic_lines_by_source.get(rel_source, {}),
             translation_unit=None,
         )
         if rel_source in self.partial_sources:
