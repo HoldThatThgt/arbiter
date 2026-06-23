@@ -21,6 +21,7 @@ typed result — fail-closed, never a crash.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
@@ -29,15 +30,19 @@ from arbiter_engine.facts import store as facts_store
 from arbiter_engine.runs import scan as ast_scan
 from arbiter_engine.runs import state as run_state
 
+_log = logging.getLogger(__name__)
 
-# gtest test bodies all share this method name; querying the read_index for it pulls
-# back exactly the function facts a TEST/TEST_F/TEST_P macro produced.
-_TEST_BODY_SUFFIX = "::TestBody"
+
+# gtest's TEST/TEST_F/TEST_P macros generate a `Suite_Name_Test` fixture type; the
+# libclang extractor records it as a `type` fact, so querying the read_index for this
+# suffix pulls back exactly the test cases a published build indexed.
 _TEST_CLASS_SUFFIX = "_Test"
 # Upper bound on facts pulled from the index for one scan. Test suites are small
-# relative to the whole index; this keeps a pathological repo from streaming the
-# entire fact set through the (already index-backed) search.
-_SCAN_QUERY_LIMIT = 1000
+# relative to the whole index, so this still bounds a pathological repo from streaming
+# the entire fact set through the (already index-backed) search; it is set high enough
+# that a realistic suite is never truncated. `search` has no cursor, so this is a hard
+# cap — discover_test_candidates logs a warning if a result hits it (under-discovery).
+_SCAN_QUERY_LIMIT = 100_000
 
 
 @dataclass(frozen=True)
@@ -83,12 +88,21 @@ def discover_test_candidates(
     *,
     limit: int = _SCAN_QUERY_LIMIT,
 ) -> Tuple[TestCandidate, ...]:
-    """Query the real facts read_index for TestBody function facts.
+    """Query the real facts read_index for gtest fixture ``_Test`` type facts.
+
+    Each ``TEST``/``TEST_F``/``TEST_P`` macro generates a ``Suite_Name_Test`` fixture
+    class that the libclang extractor records as a ``type`` fact, so the indexed test
+    cases are found by searching for the ``_Test`` type name.
 
     Fail-closed: if the facts store has no published snapshot (the read_index is
     absent or empty) this returns an empty tuple instead of raising, so a cold repo
     or a storage hiccup degrades to "nothing to register" rather than crashing the
     scan tool.
+
+    ``search`` returns the ranked top-``limit`` only and exposes no cursor, so a
+    repo with more matching facts than ``limit`` would silently under-discover. The
+    cap is set high enough that a realistic suite never truncates; if a result does
+    fill the cap a warning is logged so the operator knows discovery was capped.
     """
     root = Path(repo_root)
     try:
@@ -98,6 +112,16 @@ def discover_test_candidates(
         facts = store.search("_Test", limit)
     except facts_store.StorageError:
         return ()
+    if len(facts) >= limit:
+        # A full result is indistinguishable from a truncated one (search has no
+        # total/cursor), so treat hitting the cap as truncation: any case past the
+        # ranked top-`limit` would silently go unregistered/uncovered. Surfaced as a
+        # warning rather than swallowed so the cap can be raised if a real suite trips it.
+        _log.warning(
+            "gtest discovery capped at %d _Test facts; a repo with more test cases "
+            "under-discovers — raise discovery._SCAN_QUERY_LIMIT.",
+            limit,
+        )
     candidates: List[TestCandidate] = []
     seen: set[Tuple[str, str]] = set()
     for fact in facts:

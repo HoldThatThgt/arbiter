@@ -343,6 +343,14 @@ def parse_xml(path: Path | str, *, run_id: str) -> RunResult:
             skipped += 1
             status = "skipped"
             message = skipped_node.attrib.get("message") or (skipped_node.text or "")
+        elif _is_disabled(node):
+            # A DISABLED test (gtest `status="notrun"`) never executed and carries no
+            # <failure>/<error>/<skipped> child. Counting it as passed would inflate the
+            # passed total and the per-test rows with a case that did not run, so it is
+            # reported as skipped (the closest honest status).
+            skipped += 1
+            status = "skipped"
+            message = ""
         else:
             passed += 1
             status = "passed"
@@ -372,6 +380,19 @@ def _first_child(node: ET.Element, name: str) -> Optional[ET.Element]:
         if child.tag == name:
             return child
     return None
+
+
+def _is_disabled(node: ET.Element) -> bool:
+    """A gtest DISABLED test case that did not run.
+
+    gtest stamps every ``<testcase>`` with ``status``: ``"run"`` for one that
+    executed and ``"notrun"`` for a DISABLED case that was skipped, which carries
+    no ``<failure>``/``<error>``/``<skipped>`` child. ``"notrun"`` is the authoritative
+    signal; the ``DISABLED_`` name prefix alone is NOT used, because a DISABLED-named
+    test that actually ran (e.g. under ``--gtest_also_run_disabled_tests``) reports
+    ``status="run"`` and must stay a real pass/fail, not be hidden as skipped.
+    """
+    return node.attrib.get("status") == "notrun"
 
 
 def _elapsed_ms(raw: str) -> int:
