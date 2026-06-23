@@ -320,19 +320,22 @@ func engineResult(result engineclient.ToolResult) (*mcp.CallToolResult, error) {
 		data, _ := json.Marshal(result.Content)
 		content = []mcp.Content{&mcp.TextContent{Text: string(data)}}
 	}
-	var structured json.RawMessage
+	res := &mcp.CallToolResult{
+		IsError: result.IsError,
+		Content: content,
+	}
+	// Only SET StructuredContent when the engine supplied it. Assigning a
+	// typed-nil json.RawMessage to this `any` field would leave a non-nil
+	// interface, so omitempty would NOT omit it and it would marshal as
+	// "structuredContent": null — the exact payload the MCP client rejects.
 	if result.StructuredContent != nil {
 		data, err := json.Marshal(result.StructuredContent)
 		if err != nil {
 			return nil, err
 		}
-		structured = json.RawMessage(data)
+		res.StructuredContent = json.RawMessage(data)
 	}
-	return &mcp.CallToolResult{
-		IsError:           result.IsError,
-		Content:           content,
-		StructuredContent: structured,
-	}, nil
+	return res, nil
 }
 
 func checkKey(root, seatName string) error {

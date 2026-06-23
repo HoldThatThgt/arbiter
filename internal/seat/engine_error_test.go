@@ -150,6 +150,67 @@ func TestEngineToolErrorMapping(t *testing.T) {
 	}
 }
 
+// TestEngineResultOmitsStructuredContentWhenAbsent pins the marshaled wire
+// shape: when the engine forwards a result with NO structuredContent,
+// engineResult must produce a CallToolResult that marshals WITHOUT a
+// "structuredContent" key — never "structuredContent": null. mcp.CallToolResult
+// has no custom MarshalJSON and its StructuredContent is an `any` with
+// omitempty, so a typed-nil json.RawMessage would slip through as a non-nil
+// interface and emit null — the exact payload the MCP client rejects.
+func TestEngineResultOmitsStructuredContentWhenAbsent(t *testing.T) {
+	res, err := engineResult(engineclient.ToolResult{
+		Content: []map[string]any{{"type": "text", "text": "ok"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StructuredContent != nil {
+		t.Fatalf("StructuredContent must stay unset, got %#v", res.StructuredContent)
+	}
+	data, err := json.Marshal(res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "structuredContent") {
+		t.Fatalf("absent structuredContent must be omitted, not emitted as null: %s", data)
+	}
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(data, &probe); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := probe["structuredContent"]; ok {
+		t.Fatalf("structuredContent key present (null-rejection bug): %s", data)
+	}
+}
+
+// TestEngineResultKeepsStructuredContentWhenPresent is the complement: when the
+// engine DOES supply structuredContent, engineResult must carry it through so
+// the model still gets the structured payload.
+func TestEngineResultKeepsStructuredContentWhenPresent(t *testing.T) {
+	res, err := engineResult(engineclient.ToolResult{
+		Content:           []map[string]any{{"type": "text", "text": "ok"}},
+		StructuredContent: map[string]any{"query": "callers:main"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var probe struct {
+		Structured struct {
+			Query string `json:"query"`
+		} `json:"structuredContent"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		t.Fatalf("json %s: %v", data, err)
+	}
+	if probe.Structured.Query != "callers:main" {
+		t.Fatalf("structuredContent not carried through: %s", data)
+	}
+}
+
 // writeCommittedRecipes writes a minimal committed recipe book so the engine's
 // run tool gets past book loading and fails on the recipe lookup itself.
 func writeCommittedRecipes(t *testing.T, root string) {
