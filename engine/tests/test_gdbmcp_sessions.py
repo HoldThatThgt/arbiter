@@ -1,12 +1,14 @@
 import os
 import stat
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
 from arbiter_engine.gdbmcp.config import Config
 from arbiter_engine.gdbmcp.errors import ToolError
 from arbiter_engine.gdbmcp.sessions import SessionManager
+from arbiter_engine.gdbmcp.tools import _command
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "fake_gdb.py"
@@ -90,6 +92,57 @@ class SessionTest(unittest.TestCase):
             self.assertEqual(started["state"], "stopped")
         finally:
             manager.close_all()
+
+    def test_gdb_death_mid_command_wakes_immediately_as_session_exited(self):
+        # GDB dying while a command is in flight must wake the blocked call
+        # immediately with session_exited, NOT hang for the full timeout and
+        # then misreport gdb_timeout.
+        started = self.manager.start(target="demo", cwd=".")
+        session = self.manager.get(started["session_id"])
+        timeout_ms = 8000
+        start = time.monotonic()
+        with self.assertRaises(ToolError) as ctx:
+            session.command("-arb-die", timeout_ms=timeout_ms)
+        elapsed = time.monotonic() - start
+        self.assertEqual(ctx.exception.code, "session_exited")
+        # Must wake on EOF, far below the timeout ceiling (allow generous slack
+        # for slow CI, but nowhere near the full 8s timeout).
+        self.assertLess(elapsed, 2.0)
+
+    def test_duplicate_token_result_does_not_wedge_reader(self):
+        # GDB emitting two ^result records with the SAME token (a protocol
+        # violation the MI parser does not dedupe) must not wedge the reader
+        # thread on a full maxsize=1 waiter queue. The first result is delivered
+        # normally; the surplus is dropped (non-blocking put), and the reader
+        # keeps draining stdout so a subsequent command still completes.
+        started = self.manager.start(target="demo", cwd=".")
+        session = self.manager.get(started["session_id"])
+        result = session.command("-arb-dup", timeout_ms=2000)
+        self.assertEqual(result.record.cls, "done")
+        # A follow-up command must complete (it would hang to timeout if the
+        # duplicate had blocked the reader thread), and the reader stays alive.
+        again = session.command("-arb-dup", timeout_ms=2000)
+        self.assertEqual(again.record.cls, "done")
+        self.assertTrue(session._reader.is_alive(), "reader thread wedged by duplicate-token result")
+
+    def test_multistatement_console_command_is_rejected(self):
+        # A dangerous keyword hidden past the first token must not slip through
+        # the deny-by-default console guard, whatever separator hides it:
+        # newline, semicolon (with or without surrounding space), pipe, or a
+        # Unicode line/paragraph separator.
+        started = self.manager.start(target="demo", cwd=".")
+        session_id = started["session_id"]
+        for command in (
+            "print 1\nshell id",
+            "print 1; shell id",
+            "print 1;shell id",
+            "print 1|shell id",
+            "print 1 shell id",
+        ):
+            with self.subTest(command=command):
+                with self.assertRaises(ToolError) as ctx:
+                    _command(self.manager, self.config, {"session_id": session_id, "command": command})
+                self.assertEqual(ctx.exception.code, "dangerous_command_denied")
 
 
 if __name__ == "__main__":

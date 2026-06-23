@@ -20,6 +20,10 @@ from .errors import ToolError
 RUNNING_CLASSES = {"running", "connected"}
 STOP_CLASSES = {"stopped"}
 
+# Sentinel placed into pending waiter queues when the GDB process exits, so a
+# blocked command() wakes immediately instead of hanging for the full timeout.
+_SESSION_EXITED = object()
+
 
 @dataclass
 class CommandResult:
@@ -64,10 +68,11 @@ class GDBSession:
         self.inferior_pid: Optional[int] = None
         self._token = 0
         self._lock = threading.RLock()
-        self._waiters: Dict[int, "queue.Queue[mi.MIRecord]"] = {}
+        self._waiters: Dict[int, "queue.Queue[Any]"] = {}
         self._events: Deque[Dict[str, Any]] = deque(maxlen=config.event_limit)
-        self._streams: Deque[str] = deque(maxlen=config.event_limit)
+        self._streams: Deque[Dict[str, Any]] = deque(maxlen=config.event_limit)
         self._event_seq = 0
+        self._stream_seq = 0
         self._closed = False
         self._proc = self._spawn_gdb()
         self._reader = threading.Thread(target=self._reader_loop, name=f"gdb-mcp-reader-{session_id}", daemon=True)
@@ -131,15 +136,40 @@ class GDBSession:
                 self._apply_record(record)
                 waiter = self._waiters.get(record.token)
                 if waiter is not None:
-                    waiter.put(record)
+                    # Non-blocking delivery. The waiter is a maxsize=1 queue and
+                    # tokens are strictly monotonic, so the happy path always has
+                    # room. Guard against a protocol-violating duplicate ^result
+                    # for the same token (or a reused token) wedging the reader
+                    # thread forever on a full queue: the reader MUST keep draining
+                    # stdout (events, and the EOF _wake_waiters path), so drop the
+                    # surplus record and record it for forensics rather than block.
+                    try:
+                        waiter.put_nowait(record)
+                    except queue.Full:
+                        self._append_event({"kind": "duplicate_result", "token": record.token})
             elif record.kind in {"exec", "status", "notify"}:
                 self._apply_record(record)
                 self._append_event(record.to_json())
             elif record.kind in {"console", "target", "log"} and record.text:
-                self._streams.append(_cap_text(record.text, self.config.stream_limit))
+                self._append_stream(_cap_text(record.text, self.config.stream_limit))
                 self._append_event(record.to_json())
         self.state = "exited"
         self._closed = True
+        self._wake_waiters()
+
+    def _wake_waiters(self) -> None:
+        # GDB's stdout reached EOF: the process is gone and no further result
+        # records will ever arrive. Hand a sentinel to every pending command()
+        # so each wakes immediately with session_exited instead of blocking for
+        # the full per-command timeout. Runs on the reader thread and must NOT
+        # take self._lock: command() holds that lock across its blocking
+        # waiter.get(), so acquiring it here would deadlock. We snapshot the
+        # waiters dict lock-free, the same way the reader loop already reads it.
+        for waiter in list(self._waiters.values()):
+            try:
+                waiter.put_nowait(_SESSION_EXITED)
+            except queue.Full:
+                pass
 
     def _apply_record(self, record: mi.MIRecord) -> None:
         if record.kind == "result":
@@ -165,16 +195,28 @@ class GDBSession:
         event["ts"] = round(time.time(), 6)
         self._events.append(event)
 
+    def _append_stream(self, text: str) -> None:
+        self._stream_seq += 1
+        self._streams.append({"seq": self._stream_seq, "text": text})
+
     def command(self, command: str, *, timeout_ms: int = 10000, wait_ms: int = 0) -> CommandResult:
         if self._closed or self._proc.poll() is not None:
             raise ToolError("session_exited", "GDB session has exited", {"session_id": self.session_id})
         with self._lock:
             self._token += 1
             token = self._token
-            waiter: "queue.Queue[mi.MIRecord]" = queue.Queue(maxsize=1)
+            waiter: "queue.Queue[Any]" = queue.Queue(maxsize=1)
             self._waiters[token] = waiter
-            event_start = len(self._events)
-            stream_start = len(self._streams)
+            # Re-check liveness AFTER registering the waiter. The reader sets
+            # _closed=True before it snapshots _waiters in _wake_waiters, so if
+            # EOF raced our top-of-function check, either we observe _closed
+            # here and bail now, or our waiter is already in the snapshot and
+            # will receive the sentinel. Closes the register-after-snapshot gap.
+            if self._closed or self._proc.poll() is not None:
+                self._waiters.pop(token, None)
+                raise ToolError("session_exited", "GDB session has exited", {"session_id": self.session_id})
+            event_start = self._event_seq
+            stream_start = self._stream_seq
             payload = f"{token}{command}\n"
             assert self._proc.stdin is not None
             try:
@@ -190,6 +232,8 @@ class GDBSession:
                 raise ToolError("gdb_timeout", "timed out waiting for GDB result", {"command": _command_name(command)})
             finally:
                 self._waiters.pop(token, None)
+            if record is _SESSION_EXITED:
+                raise ToolError("session_exited", "GDB session has exited", {"session_id": self.session_id})
             if record.cls == "error":
                 message = str(record.results.get("msg") or record.results.get("message") or "GDB command failed")
                 details: Dict[str, Any] = {"command": _command_name(command), "result": record.results}
@@ -504,13 +548,15 @@ class GDBSession:
                 except Exception:
                     pass
 
-    def _slice_events(self, start: int) -> Iterable[Dict[str, Any]]:
-        events = list(self._events)
-        return events[start:] if start < len(events) else []
+    def _slice_events(self, start_seq: int) -> Iterable[Dict[str, Any]]:
+        # Select by monotonic seq rather than absolute index: the bounded deque
+        # can drop left-hand entries between capturing start_seq and slicing
+        # (event bursts larger than event_limit), which would misalign a
+        # length-based index.
+        return [event for event in self._events if event.get("seq", 0) > start_seq]
 
-    def _slice_streams(self, start: int) -> Iterable[str]:
-        streams = list(self._streams)
-        return streams[start:] if start < len(streams) else []
+    def _slice_streams(self, start_seq: int) -> Iterable[str]:
+        return [item["text"] for item in self._streams if item["seq"] > start_seq]
 
 
 class SessionManager:
