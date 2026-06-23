@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -53,6 +54,43 @@ func TestStatusCountsAsyncRuns(t *testing.T) {
 	}
 	if status.Runs.Rows != 2 {
 		t.Fatalf("runs = %#v, want 2 rows", status.Runs)
+	}
+}
+
+func TestStatusDegradesRunsWhenPythonUnavailable(t *testing.T) {
+	root := t.TempDir()
+	// Match + facts are pure file reads with no python dependency.
+	writeJSON(t, filepath.Join(root, ".arbiter", "match", "status.json"), map[string]any{
+		"match_id": "m1",
+		"status":   "active",
+	})
+	writeJSON(t, filepath.Join(root, ".arbiter", "facts", "snapshots", "current", "manifest.json"), map[string]any{
+		"snapshot_id": "s1",
+		"files":       []string{"src/a.c"},
+	})
+	// A runs DB exists, so readRunCount would shell out to python; point the
+	// interpreter at a binary that does not exist so the invocation fails.
+	writeRunDB(t, filepath.Join(root, ".arbiter", "runs", "state.sqlite"))
+	t.Setenv("ARBITER_ENGINE_PYTHON", filepath.Join(root, "no-such-python3"))
+
+	status, err := Status(root)
+	if err != nil {
+		t.Fatalf("Status must degrade the runs subsystem, not error: %v", err)
+	}
+	if status.Match["status"] != "active" {
+		t.Fatalf("match = %#v", status.Match)
+	}
+	if !status.Facts.Published || status.Facts.SnapshotID != "s1" {
+		t.Fatalf("facts = %#v", status.Facts)
+	}
+	if status.Runs.Available {
+		t.Fatalf("runs should be unavailable when python fails: %#v", status.Runs)
+	}
+	if status.Runs.Rows != 0 {
+		t.Fatalf("runs should degrade to 0 rows: %#v", status.Runs)
+	}
+	if want := "runs=unavailable"; !strings.Contains(FormatStatus(status), want) {
+		t.Fatalf("FormatStatus = %q, want substring %q", FormatStatus(status), want)
 	}
 }
 

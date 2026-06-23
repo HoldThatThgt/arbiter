@@ -42,6 +42,11 @@ type FactsStatus struct {
 
 type RunsStatus struct {
 	Rows int `json:"rows"`
+	// Available is false when the runs subsystem could not be read (e.g. the
+	// sqlite-backed count needs python3 and the interpreter is missing/broken).
+	// The runs portion then degrades to Rows=0 rather than failing the whole
+	// status compose-on-read.
+	Available bool `json:"available"`
 }
 
 type ReportResult struct {
@@ -78,16 +83,16 @@ func Status(root string) (StatusResult, error) {
 	if match == nil {
 		match = map[string]any{"status": "absent"}
 	}
-	rows, err := readRunCount(root)
-	if err != nil {
-		return StatusResult{}, err
-	}
+	// readRunCount degrades (available=false, rows=0) rather than erroring when
+	// the runs DB is present but unreadable, so a missing/broken python3 does
+	// not abort the otherwise file-based status.
+	rows, runsAvailable := readRunCount(root)
 	return StatusResult{
 		Schema: StatusSchema,
 		Match:  match,
 		Engine: readEngineStatus(root),
 		Facts:  readFactsStatus(root),
-		Runs:   RunsStatus{Rows: rows},
+		Runs:   RunsStatus{Rows: rows, Available: runsAvailable},
 	}, nil
 }
 
@@ -159,8 +164,12 @@ func FormatStatus(status StatusResult) string {
 	if snapshot == "" {
 		snapshot = "none"
 	}
-	return fmt.Sprintf("match=%s facts.published=%t snapshot=%s runs=%d engine=%s\n",
-		matchStatus, status.Facts.Published, snapshot, status.Runs.Rows, status.Engine.Version)
+	runs := strconv.Itoa(status.Runs.Rows)
+	if !status.Runs.Available {
+		runs = "unavailable"
+	}
+	return fmt.Sprintf("match=%s facts.published=%t snapshot=%s runs=%s engine=%s\n",
+		matchStatus, status.Facts.Published, snapshot, runs, status.Engine.Version)
 }
 
 func FormatReport(report ReportResult) string {
@@ -239,11 +248,17 @@ func runDBPath(root string) string {
 }
 
 // readRunCount is the lightweight status-path helper: it asks sqlite for a
-// COUNT(*) instead of materializing every async run row.
-func readRunCount(root string) (int, error) {
+// COUNT(*) instead of materializing every async run row. It returns the count
+// and whether the runs subsystem could be queried at all. An absent DB reports
+// (0, true). Only a failure to run the probe — a missing/broken python3 that
+// cannot launch, or non-integer output — degrades to (0, false) instead of
+// erroring, so the rest of (file-based) status still composes. An in-DB problem
+// the probe itself absorbs (corrupt file, missing table) still reads as
+// (0, true): the script catches sqlite3.Error and prints 0, matching readRunRows.
+func readRunCount(root string) (count int, available bool) {
 	dbPath := runDBPath(root)
 	if _, err := os.Stat(dbPath); errors.Is(err, os.ErrNotExist) {
-		return 0, nil
+		return 0, true
 	}
 	script := `
 import sqlite3, sys
@@ -257,13 +272,13 @@ except sqlite3.Error:
 	cmd := exec.Command(pythonBin(), "-c", script, dbPath)
 	output, err := cmd.Output()
 	if err != nil {
-		return 0, err
+		return 0, false
 	}
-	count, err := strconv.Atoi(strings.TrimSpace(string(output)))
+	count, err = strconv.Atoi(strings.TrimSpace(string(output)))
 	if err != nil {
-		return 0, err
+		return 0, false
 	}
-	return count, nil
+	return count, true
 }
 
 // readRunRows reads the async_runs table, which is the table the engine
@@ -316,11 +331,14 @@ print(json.dumps(out, separators=(",", ":")))
 	cmd := exec.Command(pythonBin(), "-c", script, dbPath)
 	output, err := cmd.Output()
 	if err != nil {
-		return nil, err
+		// Mirror readRunCount: a present-but-unreadable runs DB (e.g.
+		// missing/broken python3) degrades the runs subsystem to empty rather
+		// than aborting Report, whose journal portion is a pure file read.
+		return nil, nil
 	}
 	var raw []map[string]any
 	if err := json.Unmarshal(output, &raw); err != nil {
-		return nil, err
+		return nil, nil
 	}
 	rows := make([]RunRow, 0, len(raw))
 	for _, item := range raw {
