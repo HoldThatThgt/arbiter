@@ -1,7 +1,9 @@
 package deploy
 
 import (
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -40,11 +42,12 @@ func TestAdoptMigratesLegacyFixtures(t *testing.T) {
 		t.Fatalf("recipes.yaml = %q", recipes)
 	}
 	config := readText(t, filepath.Join(root, ".arbiter", "config.yml"))
-	for _, want := range []string{"facts:", "incremental: true", "pool: 4", "# extractor:"} {
+	for _, want := range []string{"facts:", "  incremental:\n    enabled: true\n", "pool: 4", "# extractor:"} {
 		if !strings.Contains(config, want) {
 			t.Fatalf("config missing %q:\n%s", want, config)
 		}
 	}
+	assertEngineParses(t, config)
 	for _, path := range []string{".chess/run", ".cipher/snapshots", ".crun-mcp/run"} {
 		if _, err := os.Stat(filepath.Join(root, path)); !os.IsNotExist(err) {
 			t.Fatalf("derived path %s still exists or stat failed: %v", path, err)
@@ -99,11 +102,12 @@ func TestAdoptCipherConfigHonorsInlineComments(t *testing.T) {
 		t.Fatal(err)
 	}
 	config := readText(t, filepath.Join(root, ".arbiter", "config.yml"))
-	for _, want := range []string{"pool: 8", "incremental: false"} {
+	for _, want := range []string{"pool: 8", "  incremental:\n    enabled: false\n"} {
 		if !strings.Contains(config, want) {
 			t.Fatalf("config missing %q:\n%s", want, config)
 		}
 	}
+	assertEngineParses(t, config)
 }
 
 func TestAdoptCipherConfigDoesNotLeakTabNestedSections(t *testing.T) {
@@ -124,6 +128,61 @@ func TestAdoptCipherConfigDoesNotLeakTabNestedSections(t *testing.T) {
 		if !strings.Contains(config, want) {
 			t.Fatalf("config missing %q:\n%s", want, config)
 		}
+	}
+}
+
+func TestAdoptRefusesToClobberDifferingInitState(t *testing.T) {
+	// init/derivation may already own .arbiter/recipes.yaml and config.yml.
+	// Adopt finding legacy sources must not silently overwrite differing live
+	// state — it returns adopt_conflict, the documented "preserved user state".
+	for _, tc := range []struct {
+		name       string
+		legacySrc  string
+		legacyBody string
+		target     string
+	}{
+		{"recipes", ".crun-mcp/recipes.yaml", "targets:\n  - id: legacy\n    binary: ./legacy\n", fileRecipes},
+		{"config", ".cipher/config.yml", "extractor:\n  worker_count: 4\n", fileConfig},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeText(t, filepath.Join(root, tc.legacySrc), tc.legacyBody)
+			writeText(t, filepath.Join(root, tc.target), "owned-by-init\n")
+
+			_, err := Adopt(root)
+			var adoptErr *Error
+			if !errors.As(err, &adoptErr) || adoptErr.Kind != "adopt_conflict" {
+				t.Fatalf("Adopt err = %v, want adopt_conflict", err)
+			}
+			if got := readText(t, filepath.Join(root, tc.target)); got != "owned-by-init\n" {
+				t.Fatalf("live %s was clobbered: %q", tc.target, got)
+			}
+			if _, err := os.Stat(filepath.Join(root, tc.legacySrc)); err != nil {
+				t.Fatalf("legacy source removed despite conflict: %v", err)
+			}
+		})
+	}
+}
+
+// assertEngineParses round-trips a rendered config through the real engine
+// parser so a structurally-valid-looking string that the engine would reject
+// (e.g. a scalar facts.incremental) fails the test instead of shipping.
+func assertEngineParses(t *testing.T, config string) {
+	t.Helper()
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	script := `
+import sys
+sys.path.insert(0, sys.argv[1])
+from arbiter_engine.config import parse_config
+parse_config(sys.stdin.read())
+`
+	cmd := exec.Command(python, "-c", script, filepath.Join("..", "..", "engine"))
+	cmd.Stdin = strings.NewReader(config)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("engine parser rejected migrated config: %v\n%s\n--- config ---\n%s", err, out, config)
 	}
 }
 
