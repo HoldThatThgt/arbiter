@@ -45,7 +45,12 @@ def _persist_log_degradation(
         latest_log_error_code=stats.latest_log_error_code,
         stats=stats.to_json(),
     )
-    return self._write_manifest_and_stats(snapshot_dir, degraded)
+    # snapshot_dir is a live, already-published snapshot here, so the metadata
+    # rewrite must be atomic (temp+rename) rather than in-place to avoid
+    # corrupting it on a crash mid-write. This path is currently unreachable in
+    # arbiter (the store runs log-disabled, so `failures` is always 0), but is
+    # kept correct should log-write-failure accounting ever be re-enabled.
+    return self._write_manifest_and_stats(snapshot_dir, degraded, atomic=True)
 
 def _emit_relation_search_event(
     self,

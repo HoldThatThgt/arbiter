@@ -698,14 +698,24 @@ def _build_stats(
         last_updated=created_at,
         log_write_failures=log_write_failures,
         latest_log_error_code=latest_log_error_code,
-        lock_state=self._lock_state(),
+        # Persist a neutral lock_state: this stat is built while the write lock is
+        # held, so _lock_state() would always serialize "held" into stats.json at
+        # rest. stats() recomputes the live value on read (store.py), so the
+        # persisted form should reflect the at-rest (unlocked) view.
+        lock_state="free",
     )
 
 def _write_manifest_and_stats(
     self,
     snapshot_dir: Path,
     manifest: StorageManifest,
+    *,
+    atomic: bool = False,
 ) -> StorageManifest:
+    # atomic=False: plain in-place writes into a staging dir; the staging->snapshot
+    #   rename in _replace_snapshot provides the publish atomicity.
+    # atomic=True: rewrite an already-published (live) snapshot's metadata via
+    #   temp+rename so a crash mid-write cannot corrupt the live manifest/stats.
     bytes_on_disk = 0
     stable_manifest = manifest
     data_bytes = manifest.compressed_data_bytes + int(manifest.read_index["bytes_on_disk"])
@@ -717,7 +727,9 @@ def _write_manifest_and_stats(
             bytes_on_disk_total=self._all_snapshots_bytes(extra_current=bytes_on_disk, extra_snapshot_id=manifest.snapshot_id),
             compression_ratio=_compression_ratio(manifest.compressed_data_bytes, manifest.uncompressed_bytes),
             storage_overhead_ratio=_compression_ratio(bytes_on_disk, manifest.uncompressed_bytes),
-            lock_state=self._lock_state(),
+            # Neutral at-rest lock_state (see _build_stats): always written while
+            # the write lock is held; stats() recomputes the live value on read.
+            lock_state="free",
         )
         stable_manifest = replace(
             stable_manifest,
@@ -736,16 +748,40 @@ def _write_manifest_and_stats(
             + len(stats_text.encode("utf-8"))
         )
         if next_bytes == bytes_on_disk:
-            (snapshot_dir / "manifest.json").write_text(manifest_text, encoding="utf-8")
-            (snapshot_dir / "stats.json").write_text(stats_text, encoding="utf-8")
+            manifest_path = snapshot_dir / "manifest.json"
+            stats_path = snapshot_dir / "stats.json"
+            if atomic:
+                _atomic_write_text(manifest_path, manifest_text)
+                _atomic_write_text(stats_path, stats_text)
+            else:
+                manifest_path.write_text(manifest_text, encoding="utf-8")
+                stats_path.write_text(stats_text, encoding="utf-8")
+            # Flush metadata so it is durable before the staging->snapshot rename
+            # in _replace_snapshot publishes this directory.
+            _fsync_file(manifest_path)
+            _fsync_file(stats_path)
             return stable_manifest
         bytes_on_disk = next_bytes
     raise StorageError("snapshot_corrupt", "snapshot metadata size did not converge", path=snapshot_dir)
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    # Durable in-place replace of a single file inside an already-published
+    # snapshot dir: write a sibling temp, fsync it, then rename over the target.
+    tmp = path.with_name(path.name + f".tmp-{os.getpid()}-{uuid.uuid4().hex}")
+    tmp.write_text(text, encoding="utf-8")
+    _fsync_file(tmp)
+    os.replace(tmp, path)
+    _fsync_dir(path.parent)
 
 def _write_current(self, snapshots_dir: Path, snapshot_id: str) -> None:
     snapshots_dir.mkdir(parents=True, exist_ok=True)
     tmp = snapshots_dir / "current.tmp"
     tmp.write_text(snapshot_id, encoding="utf-8")
+    # Make the pointer contents durable before the atomic rename, then fsync the
+    # directory so the rename itself survives a crash. Best-effort (see _fsync_*).
+    _fsync_file(tmp)
     os.replace(tmp, snapshots_dir / CURRENT_POINTER)
+    _fsync_dir(snapshots_dir)
 
 __all__ = [name for name in globals() if not name.startswith("__")]
