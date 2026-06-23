@@ -649,6 +649,57 @@ func TestParseCommentHints(t *testing.T) {
 	}
 }
 
+func TestParseRejectsNonASCIIIdentifier(t *testing.T) {
+	// FORMAT.md:122 limits names to ASCII [A-Za-z0-9_-]+; non-ASCII letters
+	// (homoglyphs/full-width) the wider Unicode rule once admitted must reject.
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			"verify name",
+			"---\nname: n\ndescription: d\n---\n\n[Verify] café\nshell: exit 0\n\n" + oneStepTail,
+		},
+		{
+			"capability",
+			"---\nname: n\ndescription: d\ncapabilities: [\"ＡＢＣ\"]\n---\n\n" + oneStepTail,
+		},
+		{
+			"verify ref in setgoal",
+			"---\nname: n\ndescription: d\n---\n\n[SetGoal]\nverify: café\n\n" + oneStepTail,
+		},
+		{
+			"submit name",
+			"---\nname: n\ndescription: d\n---\n\n[Verify] pass\nshell: exit 0\n\n" +
+				"[STEP] a\n[StepJob]\njob\n[CheckList]\n- item\n[Submit] café\n[Branch]\nsuccess: END\nfailure: END\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, issues := ParseBytes("u.md", []byte(tc.body))
+			if len(issues) == 0 {
+				t.Fatalf("non-ASCII identifier %s accepted, want rejection", tc.name)
+			}
+		})
+	}
+}
+
+func TestOrderedStepsDeterministicFallback(t *testing.T) {
+	// A Playbook rehydrated from match-state JSON loses the unexported `order`
+	// field; the fallback must iterate Steps by sorted id, not raw map order.
+	book := Playbook{Steps: map[string]Step{
+		"c": {ID: "c"},
+		"a": {ID: "a"},
+		"b": {ID: "b"},
+	}}
+	for i := 0; i < 32; i++ {
+		got := book.OrderedSteps()
+		if len(got) != 3 || got[0].ID != "a" || got[1].ID != "b" || got[2].ID != "c" {
+			t.Fatalf("ordered steps = %#v, want a,b,c", got)
+		}
+	}
+}
+
 func hasIssue(issues []Issue, code string) bool {
 	for _, issue := range issues {
 		if issue.Code == code {
