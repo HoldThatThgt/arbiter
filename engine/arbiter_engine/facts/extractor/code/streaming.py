@@ -1085,11 +1085,15 @@ class _StreamingExtraction:
                 relative_duplicate_conflict_count=self._relative_duplicate_conflict_count,
             )
             self._commit()
-            self._facts_finished = True
-            yield from self._iter_spooled_encoded_facts()
         except Exception:
+            # Only a BUILD failure (before the spool was committed) leaves facts unfinished.
+            # Exceptions raised by the consumer during the yield phase below must NOT reset
+            # this flag — the spool is already built, and resetting it would corrupt the
+            # consume-once guards for relatives/source_inventory.
             self._facts_finished = False
             raise
+        self._facts_finished = True
+        yield from self._iter_spooled_encoded_facts()
 
     def _extract_source_facts(self, seq: int, source: Path) -> None:
         outcome = self._run_file_work_item(self._make_work_item(seq, source))
@@ -1351,22 +1355,25 @@ class _StreamingExtraction:
         try:
             self._resolve_and_spool_direct_calls()
             self._commit()
-            self._relatives_finished = True
-            if self._relative_segment_manifests:
-                stats = _RelativeExternalMergeStats()
-                try:
-                    for relative in _iter_external_merged_relative_segments(self._relative_segment_manifests, stats):
-                        self._record_encoded_relative(relative)
-                        yield relative
-                finally:
-                    self._relative_duplicate_exact_count += stats.duplicate_exact_count
-                    self._relative_duplicate_conflict_count += stats.conflict_count
-                    self.extractor._emit_relative_merge_event(stats, self.profile)
-            else:
-                yield from self._iter_spooled_encoded_relatives()
         except Exception:
+            # Only a BUILD failure (before the spool was committed) leaves relatives
+            # unfinished. Exceptions raised by the consumer during the yield phase below
+            # must NOT reset this flag, so downstream consume-once state stays consistent.
             self._relatives_finished = False
             raise
+        self._relatives_finished = True
+        if self._relative_segment_manifests:
+            stats = _RelativeExternalMergeStats()
+            try:
+                for relative in _iter_external_merged_relative_segments(self._relative_segment_manifests, stats):
+                    self._record_encoded_relative(relative)
+                    yield relative
+            finally:
+                self._relative_duplicate_exact_count += stats.duplicate_exact_count
+                self._relative_duplicate_conflict_count += stats.conflict_count
+                self.extractor._emit_relative_merge_event(stats, self.profile)
+        else:
+            yield from self._iter_spooled_encoded_relatives()
 
     def _iter_source_inventory(self) -> Iterator[SourceInventoryEntry]:
         if not self._facts_finished:

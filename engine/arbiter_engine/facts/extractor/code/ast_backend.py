@@ -348,6 +348,14 @@ class _CtypesLibclangApi:
         lib.clang_getTokenSpelling.argtypes = [ctypes.c_void_p, _CXToken]
         lib.clang_getTokenSpelling.restype = _CXString
 
+    def close(self) -> None:
+        # The dlopen handle is released at process exit. There is no stdlib-public dlclose
+        # (only the private _ctypes.dlclose, which the engine's stdlib-only import policy
+        # forbids), so releasing it eagerly isn't possible here; libclang's native mapping
+        # therefore stays resident for the process lifetime after a version-mismatch retry
+        # (a bounded, one-time leak). Kept as a no-op for call-site symmetry.
+        return
+
     def _optional_function(
         self,
         name: str,
@@ -573,9 +581,19 @@ class _LibclangAstBackend(_AstBackend):
 
     def _load_matching_api(self, library_path: str) -> Tuple[_CtypesLibclangApi, str]:
         api = _CtypesLibclangApi(library_path)
-        libclang_version = api.version()
-        if not _clang_major_versions_match(self.clang_version_output, libclang_version):
-            raise _LibclangVersionMismatchError(_clang_version(self.clang_version_output), _clang_version(libclang_version))
+        try:
+            libclang_version = api.version()
+            if not _clang_major_versions_match(self.clang_version_output, libclang_version):
+                raise _LibclangVersionMismatchError(
+                    _clang_version(self.clang_version_output), _clang_version(libclang_version)
+                )
+        except BaseException:
+            # The caller drops this api on any failure here; release its dlopen handle so a
+            # subsequent fallback load does not leak the first library for the process lifetime.
+            close = getattr(api, "close", None)
+            if callable(close):
+                close()
+            raise
         return api, libclang_version
 
     def header_materialization_context(self, context: Optional[_HeaderMaterializationContext]):
@@ -656,7 +674,7 @@ class _LibclangAstBackend(_AstBackend):
             root = self._cursor_to_ast(
                 self.api.translation_unit_cursor(tu.tu),
                 None,
-                diagnostic_lines=_diagnostic_lines(diagnostics),
+                diagnostic_lines_by_file=_diagnostic_lines(diagnostics),
                 translation_unit=tu.tu,
                 _prune_root_resolved=prune_root_resolved,
             )
@@ -696,7 +714,7 @@ class _LibclangAstBackend(_AstBackend):
         cursor: _CXCursor,
         parent: Optional[_CXCursor],
         *,
-        diagnostic_lines: Set[int],
+        diagnostic_lines_by_file: Dict[str, Set[int]],
         translation_unit: Optional[ctypes.c_void_p] = None,
         _precomputed_loc: Optional[Dict[str, JSONValue]] = None,
         _precomputed_range_begin: Optional[Dict[str, JSONValue]] = None,
@@ -718,7 +736,12 @@ class _LibclangAstBackend(_AstBackend):
         if loc:
             node["loc"] = loc
             line = loc.get("line")
-            if isinstance(line, int) and line in diagnostic_lines:
+            file_value = loc.get("file")
+            if (
+                isinstance(line, int)
+                and isinstance(file_value, str)
+                and line in diagnostic_lines_by_file.get(file_value, ())
+            ):
                 node["containsErrors"] = True
         range_begin = self.api.cursor_range_begin(cursor) if _precomputed_range_begin is None else _precomputed_range_begin
         if range_begin:
@@ -793,7 +816,7 @@ class _LibclangAstBackend(_AstBackend):
                     children.append(self._cursor_to_ast(
                         child,
                         cursor,
-                        diagnostic_lines=diagnostic_lines,
+                        diagnostic_lines_by_file=diagnostic_lines_by_file,
                         translation_unit=translation_unit,
                         _precomputed_loc=child_loc,
                         _precomputed_range_begin=child_range_begin,
@@ -805,7 +828,7 @@ class _LibclangAstBackend(_AstBackend):
             children.append(self._cursor_to_ast(
                 child,
                 cursor,
-                diagnostic_lines=diagnostic_lines,
+                diagnostic_lines_by_file=diagnostic_lines_by_file,
                 translation_unit=translation_unit,
                 _precomputed_loc=child_loc,
                 _precomputed_range_begin=child_range_begin,
