@@ -94,6 +94,35 @@ func TestDigestIgnoresPythonBytecode(t *testing.T) {
 	}
 }
 
+// TestDigestIgnoresOrphanedTempFile is the regression test for a crashed
+// writeFile (CreateTemp then rename) leaving a stray ".tmp-*" in the tree:
+// hashing it would diverge the digest from the unpack-time manifest and
+// trip a spurious "digest mismatch". Digest must skip it like bytecode.
+func TestDigestIgnoresOrphanedTempFile(t *testing.T) {
+	repo := t.TempDir()
+	manifest, err := Unpack(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Mirror the prefix writeFile passes to os.CreateTemp(dir, ".tmp-*").
+	orphan := filepath.Join(repo, RootRel, "arbiter_engine", ".tmp-1234567890")
+	if err := os.WriteFile(orphan, []byte("partial unpack"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	recomputed, err := Digest(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recomputed.Digest != manifest.Digest {
+		t.Fatalf("digest changed after orphaned temp file: %s -> %s", manifest.Digest, recomputed.Digest)
+	}
+	if _, err := Verify(repo, manifest.Digest); err != nil {
+		t.Fatalf("verify after orphaned temp file: %v", err)
+	}
+}
+
 // TestVerifySurvivesRealBytecodeGeneration is the regression test for the
 // live failure where importing the freshly-unpacked engine (e.g. init's
 // version probe) wrote __pycache__/*.pyc and made every later digest check

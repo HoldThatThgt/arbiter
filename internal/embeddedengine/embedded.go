@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 
 	enginebundle "github.com/HoldThatThgt/arbiter/engine"
@@ -109,6 +110,12 @@ func Digest(repo string) (Manifest, error) {
 		}
 		switch filepath.Ext(d.Name()) {
 		case ".pyc", ".pyo":
+			return nil
+		}
+		// An interrupted writeFile (CreateTemp then rename) can leave an
+		// orphaned ".tmp-*" behind: hashing it would diverge the digest from
+		// the unpack-time manifest, so treat it as runtime detritus too.
+		if strings.HasPrefix(d.Name(), ".tmp-") {
 			return nil
 		}
 		rel, err := filepath.Rel(root, path)

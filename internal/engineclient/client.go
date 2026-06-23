@@ -639,6 +639,7 @@ func knownEngineErrorKind(kind string) bool {
 		"capability_revoked",
 		"engine_stale",
 		"harness_unavailable",
+		"indexer_unavailable",
 		"internal_error",
 		"invalid_args",
 		"invalid_json",

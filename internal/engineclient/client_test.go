@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -397,6 +398,107 @@ for line in sys.stdin:
 	if !strings.Contains(string(raw), `"ok":true`) {
 		t.Fatalf("response = %s", raw)
 	}
+}
+
+// TestIndexerUnavailableIsTypedAndDoesNotPoison proves the engine's
+// "indexer_unavailable" hard-stop (ADR-0020 mandatory-index, raised by
+// engine.Refresh before every fact predicate) surfaces as a typed
+// EngineError on a still-usable channel instead of poisoning + respawning
+// the child. Mirrors TestEngineInternalErrorIsTypedAndDoesNotPoison.
+func TestIndexerUnavailableIsTypedAndDoesNotPoison(t *testing.T) {
+	dir := t.TempDir()
+	script := writeFakeEngine(t, `
+import json, sys
+first = True
+for line in sys.stdin:
+    req = json.loads(line)
+    if first:
+        first = False
+        resp = {"jsonrpc": "2.0", "id": req["id"], "error": {"code": -32000, "message": "indexer down", "data": {"kind": "indexer_unavailable", "toolchain_code": "no_clang"}}}
+    else:
+        resp = {"jsonrpc": "2.0", "id": req["id"], "result": {"ok": True}}
+    sys.stdout.write(json.dumps(resp, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+`)
+
+	client, err := spawnCommand(context.Background(), RoleExec, dir, []string{pythonBin(), script})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	_, err = client.Call(context.Background(), "probe", nil)
+	var engineErr *EngineError
+	if !stderrors.As(err, &engineErr) {
+		t.Fatalf("error = %T %[1]v, want *EngineError", err)
+	}
+	if engineErr.Kind != "indexer_unavailable" {
+		t.Fatalf("kind = %q, want indexer_unavailable", engineErr.Kind)
+	}
+	if client.Poisoned() {
+		t.Fatal("client poisoned by typed indexer_unavailable")
+	}
+
+	raw, err := client.Call(context.Background(), "probe", nil)
+	if err != nil {
+		t.Fatalf("call after indexer_unavailable: %v", err)
+	}
+	if !strings.Contains(string(raw), `"ok":true`) {
+		t.Fatalf("response = %s", raw)
+	}
+}
+
+// TestKnownEngineErrorKindsMatchEngineSpec cross-pins the Go switch against
+// the engine's canonical KNOWN_ERROR_KINDS (SPEC|CHASSIS) so the two never
+// drift: a kind the engine can raise but the Go client doesn't recognize
+// would (per validateResponse) poison + respawn the child instead of
+// surfacing a typed EngineError. Parses errors.py directly so adding a kind
+// there fails this test until knownEngineErrorKind is updated.
+func TestKnownEngineErrorKindsMatchEngineSpec(t *testing.T) {
+	repo := repoRoot(t)
+	path := filepath.Join(repo, "engine", "arbiter_engine", "errors.py")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	kinds := parseEngineErrorKinds(t, string(data))
+	if len(kinds) == 0 {
+		t.Fatalf("no error kinds parsed from %s", path)
+	}
+
+	for kind := range kinds {
+		if !knownEngineErrorKind(kind) {
+			t.Errorf("engine error kind %q is not recognized by knownEngineErrorKind; add it to the switch in client.go", kind)
+		}
+	}
+}
+
+// parseEngineErrorKinds extracts the string literals inside the
+// SPEC_ERROR_KINDS and CHASSIS_ERROR_KINDS frozensets in errors.py.
+func parseEngineErrorKinds(t *testing.T, source string) map[string]struct{} {
+	t.Helper()
+
+	kinds := make(map[string]struct{})
+	// Accept digits too so a future kind like "http2_reset" is not silently
+	// dropped from the cross-pin (which would let real drift pass green).
+	literal := regexp.MustCompile(`"([a-z0-9_]+)"`)
+	for _, name := range []string{"SPEC_ERROR_KINDS", "CHASSIS_ERROR_KINDS"} {
+		marker := name + " = frozenset("
+		start := strings.Index(source, marker)
+		if start < 0 {
+			t.Fatalf("could not find %s in errors.py", name)
+		}
+		end := strings.Index(source[start:], ")")
+		if end < 0 {
+			t.Fatalf("unterminated frozenset for %s", name)
+		}
+		block := source[start : start+end]
+		for _, m := range literal.FindAllStringSubmatch(block, -1) {
+			kinds[m[1]] = struct{}{}
+		}
+	}
+	return kinds
 }
 
 func TestCallTimeoutEnvOverride(t *testing.T) {
