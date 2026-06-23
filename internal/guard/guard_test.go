@@ -31,6 +31,9 @@ func TestGuardDecisions(t *testing.T) {
 		{"read playbook abs", "Read", map[string]any{"file_path": "/repo/.arbiter/playbook/freeplay.md"}, true, "ShowStepJob"},
 		{"edit match state", "Edit", map[string]any{"file_path": "/repo/.arbiter/match/run/state.json"}, true, "referee-owned"},
 		{"write engine tree", "Write", map[string]any{"file_path": ".arbiter/engine/arbiter_engine/__init__.py"}, true, "digest-verified"},
+		// engines.json is the engine_digest trust anchor — referee-owned, not editable/readable.
+		{"read run engines rel", "Read", map[string]any{"file_path": ".arbiter/run/engines.json"}, true, "trust anchor"},
+		{"edit run engines abs", "Edit", map[string]any{"file_path": "/repo/.arbiter/run/engines.json"}, true, "trust anchor"},
 		{"read seat agent", "Read", map[string]any{"file_path": ".claude/agents/arbiter-curator.md"}, true, "credential"},
 		// Bash:命令文本里的字面出现。
 		{"bash cat playbook", "Bash", map[string]any{"command": "cat .arbiter/playbook/gold-digger.md"}, true, "ShowStepJob"},
@@ -46,6 +49,11 @@ func TestGuardDecisions(t *testing.T) {
 		{"grep source", "Grep", map[string]any{"pattern": "holdMask", "path": "src"}, false, ""},
 		{"read recipes", "Read", map[string]any{"file_path": ".arbiter/recipes.yaml"}, false, ""},
 		{"read config", "Read", map[string]any{"file_path": ".arbiter/config.yml"}, false, ""},
+		// .arbiter/runs/ (run-state DB) is a sibling of the fenced .arbiter/run/ —
+		// the run-zone prefix must NOT bleed across the path-component boundary.
+		{"read runs db", "Read", map[string]any{"file_path": ".arbiter/runs/state.sqlite"}, false, ""},
+		{"bash runs db", "Bash", map[string]any{"command": "sqlite3 .arbiter/runs/state.sqlite 'select count(*) from run'"}, false, ""},
+		{"glob runs db", "Glob", map[string]any{"pattern": ".arbiter/runs/**"}, false, ""},
 		// 非守备工具与畸形输入:fail-open。
 		{"unknown tool", "WebFetch", map[string]any{"url": ".arbiter/playbook"}, false, ""},
 	}
@@ -146,6 +154,43 @@ func TestGuardFreezesCaseAndSymlinkVariants(t *testing.T) {
 		t.Fatal("case-variant of frozen test not denied on case-insensitive FS")
 	case !caseInsensitive && d.Deny:
 		t.Fatal("case-variant denied on case-sensitive FS (it is a distinct file)")
+	}
+}
+
+// A pre-existing symlink whose target is inside a guarded zone must not let a
+// path-channel tool (Read/Grep/Glob/Edit/Write) tunnel past the fence: decidePath
+// resolves the candidate's parent with EvalSymlinks before the prefix compare, so
+// `Read peek/freeplay.md` via <root>/peek -> .arbiter/playbook lands back in the zone.
+func TestGuardDeniesSymlinkIntoGuardedZone(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".arbiter", "playbook"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".arbiter", "playbook", "freeplay.md"), []byte("secret\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// peek/ aliases the guarded playbook directory.
+	if err := os.Symlink(filepath.Join(root, ".arbiter", "playbook"), filepath.Join(root, "peek")); err != nil {
+		t.Skipf("symlink unsupported on this platform: %v", err)
+	}
+
+	// Read through the symlinked parent → resolved back into the zone → denied.
+	if d := Decide(root, nil, event(t, "Read", map[string]any{"file_path": "peek/freeplay.md"})); !d.Deny {
+		t.Fatal("Read of symlink target inside playbook zone not denied")
+	}
+	// Grep's path channel follows the same decidePath path.
+	if d := Decide(root, nil, event(t, "Grep", map[string]any{"pattern": "x", "path": "peek"})); !d.Deny {
+		t.Fatal("Grep of symlinked playbook dir not denied")
+	}
+	// A symlink to an unguarded location stays readable (no over-block).
+	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "src"), filepath.Join(root, "look")); err != nil {
+		t.Skipf("symlink unsupported on this platform: %v", err)
+	}
+	if d := Decide(root, nil, event(t, "Read", map[string]any{"file_path": "look/lock.c"})); d.Deny {
+		t.Fatal("Read of symlink to unguarded dir wrongly denied")
 	}
 }
 

@@ -42,6 +42,12 @@ var zones = []zone{
 			"There is nothing for a model to fix or read here; engine behavior is reached only through seat tools.",
 	},
 	{
+		rel: ".arbiter/run/",
+		reason: "The run directory is referee-owned: engines.json is the engine_digest trust anchor the " +
+			"spawn check verifies against, not a model surface. Editing it (or flipping the engine mode) " +
+			"would unfence adjudication; there is nothing to fix or read here.",
+	},
+	{
 		rel: ".claude/agents/arbiter-",
 		reason: "Arbiter seat agent files embed the seat credential and are deploy-generated. " +
 			"They are refreshed by `arbiter init`, never edited or read in-session.",
@@ -156,18 +162,48 @@ func stringField(fields map[string]any, key string) string {
 }
 
 // decidePath 判定单个路径:相对路径按仓根解析;绝对路径按前缀比对。
+// 在前缀比对前用 EvalSymlinks 解析候选路径,挡住指向守备区的预存软链别名
+// (<root>/peek -> .arbiter/playbook:Read peek/x 经父目录解析落回区内;
+// Grep path=peek 经整条路径解析落回区内);区前缀也用同一套已解析的仓根
+// 构造,使候选与区落在同一命名空间(避免仓根自身是软链 —— 如 macOS 的
+// /var -> /private/var —— 导致前缀错配)。EvalSymlinks 出错时(路径/父目录
+// 尚不存在等)退回词法清理路径 —— 门控对错误的既定姿态是 fail-open。
+// 命中仍 fail-closed。
 func decidePath(root, path string) Decision {
 	if path == "" {
 		return Decision{}
 	}
+	// 把仓根也按软链解析一遍,作为区前缀(以及相对路径)的统一基底;这样
+	// 即便仓根自身是软链,候选与区也落在同一命名空间,目标尚不存在
+	// (EvalSymlinks 跟随失败)时也不错配。
+	zoneRoot := root
+	if real, err := filepath.EvalSymlinks(root); err == nil {
+		zoneRoot = real
+	}
 	resolved := path
 	if !filepath.IsAbs(resolved) {
-		resolved = filepath.Join(root, resolved)
+		resolved = filepath.Join(zoneRoot, resolved)
 	}
 	resolved = filepath.Clean(resolved)
+	// 先尝试整条路径解析(候选叶子本身是目录软链时,如 Grep path=peek);失败
+	// 再退到父目录解析(候选叶子尚不存在、但经软链父目录引用时,如 Read
+	// peek/x)。两步都失败则保持词法清理路径。
+	if real, err := filepath.EvalSymlinks(resolved); err == nil {
+		resolved = real
+	} else if parent, perr := filepath.EvalSymlinks(filepath.Dir(resolved)); perr == nil {
+		resolved = filepath.Join(parent, filepath.Base(resolved))
+	}
 	for _, z := range zones {
-		absZone := filepath.Join(root, filepath.FromSlash(strings.TrimSuffix(z.rel, "/")))
-		if strings.HasPrefix(resolved, absZone) {
+		absZone := filepath.Join(zoneRoot, filepath.FromSlash(strings.TrimSuffix(z.rel, "/")))
+		if strings.HasSuffix(z.rel, "/") {
+			// 目录区:按路径分量边界比对,而非裸字符串前缀:否则 `.arbiter/run`
+			// 区会误吞同级 `.arbiter/runs/`(运行态 DB)。命中区目录本身或其子项才算。
+			if resolved == absZone || strings.HasPrefix(resolved, absZone+string(filepath.Separator)) {
+				return Decision{Deny: true, Reason: z.reason}
+			}
+		} else if strings.HasPrefix(resolved, absZone) {
+			// 文件名前缀区(.claude/agents/arbiter-):按字面前缀比对,命中
+			// arbiter-curator.md 这类座位凭据文件(其后紧跟文件名字符,非分量边界)。
 			return Decision{Deny: true, Reason: z.reason}
 		}
 	}
@@ -176,19 +212,57 @@ func decidePath(root, path string) Decision {
 
 // decideText 在自由文本(Bash 命令、glob/grep pattern)里扫描受护路径的
 // 字面出现 —— 相对与绝对两种写法都算。宁可误杀(消息会指明正道),
-// 不可漏放。
+// 不可漏放;但分量边界仍要守:`.arbiter/run` 区不可误吞同级 `.arbiter/runs`。
 func decideText(root, text string) Decision {
 	if text == "" {
 		return Decision{}
 	}
 	for _, z := range zones {
 		token := strings.TrimSuffix(z.rel, "/")
-		if strings.Contains(text, token) {
+		// 目录区按分量边界扫(`.arbiter/run` 不误吞 `.arbiter/runs`);文件名前缀区
+		// (.claude/agents/arbiter-)按裸子串扫 —— arbiter- 后面紧跟文件名字符,
+		// 分量边界会漏放。decideText 宁可误杀,过度匹配在此方向是安全的。
+		match := containsAtPathBoundary
+		if !strings.HasSuffix(z.rel, "/") {
+			match = strings.Contains
+		}
+		if match(text, filepath.ToSlash(token)) {
 			return Decision{Deny: true, Reason: z.reason}
 		}
-		if strings.Contains(text, filepath.Join(root, filepath.FromSlash(token))) {
+		if match(text, filepath.ToSlash(filepath.Join(root, filepath.FromSlash(token)))) {
 			return Decision{Deny: true, Reason: z.reason}
 		}
 	}
 	return Decision{}
+}
+
+// containsAtPathBoundary 报告 token 是否作为完整路径分量出现在 text 里:token
+// 紧跟其后的字符必须不是文件名字符(字母/数字/`.`/`-`/`_`),从而 `.arbiter/run`
+// 命中 `.arbiter/run` 与 `.arbiter/run/x`,但不命中同级目录 `.arbiter/runs`。
+func containsAtPathBoundary(text, token string) bool {
+	if token == "" {
+		return false
+	}
+	for i := 0; ; {
+		j := strings.Index(text[i:], token)
+		if j < 0 {
+			return false
+		}
+		end := i + j + len(token)
+		if end >= len(text) || !isPathNameByte(text[end]) {
+			return true
+		}
+		i = end
+	}
+}
+
+func isPathNameByte(b byte) bool {
+	switch {
+	case b >= 'a' && b <= 'z', b >= 'A' && b <= 'Z', b >= '0' && b <= '9':
+		return true
+	case b == '.' || b == '-' || b == '_':
+		return true
+	default:
+		return false
+	}
 }

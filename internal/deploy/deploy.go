@@ -1192,6 +1192,11 @@ func generatedDenyRules(embedded bool) []string {
 		"Write(.arbiter/playbook/**)",
 		"Edit(.arbiter/match/**)",
 		"Write(.arbiter/match/**)",
+		// .arbiter/run/engines.json is the engine_digest trust anchor the spawn
+		// check verifies against (engineclient.embeddedConfig); fence it so a
+		// player cannot rewrite the digest or flip engine mode off.
+		"Edit(.arbiter/run/**)",
+		"Write(.arbiter/run/**)",
 		"Edit(.claude/agents/arbiter-*.md)",
 		"Write(.claude/agents/arbiter-*.md)",
 	}
