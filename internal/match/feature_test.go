@@ -193,6 +193,35 @@ func TestGoalMemoSkippedWhenGoalMutatesWorkspace(t *testing.T) {
 	}
 }
 
+func TestGoalMemoDisabledForRecipesCapability(t *testing.T) {
+	// recipes 能力对局允许 recipes.yaml 中途漂移,而 memo 摘要折入的是冻结 pin、
+	// 普查又跳过 .arbiter/,故被削弱的配方仍会命中旧 PASS。最保守的修法:这类对局
+	// 一律不 memo —— goalMemoDigest 返回空摘要,调用方既不查也不记。
+	root := t.TempDir()
+	store := New(root, "test")
+	writeText(t, filepath.Join(root, "src", "a.c"), "int a;\n")
+	spec := playbook.ResultSpec{Kind: "shell", Command: "exit 0"}
+
+	recipesMatch := &Match{Playbook: playbook.Playbook{Capabilities: []string{"recipes"}}}
+	digest, err := store.goalMemoDigest(recipesMatch, spec)
+	if err != nil {
+		t.Fatalf("recipes match digest err = %v", err)
+	}
+	if digest != "" {
+		t.Fatalf("recipes-capability match must skip memo: digest = %q, want empty", digest)
+	}
+
+	// 同一工作区/谓词,非 recipes 能力仍照常产出非空摘要(继续 memo)。
+	plainMatch := &Match{Playbook: playbook.Playbook{Capabilities: []string{"shell"}}}
+	digest, err = store.goalMemoDigest(plainMatch, spec)
+	if err != nil {
+		t.Fatalf("non-recipes match digest err = %v", err)
+	}
+	if digest == "" {
+		t.Fatal("non-recipes match should still memoize: got empty digest")
+	}
+}
+
 func TestGoalCensusDigestHazards(t *testing.T) {
 	root := t.TempDir()
 	store := New(root, "test")

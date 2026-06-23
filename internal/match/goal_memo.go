@@ -36,6 +36,13 @@ func (s *Store) goalMemoEnabled() bool {
 }
 
 func (s *Store) goalMemoDigest(m *Match, spec playbook.ResultSpec) (string, error) {
+	// recipes 能力的对局允许 recipes.yaml 在对局中漂移(recipes_pin.go),而 memo 摘要
+	// 折入的是封盘冻结的 m.RecipesPin、且普查跳过 .arbiter/(recipesPath 在其下),
+	// 故谁也不反映当前配方体。一旦配方被削弱,摘要仍命中旧的 PASS verdict,绕过冻结测试闸。
+	// 最保守的修法:recipes 能力对局一律不 memo —— 返回空摘要,调用方既不查也不记。
+	if hasCapability(m.Playbook.Capabilities, "recipes") {
+		return "", nil
+	}
 	census, ok := s.goalCensusDigest()
 	if !ok {
 		// 普查不可靠(不可读文件、坏目录等):空摘要表示"本次裁决跳过 memo",
