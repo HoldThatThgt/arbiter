@@ -1,8 +1,10 @@
+import errno
 import os
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from arbiter_engine import errors
 from arbiter_engine.shared import locks
@@ -49,6 +51,35 @@ class LockInventoryTest(unittest.TestCase):
 
             self.assertLess(time.monotonic() - start, 0.5)
             self.assertEqual(ctx.exception.data, {"kind": "lock_timeout", "lock": "state.lock"})
+
+    def test_non_contention_flock_error_closes_handle(self):
+        # A non-BlockingIOError flock failure (ENOLCK etc.) must not leak the just-opened
+        # lock-file descriptor: acquire never appends it to `held`, so the finally cleanup
+        # cannot see it — the open/flock path itself has to close it before re-raising.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            opened = []
+            real_open = Path.open
+
+            def tracking_open(self, *args, **kwargs):
+                handle = real_open(self, *args, **kwargs)
+                opened.append(handle)
+                return handle
+
+            def failing_flock(fd, op):
+                raise OSError(errno.ENOLCK, "no locks available")
+
+            with mock.patch.object(Path, "open", tracking_open), mock.patch.object(
+                locks.fcntl, "flock", failing_flock
+            ):
+                with self.assertRaises(OSError) as ctx:
+                    with locks.acquire(root, [locks.STATE], timeout_s=0.2):
+                        pass
+
+            self.assertEqual(ctx.exception.errno, errno.ENOLCK)
+            self.assertTrue(opened, "acquire should have opened the lock file")
+            for handle in opened:
+                self.assertTrue(handle.closed, "leaked an open lock-file handle on flock error")
 
     def test_no_ad_hoc_engine_flocks(self):
         engine_dir = Path(__file__).resolve().parents[1]

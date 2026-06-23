@@ -65,17 +65,24 @@ def acquire(
             path = path_for(root, spec)
             path.parent.mkdir(parents=True, exist_ok=True)
             handle = path.open("a+b")
-            fd = handle.fileno()
-            while True:
-                try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    held.append((fd, handle))
-                    break
-                except BlockingIOError:
-                    if time.monotonic() >= deadline:
-                        handle.close()
-                        raise errors.lock_timeout(spec.label)
-                    time.sleep(0.01)
+            # Until flock succeeds and (fd, handle) is appended to `held`, this handle is
+            # owned only by this frame and the `finally` cleanup below cannot see it. Close
+            # it on ANY failure (a non-BlockingIOError flock error like ENOLCK, or the timeout
+            # path) so an abnormal flock never leaks the just-opened descriptor.
+            try:
+                fd = handle.fileno()
+                while True:
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        if time.monotonic() >= deadline:
+                            raise errors.lock_timeout(spec.label)
+                        time.sleep(0.01)
+            except BaseException:
+                handle.close()
+                raise
+            held.append((fd, handle))
         yield
     finally:
         while held:

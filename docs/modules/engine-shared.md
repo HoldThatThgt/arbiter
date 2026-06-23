@@ -31,7 +31,8 @@ stage when interposition is off.
 ### pipeline (build-driven indexing, ADR-0004)
 Orchestrates: tail journal during src_compile → on build green, emit the compile-db from the
 journal → `CodeFactExtractor(root, config).collect(None, profile)` over exactly the compiled TU
-set (bounded extraction pool: cores/4 while compiler activity is detected, full width after) →
+set (extraction runs post-build, so nothing is throttled against a live compiler: the worker pool
+is `cpu_count()`, or `facts.index_on_build.pool` verbatim when that knob is set) →
 `FileFactStore.replace_snapshot(...)` publishes a content-addressed snapshot (the store owns its
 own write lock) → return `facts:{published, snapshot_id, files, warnings, extract_ms,
 hidden_ms, tail_ms}` to the runner for the verdict. Failure honesty: per-file extraction
