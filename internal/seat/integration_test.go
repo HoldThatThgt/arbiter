@@ -159,10 +159,15 @@ func createTask(t *testing.T, client *mcp.ClientSession, request string) string 
 
 func testClient(t *testing.T, root, seatName string) *mcp.ClientSession {
 	t.Helper()
-	server, err := buildServer(root, seatName)
+	server, runtime, err := buildServerWithRuntime(context.Background(), root, seatName)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Reap the seat's engine subprocess(es) on cleanup. t.TempDir registers its
+	// RemoveAll first (in repoWithEngine), so this cleanup runs before it (LIFO):
+	// engines are fully waited-out before the temp tree is removed, closing the
+	// flaky "directory not empty" race under heavy contention.
+	t.Cleanup(runtime.Close)
 	ctx := context.Background()
 	st, ct := mcp.NewInMemoryTransports()
 	ss, err := server.Connect(ctx, st, nil)

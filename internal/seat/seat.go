@@ -161,7 +161,7 @@ func buildServer(root, seatName string) (*mcp.Server, error) {
 func buildServerWithRuntime(ctx context.Context, root, seatName string) (*mcp.Server, *seatRuntime, error) {
 	server := mcp.NewServer(&mcp.Implementation{Name: "arbiter-" + seatName, Version: "v1"}, nil)
 	store := match.New(root, seatName)
-	runtime := &seatRuntime{root: root}
+	runtime := &seatRuntime{root: root, store: store}
 	if seatName == Player || seatName == Executor {
 		query, err := engineclient.Spawn(ctx, engineclient.RoleQuery, root)
 		if err != nil {
