@@ -212,4 +212,38 @@ def _is_relative_to(path: Path, base: Path) -> bool:
     except ValueError:
         return False
 
+
+def _fsync_file(path: Path) -> None:
+    # Best-effort durability barrier: flush a staged file's contents to disk so
+    # they become durable before the metadata rename that publishes them. Some
+    # filesystems/platforms cannot fsync a given path; failures here only weaken
+    # the crash-durability guarantee (the read path still verifies sha256 and
+    # fails closed), so they are swallowed rather than failing the publish.
+    try:
+        fd = os.open(str(path), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def _fsync_dir(path: Path) -> None:
+    # Best-effort directory fsync so an entry rename/creation is durable. Not all
+    # platforms (notably Windows) permit opening/fsyncing a directory; treat any
+    # failure as a no-op for the same reason as _fsync_file.
+    try:
+        fd = os.open(str(path), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
 __all__ = [name for name in globals() if not name.startswith("__")]

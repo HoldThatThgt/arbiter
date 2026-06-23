@@ -208,6 +208,47 @@ class StorageCorruptionTest(unittest.TestCase):
 
             self.assertEqual(caught.exception.code, "snapshot_corrupt")
 
+    def test_publish_over_manifestless_snapshot_dir_does_not_raise_raw_oserror(self):
+        # A snapshot dir that exists but has no manifest (interrupted legacy
+        # write / external tampering / partial delete) must not wedge future
+        # publishes of the same content with a raw OSError [Errno 66]; the
+        # publish should clear the stale dir and republish cleanly.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            open_fact_store(target, mode="w", log_enabled=False).replace_facts([_fact()])
+            snapshot_dir = _snapshot_dir(target)
+            # Drop the manifest/stats but keep other (non-empty) files so the dir
+            # is manifest-less yet non-empty -- the os.replace [Errno 66] case.
+            (snapshot_dir / "manifest.json").unlink()
+            (snapshot_dir / "stats.json").unlink()
+            self.assertTrue(any(snapshot_dir.iterdir()))
+
+            # Republishing the identical facts hits the not-reused path (no
+            # manifest to reuse) and must succeed rather than raise OSError.
+            try:
+                manifest = open_fact_store(target, mode="w", log_enabled=False).replace_facts([_fact()])
+            except OSError as exc:  # pragma: no cover - regression guard
+                self.fail(f"publish raised raw OSError instead of staying typed: {exc!r}")
+            self.assertFalse(manifest.reused)
+            self.assertTrue((snapshot_dir / "manifest.json").exists())
+            self.assertEqual(
+                [fact.object_id for fact in open_fact_store(target, mode="r", log_enabled=False).iter_facts()],
+                ["fact:one"],
+            )
+
+    def test_current_pointer_with_trailing_whitespace_still_resolves(self):
+        # The reader must tolerate a `current` pointer carrying trailing
+        # whitespace (manual edit / alternate writer), matching the view layer.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            open_fact_store(target, mode="w", log_enabled=False).replace_facts([_fact()])
+            current = target / ".arbiter" / "facts" / "snapshots" / "current"
+            current.write_text(current.read_text(encoding="utf-8").strip() + "\n  \n", encoding="utf-8")
+
+            store = open_fact_store(target, mode="r", log_enabled=False)
+            self.assertEqual([fact.object_id for fact in store.iter_facts()], ["fact:one"])
+            self.assertEqual(store.stats().total_facts, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

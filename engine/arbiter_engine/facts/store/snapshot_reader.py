@@ -306,7 +306,10 @@ def _current_snapshot_dir(self) -> Optional[Path]:
     current = self._safe_path("snapshots", CURRENT_POINTER)
     if not current.exists():
         return None
-    snapshot_id = current.read_text(encoding="utf-8")
+    # .strip() for parity with the view-layer pointer reader (facts/view.py) and
+    # robustness against a pointer that picks up trailing whitespace from a manual
+    # edit or an alternate writer; the normal write path emits no trailing newline.
+    snapshot_id = current.read_text(encoding="utf-8").strip()
     snapshot_dir = self._safe_path("snapshots", snapshot_id)
     if not snapshot_dir.exists():
         raise StorageError("missing_snapshot", "current points to a missing snapshot", path=snapshot_dir)

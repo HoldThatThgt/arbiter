@@ -198,8 +198,22 @@ class FileFactStore:
             if not reused:
                 try:
                     manifest = self._write_manifest_and_stats(staging_dir, manifest)
+                    # Make staged data files durable before the metadata renames
+                    # so a crash cannot leave `current` pointing at a snapshot
+                    # whose contents are still in the page cache. Best-effort.
+                    for file_name in (*SNAPSHOT_DATA_FILES.values(), READ_INDEX_FILE):
+                        _fsync_file(staging_dir / file_name)
+                    _fsync_dir(staging_dir)
                     snapshots_dir.mkdir(parents=True, exist_ok=True)
+                    # existing_manifest is None here, so any pre-existing
+                    # snapshot_dir is manifest-less (interrupted legacy write,
+                    # external tampering, partial delete). os.replace onto a
+                    # non-empty dir raises a raw OSError [Errno 66]; clear the
+                    # wedged dir first so the outcome stays typed.
+                    if snapshot_dir.exists():
+                        shutil.rmtree(snapshot_dir)
                     os.replace(staging_dir, snapshot_dir)
+                    _fsync_dir(snapshots_dir)
                 finally:
                     if staging_dir.exists():
                         shutil.rmtree(staging_dir)

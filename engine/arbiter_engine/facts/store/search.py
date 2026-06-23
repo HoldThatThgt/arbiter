@@ -640,6 +640,11 @@ def _relation_search_from_pairs(
         matches=matches,
         anchor=anchor,
         query_kind=spec.query_kind,
+        # complete=True is "closure-complete": the one-hop neighbour set was
+        # computed exhaustively (no budget truncation), and `total` is exact.
+        # It is NOT "display-complete": `matches` is capped at `limit` and
+        # `status` is "too_broad" when total > limit. A future max_results
+        # evaluator must gate on `total`/`status`, never on len(matches).
         complete=True,
         budget_exhausted=False,
         total_is_exact=True,
