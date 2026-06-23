@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Mapping, Optional
 
@@ -319,6 +320,12 @@ def _command(manager: SessionManager, config: Config, args: Mapping[str, Any]) -
     command = str(args["command"]).strip()
     if not command:
         raise ToolError("bad_arguments", "command must not be empty")
+    if _has_control_chars(command):
+        raise ToolError(
+            "dangerous_command_denied",
+            "GDB console command must be a single line without control characters",
+            {"command_class": "multi-statement", "hint": "issue one console command per call"},
+        )
     danger = _dangerous_command(command)
     if danger and not config.allow_dangerous_commands:
         raise ToolError(
@@ -371,11 +378,34 @@ def _require_session_id(args: Mapping[str, Any]) -> str:
     return session_id
 
 
+_DANGEROUS_KEYWORDS = {"shell", "source", "python", "pi", "guile", "compile", "dump", "restore", "maintenance"}
+# Unicode line/paragraph separators that str.split() treats as whitespace and
+# that a console parser could treat as a line break, but which fall outside the
+# ASCII control-char range (NEL, LINE/PARAGRAPH SEPARATOR).
+_UNICODE_LINE_SEPARATORS = "\u0085\u2028\u2029"
+# Characters that begin a fresh statement on one line; splitting on these (not
+# just whitespace) stops a denied keyword from hiding glued to a separator,
+# e.g. "print 1;shell id" → token "1;shell" would otherwise evade the scan.
+_TOKEN_SEPARATORS = re.compile(r"[\s;|&]+")
+
+
+def _has_control_chars(command: str) -> bool:
+    # Newlines/carriage returns/other control chars let a denied keyword hide
+    # past the first token (e.g. "print 1\nshell id"); GDB may treat the
+    # embedded separator as a fresh command, evading a first-token-only gate.
+    return any(ord(char) < 0x20 or ord(char) == 0x7F or char in _UNICODE_LINE_SEPARATORS for char in command)
+
+
 def _dangerous_command(command: str) -> Optional[str]:
     lowered = command.strip().lower()
-    first = lowered.split(None, 1)[0] if lowered else ""
-    if first in {"shell", "source", "python", "pi", "guile", "compile", "dump", "restore", "maintenance"}:
-        return first
+    # Scan EVERY separator-delimited token, not just the first, so a denied
+    # keyword anywhere in the command is caught even if a control-char
+    # pre-check were ever relaxed. Split on inline separators (;|&) as well as
+    # whitespace so a keyword glued to one is still isolated.
+    tokens = set(_TOKEN_SEPARATORS.split(lowered))
+    match = _DANGEROUS_KEYWORDS.intersection(tokens)
+    if match:
+        return sorted(match)[0]
     if lowered.startswith("target remote") or lowered.startswith("target extended-remote"):
         return "target-remote"
     if lowered.startswith("generate-core-file") or lowered.startswith("gcore"):

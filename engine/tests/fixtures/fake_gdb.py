@@ -31,6 +31,11 @@ def handle(token: str, command: str) -> None:
     if command.startswith("-gdb-exit"):
         print(f"{token}^exit", flush=True)
         raise SystemExit(0)
+    if command.startswith("-arb-die"):
+        # Simulate GDB crashing mid-command: exit (closing stdout to EOF)
+        # WITHOUT emitting a result record for this token, so a blocked
+        # command() must be woken by the EOF path, not by a reply.
+        raise SystemExit(0)
     if command.startswith("-gdb-set") or command.startswith("-environment-cd"):
         print(f"{token}^done", flush=True)
         return
