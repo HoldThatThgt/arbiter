@@ -43,6 +43,105 @@ from .constants import *
 from .models import *
 from .mapper_utils import *
 
+
+# Unique end-of-children sentinel for _CaptureLinesFrame.next_child(). A literal
+# ``None`` cannot be used because clang's JSON AST may place ``null`` entries in
+# an ``inner`` array (omitted optional sub-nodes), and such a child must be
+# traversed-past, not mistaken for exhaustion.
+_NO_CHILD = object()
+
+
+class _CaptureLinesFrame:
+    """Explicit-stack frame for the iterative ``_capture_lines`` traversal.
+
+    Mirrors one activation of the former recursive function: it captures a
+    node's line/file context on ``enter``, threads the running ``(line, file)``
+    state sequentially across its children, and applies the post-order
+    ``includedFrom`` fixup on ``exit``.
+    """
+
+    __slots__ = (
+        "node",
+        "inherited_line",
+        "inherited_file",
+        "entered",
+        "is_dict",
+        "current_file",
+        "running_line",
+        "running_file",
+        "_children",
+        "_child_index",
+    )
+
+    def __init__(self, node: JSONValue, inherited_line: int, inherited_file: Optional[str]) -> None:
+        self.node = node
+        self.inherited_line = inherited_line
+        self.inherited_file = inherited_file
+        self.entered = False
+        self.is_dict = isinstance(node, dict)
+        self.current_file: Optional[str] = None
+        self.running_line = inherited_line or 1
+        self.running_file = inherited_file
+        self._children: Sequence[JSONValue] = ()
+        self._child_index = 0
+
+    def enter(self, mapper: "_ClangAstMapper") -> None:
+        self.entered = True
+        node = self.node
+        if isinstance(node, dict):
+            current_line = _explicit_node_line(node) or self.inherited_line or 1
+            mapper._line_by_node[id(node)] = current_line
+            explicit_file = _node_file(node)
+            # Clang omits loc.file on many consecutive nodes while it stays in
+            # the same source buffer. Preserve that file context so header
+            # declarations do not fall back to the consuming translation unit.
+            if explicit_file is not None:
+                current_file = explicit_file
+            elif _node_has_included_from(node) and mapper._is_current_translation_unit_file(self.inherited_file):
+                current_file = None
+            else:
+                current_file = self.inherited_file
+            if current_file:
+                mapper._file_by_node[id(node)] = current_file
+            self.current_file = current_file
+            self.running_line = current_line
+            self.running_file = current_file
+            self._children = _node_children(node)
+        elif isinstance(node, list):
+            self.running_line = self.inherited_line or 1
+            self.running_file = self.inherited_file
+            self._children = node
+        else:
+            self.running_line = self.inherited_line or 1
+            self.running_file = self.inherited_file
+            self._children = ()
+
+    def next_child(self) -> JSONValue:
+        # Returns _NO_CHILD when exhausted; a real child may itself be ``None``.
+        if self._child_index >= len(self._children):
+            return _NO_CHILD
+        child = self._children[self._child_index]
+        self._child_index += 1
+        return child
+
+    def absorb_child(self, child_line: int, child_file: Optional[str]) -> None:
+        self.running_line = child_line
+        if child_file:
+            self.running_file = child_file
+
+    def exit(self, mapper: "_ClangAstMapper") -> None:
+        if not self.is_dict:
+            return
+        node = self.node
+        if (
+            self.current_file is None
+            and self.running_file is not None
+            and _node_has_included_from(node)
+            and not mapper._is_current_translation_unit_file(self.running_file)
+        ):
+            mapper._file_by_node[id(node)] = self.running_file
+
+
 class _ClangAstMapper:
     def __init__(
         self,
@@ -475,11 +574,13 @@ class _ClangAstMapper:
     ) -> _ConditionAnnotation:
         source_node = expression_node if expression_node is not None else {}
         expression = expression_override if expression_override is not None else _render_condition_expression(expression_node)
+        source = self._condition_source(source_node) if expression_node is not None else None
+        compacted = _compact_condition_text(expression) if expression is not None else None
         return _ConditionAnnotation(
             kind=kind,
-            expression=_compact_condition_text(expression) if expression is not None else None,
+            expression=_budget_condition_expression(kind, compacted, branch, source),
             branch=branch,
-            source=self._condition_source(source_node) if expression_node is not None else None,
+            source=source,
         )
 
     def _compile_guard_for_node(self, node: Dict[str, JSONValue]) -> Optional[_ConditionAnnotation]:
@@ -1117,15 +1218,27 @@ class _ClangAstMapper:
                 yield node
 
     def _walk(self, node: JSONValue) -> Iterator[JSONValue]:
+        # Iterative pre-order traversal. The recursive form overflowed Python's
+        # recursion limit on deeply-nested expression trees emitted by large
+        # generated parsers; an explicit stack walks arbitrary depth instead.
+        # Children are pushed in reverse so the leftmost is yielded first,
+        # preserving the previous recursive visitation order.
         if isinstance(node, dict) and _is_error_recovery_node(node):
             return
-        yield node
-        if isinstance(node, dict):
-            for child in _node_children(node):
-                yield from self._walk(child)
-        elif isinstance(node, list):
-            for child in node:
-                yield from self._walk(child)
+        stack: List[JSONValue] = [node]
+        while stack:
+            current = stack.pop()
+            yield current
+            if isinstance(current, dict):
+                children: Sequence[JSONValue] = _node_children(current)
+            elif isinstance(current, list):
+                children = current
+            else:
+                continue
+            for child in reversed(children):
+                if isinstance(child, dict) and _is_error_recovery_node(child):
+                    continue
+                stack.append(child)
 
     def _walk_dicts_with_parents(
         self,
@@ -1146,44 +1259,29 @@ class _ClangAstMapper:
         inherited_line: int,
         inherited_file: Optional[str],
     ) -> Tuple[int, Optional[str]]:
-        if isinstance(node, dict):
-            current_line = _explicit_node_line(node) or inherited_line or 1
-            self._line_by_node[id(node)] = current_line
-            explicit_file = _node_file(node)
-            # Clang omits loc.file on many consecutive nodes while it stays in
-            # the same source buffer. Preserve that file context so header
-            # declarations do not fall back to the consuming translation unit.
-            if explicit_file is not None:
-                current_file = explicit_file
-            elif _node_has_included_from(node) and self._is_current_translation_unit_file(inherited_file):
-                current_file = None
-            else:
-                current_file = inherited_file
-            if current_file:
-                self._file_by_node[id(node)] = current_file
-            running_line = current_line
-            running_file = current_file
-            for child in _node_children(node):
-                running_line, child_file = self._capture_lines(child, running_line, running_file)
-                if child_file:
-                    running_file = child_file
-            if (
-                current_file is None
-                and running_file is not None
-                and _node_has_included_from(node)
-                and not self._is_current_translation_unit_file(running_file)
-            ):
-                self._file_by_node[id(node)] = running_file
-            return running_line, running_file
-        if isinstance(node, list):
-            running_line = inherited_line or 1
-            running_file = inherited_file
-            for child in node:
-                running_line, child_file = self._capture_lines(child, running_line, running_file)
-                if child_file:
-                    running_file = child_file
-            return running_line, running_file
-        return inherited_line or 1, inherited_file
+        # Iterative rewrite of a post-order fold that threads (line, file) state
+        # left-to-right through each node's children. Deeply-nested expression
+        # trees from generated parsers overflow Python's recursion limit, so an
+        # explicit frame stack walks arbitrary depth. Each frame resumes at a
+        # child index, feeding the running state of one child into the next, and
+        # folds the final state back into its parent on exit. Behaviour is
+        # identical to the previous recursive form.
+        root_frame = _CaptureLinesFrame(node, inherited_line, inherited_file)
+        stack: List[_CaptureLinesFrame] = [root_frame]
+        while stack:
+            frame = stack[-1]
+            if not frame.entered:
+                frame.enter(self)
+            child = frame.next_child()
+            if child is _NO_CHILD:
+                frame.exit(self)
+                stack.pop()
+                parent = stack[-1] if stack else None
+                if parent is not None:
+                    parent.absorb_child(frame.running_line, frame.running_file)
+                continue
+            stack.append(_CaptureLinesFrame(child, frame.running_line, frame.running_file))
+        return root_frame.running_line, root_frame.running_file
 
     def _line(self, node: Dict[str, JSONValue]) -> int:
         return self._line_by_node.get(id(node), _node_line(node))
