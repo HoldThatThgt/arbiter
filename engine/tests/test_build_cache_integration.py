@@ -7,11 +7,17 @@ command, which appends a line to a counter file and (re)produces the binary; a
 "hit" skips the command entirely, so the counter does not advance and the
 compiler is provably not re-invoked.
 
-The three behaviours asserted mirror docs/modules/engine-runs.md:43-46:
+The behaviours asserted mirror docs/modules/engine-runs.md:43-46 and ADR-0005
+("build cache keys on full flags + profile"):
   * an identical rerun over a fixture with `sources:` is a CACHE HIT,
   * editing a source forces a MISS (stale-binary polarity — the bug crun had),
+  * changing a compile flag (CFLAGS) or src_compile.cmd forces a MISS even
+    though the source census is unchanged — the inputs the census cannot see
+    must still be folded into the cache key,
   * a recipe WITHOUT `sources:` never hits cross-process.
 """
+
+from __future__ import annotations
 
 import subprocess
 import sys
@@ -34,8 +40,13 @@ COMPILE_CMD = (
 )
 
 
-def _recipe(*, with_sources: bool) -> str:
-    cmd = ", ".join(_quote(part) for part in COMPILE_CMD)
+def _recipe(
+    *,
+    with_sources: bool,
+    cflags: str | None = None,
+    cmd: tuple[str, ...] = COMPILE_CMD,
+) -> str:
+    cmd_text = ", ".join(_quote(part) for part in cmd)
     lines = [
         "targets:",
         "  - id: unit",
@@ -44,10 +55,15 @@ def _recipe(*, with_sources: bool) -> str:
         "    harness:",
         "      kind: gtest",
     ]
+    if cflags is not None:
+        # CFLAGS reaches the compiler through stage env (and so the produced
+        # binary), but the source census never sees it — only the cache key can.
+        lines.append("    env:")
+        lines.append(f"      CFLAGS: {_quote(cflags)}")
     if with_sources:
         lines.append("    sources: [src/**/*.c]")
     lines.append("    src_compile:")
-    lines.append(f"      cmd: [{cmd}]")
+    lines.append(f"      cmd: [{cmd_text}]")
     return "\n".join(lines) + "\n"
 
 
@@ -121,6 +137,66 @@ class BuildCacheIntegrationTest(unittest.TestCase):
         (self.root / "src" / "b.c").write_text("int b(void){return 0;}\n", encoding="utf-8")
         self.assertEqual(self._run(book).exit_code, 0)
         self.assertEqual(_compile_count(self.root), 2, "new source must force a recompile")
+
+    def test_compile_flag_change_forces_a_miss(self):
+        # Regression for the stale-binary verdict bug: changing a compile flag
+        # (CFLAGS via env, e.g. -O0 -> -O2) changes the produced binary but is
+        # invisible to the source census (.arbiter and flags are excluded). The
+        # cache key must fold the effective flags, so the changed-flag run MUST
+        # recompile rather than serve the prior, differently-compiled binary.
+        debug = recipes.parse(_recipe(with_sources=True, cflags="-O0"))
+        self.assertEqual(self._run(debug).exit_code, 0)
+        self.assertEqual(_compile_count(self.root), 1)
+        # Same flags, untouched sources -> a genuine hit (count stays put).
+        self.assertEqual(self._run(debug).exit_code, 0)
+        self.assertEqual(_compile_count(self.root), 1, "identical flags must hit")
+
+        # Flip ONLY the optimization flag; sources and binary are unchanged.
+        release = recipes.parse(_recipe(with_sources=True, cflags="-O2"))
+        self.assertEqual(self._run(release).exit_code, 0)
+        self.assertEqual(
+            _compile_count(self.root), 2, "a CFLAGS change must force a recompile"
+        )
+        # The new flag set caches independently; rerunning it now hits.
+        self.assertEqual(self._run(release).exit_code, 0)
+        self.assertEqual(_compile_count(self.root), 2)
+        # And the original flag set is still its own cached entry (no clobber).
+        self.assertEqual(self._run(debug).exit_code, 0)
+        self.assertEqual(_compile_count(self.root), 2)
+
+    def test_compile_command_change_forces_a_miss(self):
+        # Regression: changing src_compile.cmd to a command that produces a
+        # different binary must MISS. The command bytes never enter the source
+        # census, so only a command-aware cache key prevents the prior binary
+        # (e.g. AAA) being served for a recipe that now builds BBB.
+        produces_aaa = (
+            "/bin/sh",
+            "-c",
+            'printf "x\\n" >> compile-count.log; mkdir -p build; printf AAA > build/app',
+        )
+        produces_bbb = (
+            "/bin/sh",
+            "-c",
+            'printf "x\\n" >> compile-count.log; mkdir -p build; printf BBB > build/app',
+        )
+
+        first = recipes.parse(_recipe(with_sources=True, cmd=produces_aaa))
+        self.assertEqual(self._run(first).exit_code, 0)
+        self.assertEqual(_compile_count(self.root), 1)
+        self.assertEqual((self.root / "build" / "app").read_text(encoding="utf-8"), "AAA")
+        # Identical command, untouched sources -> hit.
+        self.assertEqual(self._run(first).exit_code, 0)
+        self.assertEqual(_compile_count(self.root), 1, "identical command must hit")
+
+        # Swap the compile command; sources are unchanged.
+        second = recipes.parse(_recipe(with_sources=True, cmd=produces_bbb))
+        self.assertEqual(self._run(second).exit_code, 0)
+        self.assertEqual(
+            _compile_count(self.root), 2, "a src_compile.cmd change must force a recompile"
+        )
+        # The new command actually ran, so the on-disk binary is now BBB, not
+        # the stale AAA that the buggy key would have served.
+        self.assertEqual((self.root / "build" / "app").read_text(encoding="utf-8"), "BBB")
 
     def test_recipe_without_sources_never_hits(self):
         book = recipes.parse(_recipe(with_sources=False))

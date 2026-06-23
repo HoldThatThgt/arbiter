@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import subprocess
@@ -74,7 +76,9 @@ def run_stage(
 
     cache_eligible = stage in COMPILE_STAGES and target.binary is not None
     db_path = root / STATE_DB_REL
-    cache_key = _cache_key(target_id, stage, profiles) if cache_eligible else ""
+    cache_key = (
+        _cache_key(target, stage_spec, stage, profiles, book) if cache_eligible else ""
+    )
 
     with locks.acquire(root, [locks.build_lock(workdir)], timeout_s=lock_timeout_s):
         # A census-validated cache hit (matching stage key, clean census over the
@@ -161,16 +165,68 @@ def _inject_cc(env: dict[str, str], name: str, arbiter_bin: Optional[str], defau
     env[name] = f"{resolve_arbiter_bin(arbiter_bin)} cc -- {real}"
 
 
-def _cache_key(target_id: str, stage: str, profiles: Sequence[str]) -> str:
+def _cache_key(
+    target: recipes.Target,
+    stage: recipes.Stage,
+    stage_name: str,
+    profiles: Sequence[str],
+    book: recipes.RecipeBook,
+) -> str:
     """Stable build-cache key for a compile stage.
 
-    The key binds the target, the compile stage, and the active profile overlay:
-    profiles change CFLAGS/CXXFLAGS/LDFLAGS and therefore the produced binary, so
-    a debug build must never satisfy an asan lookup. Profiles are applied as an
-    unordered set by _stage_env, so the key sorts them to stay order-insensitive.
+    The key binds every recipe-controlled input that determines the produced
+    binary, not just identity. ADR-0005 requires keying on "full flags +
+    profile", so a hit must be impossible unless the compile would re-run the
+    exact same command with the exact same flags/env:
+
+      * target id, stage, and the active profile overlay (profiles change
+        CFLAGS/CXXFLAGS/LDFLAGS, so a debug build must never satisfy an asan
+        lookup);
+      * the stage's resolved compile command and pre/post argv (changing
+        src_compile.cmd must miss — it produces a different binary);
+      * the effective compile/link flags and env that reach the compiler:
+        target.env, stage.env, and each applied profile's env and
+        cflags/cxxflags/ldflags appends (CFLAGS settable via env, e.g. -O0→-O2,
+        must miss).
+
+    The source census (build_cache.lookup) excludes .arbiter/ and only sees the
+    `sources:` globs, so without this binding a recipe/flag edit is invisible
+    and the stale binary is served as fresh. Profiles are applied as an
+    unordered set by _stage_env, so the profile contribution is sorted to stay
+    order-insensitive; the digest is a deterministic sha256 over canonical JSON.
     """
     profile_key = "+".join(sorted(profiles)) if profiles else "default"
-    return f"{profile_key}:{target_id}:{stage}"
+    payload = {
+        "target_id": target.id,
+        "stage": stage_name,
+        "profiles": sorted(profiles),
+        # stage.to_json() emits cmd/pre/post/env/timeout_s deterministically.
+        "stage_spec": stage.to_json(),
+        "target_env": dict(sorted(target.env.items())),
+        # Bind each applied profile's *contents* (flags + env), not just its
+        # name: under recipe-derivation book drift the same name may be redefined
+        # with weaker flags between the proving run and a re-run.
+        "profile_overlay": [
+            _profile_digest_input(book, name) for name in sorted(profiles)
+        ],
+    }
+    digest = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return f"{profile_key}:{target.id}:{stage_name}:{digest}"
+
+
+def _profile_digest_input(book: recipes.RecipeBook, name: str) -> dict:
+    """Canonical, JSON-serializable view of a profile's compile contribution.
+
+    An unknown profile name is left as a bare marker rather than raising: the
+    runner's own _stage_env raises RunnerError for unknown profiles when it
+    actually builds, and the cache key must not crash before that check runs.
+    """
+    profile = book.profiles.get(name)
+    if profile is None:
+        return {"name": name, "unknown": True}
+    return {"name": name, **profile.to_json()}
 
 
 def _reset_compile_journal(root: Path, workdir: Path, build_id: str) -> None:
