@@ -79,9 +79,9 @@ incremental. Each step ends with `make test` green.
 ## 2. Per-phase acceptance (included + partial)
 
 ### Phase 1.2 — store leaf (models/serialization) + extractor
-- `test_storage_fact_record.py` (5) — **migrated, green.** Pins `SCHEMA_VERSION==5`, `invalid_fact`/`payload_too_large`, 4KB cap, frozen-slots.
-- `test_storage_relative_record.py` (6) — landable now. `RELATION_KINDS`, `invalid_relative`/`invalid_relation_kind`/`invalid_condition`/`condition_too_large`(1KB)/`payload_too_large`(2KB), confidence∈[0,1].
-- `test_code_extractor_fixtures.py` (54), `test_code_extractor_parallel.py` (5), `test_initializer_toolchain.py` band A (~22), `toolchain_helpers.py` (infra), `tests/__init__.py` (infra) — gate on `facts/extractor/` (Phase 1.5). Extractor keeps a **real** log (not the store no-op).
+- `test_storage_fact_record.py` (6) — **migrated, green.** Pins `SCHEMA_VERSION==5`, `invalid_fact`/`payload_too_large`, 4KB cap, frozen-slots.
+- `test_storage_relative_record.py` (7) — landable now. `RELATION_KINDS`, `invalid_relative`/`invalid_relation_kind`/`invalid_condition`/`condition_too_large`(1KB)/`payload_too_large`(2KB), confidence∈[0,1].
+- `test_code_extractor_fixtures.py` (54), `test_code_extractor_parallel.py` (5), `test_initializer_toolchain.py` (33 total, split across this phase + Phase 1.5 band B), `toolchain_helpers.py` (infra), `tests/__init__.py` (infra) — gate on `facts/extractor/` (Phase 1.5). Extractor keeps a **real** log (not the store no-op).
 
 ### Phase 1.3 — snapshot store + read-index + locks (store fully ported → landable now)
 `test_storage_source_inventory.py` (2), `test_storage_view_model.py` (5), `test_storage_relative_no_compat.py` (2),
@@ -92,17 +92,19 @@ rewrites; codes are the spec (`snapshot_corrupt`/`manifest_mismatch`/`unsupporte
 ported verbatim), so the lock tests port cleanly.
 
 ### Phase 1.5 — query wiring (search/detail) + extractor end-to-end
-Included: `test_mcp_search_detail.py` (8), `test_mcp_relation_search.py` (15, the relation-grammar spec),
+Included: `test_mcp_search_detail.py` (7), `test_mcp_relation_search.py` (16, the relation-grammar spec),
 `test_mcp_performance.py` (2, recalibrated smoke — guards bounded fetch). Partial (drop log sub-assertions / remap
-errors / new-native protocol shape): `test_mcp_response_budget` (3), `test_mcp_tool_models` (6),
-`test_mcp_relations` (9), `test_mcp_stdio_protocol` (2), `test_initializer_api` (6),
-`test_initializer_compile_database` (4), `test_initializer_path_safety` (4), `test_initializer_toolchain` band B (~7).
+errors / new-native protocol shape): `test_mcp_response_budget` (3), `test_mcp_tool_models` (5),
+`test_mcp_relations` (9; 2 skipped — endpoint-closure — so 7 execute), `test_mcp_stdio_protocol` (2), `test_initializer_api` (6),
+`test_initializer_compile_database` (4), `test_initializer_path_safety` (4), `test_initializer_toolchain` band B (the remainder of its 33).
 Port the query layer (`SearchResponse`/`DetailResponse`/`RelationPreview`/budget ladder/`_bounded_payload`/
 `_source_context`) behind the rpc handlers; replace the stub `_query_kind` with `parse_relation_search_query`.
 
 ### Phase 2 — incremental.*
-`test_incremental_overlay_view.py` (8, include), `test_incremental_mcp_view_state.py` (3, new-native rpc tests),
-`test_config_incremental.py` (3, new-native arbiter config), + a fresh facts-config knob test. The incremental
+`test_incremental_overlay_view.py` (9, include), `test_incremental_mcp_view_state.py` (3, new-native rpc tests)
+— these two are the only Phase-2 files **inside `engine/tests/c2/`**.
+`test_config_incremental.py` (3, new-native arbiter config) lives at **`engine/tests/` (top-level, NOT c2)**, so it
+is outside the 24-file/233-test c2 acceptance set — plus a fresh facts-config knob test. The incremental
 coordinator needs a **real** jsonl log. `worker_count`→`facts.index_on_build.pool` (decision #2); knobs live
 (decision #3). Keep content-addressed `overlay:<digest>`.
 
@@ -121,7 +123,10 @@ coordinator needs a **real** jsonl log. `worker_count`→`facts.index_on_build.p
 
 ## 4. Totals & risks
 
-**Totals:** 24 included files (233 tests) across both phases (Phase 1: 16 files / 165 tests; Phase 2 adds the incremental/config files of §2), 10 partial (70 tests), 33 excluded. recordCount 61.
+**Totals:** 24 included `test_*.py` files (233 tests) in `engine/tests/c2/` across both phases —
+Phase 1 (non-incremental): 22 files / 221 tests; Phase 2 (incremental): 2 files / 12 tests
+(`test_config_incremental.py` is a 3rd Phase-2 file but lives at `engine/tests/` top-level, outside
+c2, so it is not in this count). 10 partial, 33 excluded. recordCount 61.
 
 **Risks**
 1. **Store lock-surface drift** — mitigated: cipher-2's mkdir-lock (`store_events`/`recovery`) was ported verbatim, so `test_storage_path_safety` ports cleanly; `recovery.py:11` `.cipher` bug fixed.

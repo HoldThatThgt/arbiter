@@ -79,6 +79,9 @@ Facts single-writer rule: only the player's QUERY engine reconciles/publishes ov
 engines read base + latest published overlay; fact-predicate evidence records
 `{snapshot_id, overlay_id, view_state}`. Claim level: "DB-safe and build-serialized" until
 8-way contention tests pass. `arbiter init` refuses network filesystems (typed error).
+*Note (M4): the absorbed facts store keeps its own snapshot-writer mutex at
+`.arbiter/facts/run/storage.lock` — that is the real path of the `snapshot.lock` named above
+(force-broken via `recovery.force_unlock`); there is no `.arbiter/locks/snapshot.lock` on disk.*
 
 ## ADR-0010 — Companion diagnostic MCP servers ship inside arbiter-engine (2026-06-12, accepted)
 `gdb-mcp` (structured GDB/MI debugging) and `perf-mcp` (C perf triage + measurement) are
@@ -92,8 +95,10 @@ keeps holding and mcp-kind predicates with `expect[]` clauses adjudicate their
 processes hold no referee or evaluator state. Their standalone `init` subcommands are dropped
 (Go deploy owns all wiring); serve/doctor/scan/measure/probe/tools survive. `arbiter init`
 probes `python3` + namespace importability; when the engine resolves it merges the two
-`.mcp.json` entries (add-if-missing — an existing entry is foreign content and survives
-untouched) and writes `.claude/agents/arbiter-debugger.md`, an executor-seat agent variant
+`.mcp.json` entries (more precisely than "add-if-missing": an engine-generated entry is
+*refreshed* on re-init so stale relative paths self-heal, while a FOREIGN same-name entry is
+preserved untouched — ADR-0014 clarifies, and `TestInitRefreshesStaleEngineCompanionEntries`
+pins it) and writes `.claude/agents/arbiter-debugger.md`, an executor-seat agent variant
 wired with both companions. An absent engine degrades silently with a guidance hint.
 **Consequences:** both namespaces obey the engine red lines (stdlib-only — AST-meta-test
 enforced — repo-local state, no network); the debugger agent file is key-injected, 0600,

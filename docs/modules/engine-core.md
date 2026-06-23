@@ -25,7 +25,9 @@ channel policy.
   chassis and passed to handlers as context — tool argument schemas stay closed
   (`additionalProperties:false`, `_reject_unknown_args` preserved from cipher).
 - Roles: the chassis knows whether it was spawned as QUERY or EXEC and as which seat's child
-  (argv), and enforces the single-writer rule (only player-QUERY may reconcile/publish overlays).
+  (read from the `ARBITER_ENGINE_ROLE` / `ARBITER_ENGINE_SEAT` env vars, defaulting to
+  `QUERY`/`player`), and enforces the single-writer rule (only player-QUERY may
+  reconcile/publish overlays).
 - Typed error taxonomy (JSON-RPC error.data.kind): `no_snapshot{hint}`, `briefing_unresolved
   {bad_refs[]}`, `capability_revoked`, `recipe_pin_mismatch`, `engine_stale{expected,found}`,
   `harness_unavailable`, `indexer_unavailable{toolchain_code,detail}` (mandatory-index hard stop on

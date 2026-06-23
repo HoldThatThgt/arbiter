@@ -54,7 +54,8 @@ TARGET REPO (your gtest-guarded C DBMS; pg/sqlite checkouts = dummy benchmarks)
 │ │  ROLE: player's query engine = sole facts WRITER; others READ   │         │
 │ └──────────────────────────────────────────────────────────────────┘         │
 │                                                                              │
-│ state: .arbiter/{match/, facts/, runs/, locks/, log/, status.json, run/}    │
+│ state: .arbiter/{match/{status.json, log/, run/state.json, seat.key}, facts/,│
+│        runs/, locks/, run/engines.json}                                       │
 │ committed: .arbiter/playbook/*.md  .arbiter/recipes.yaml  .arbiter/config.yml│
 │ wiring: .mcp.json (ONE entry) · .claude/{settings,agents,skills}             │
 └──────────────────────────────────────────────────────────────────────────────┘
@@ -90,13 +91,17 @@ The facts store has no standalone lifecycle: no `cipher2 init`, no user-facing i
 
 ## 3. Component Mapping
 
+The engine **distribution** name is `arbiter-engine` (hyphenated, ADR-0001); the in-tree source
+lives at `engine/arbiter_engine/` (underscore — a Python package name), so `arbiter-engine/facts/`
+below maps to `engine/arbiter_engine/facts/` on disk.
+
 | Existing module | Disposition | Destination / note |
 |---|---|---|
-| cipher-2 `initializer/extractor/code/*` (streaming, mapper, ast_backend, toolchain, direct_calls) | **Kept** | `arbiter-engine/facts/` — fail-closed core untouched; ENDGAME items continue here |
+| cipher-2 `initializer/extractor/code/*` (streaming, mapper, ast_backend, toolchain, direct_calls) | **Kept** | `engine/arbiter_engine/facts/` — fail-closed core untouched; ENDGAME items continue here |
 | cipher-2 `storage/*` (snapshot_writer, read_index, search, views) | **Kept** | `facts/`; inventory hashing code **refactored** into `shared/census` (generalized to arbitrary file sets) |
 | cipher-2 `incremental/` | **Kept/refactored** | reconcile is writer-role-gated; the poll thread is **kept and required** (owner-mandated automatic background index, ADR-0018) with `overlay_ttl_seconds` GC now **implemented**; content-addressed `overlay-<sha16>` ids; overlay publish takes `overlay.lock` |
 | cipher-2 `mcp/` (server loop, descriptors, budget ladder) | **Refactored** | engine-wide JSON-RPC core hosting all namespaces + `_meta` extraction; `search`/`detail` schemas byte-identical |
-| cipher-2 `cli.py` init/rebuild/status | **Rewritten** | engine batch mode behind CI-only `arbiter index` + `status`; interactive indexing moves to the gear-up build path; its `.mcp.json` writer **dropped** (Go deploy owns wiring) |
+| cipher-2 `cli.py` init/rebuild/status | **Rewritten** | engine batch mode behind a **planned** CI-only `arbiter index` (not yet a subcommand — see §5) + `status`; interactive indexing moves to the gear-up build path; its `.mcp.json` writer **dropped** (Go deploy owns wiring) |
 | cipher-2 `config/`, `tools/log` | **Refactored / kept** | `.arbiter/config.yml` `facts:` section; redaction rules become the facts/runs channel standard |
 | cipher-2 `knowledge/` | **Dropped from runtime** | authoring source for the openings playbook library |
 | chess `internal/match` | **Kept, extended** | evidence + expect_report on Task, `goal_memo`, `goal_pending`, briefing fields; dead constants deleted |
@@ -105,7 +110,7 @@ The facts store has no standalone lifecycle: no `cipher2 init`, no user-facing i
 | chess `internal/seat` | **Kept, extended** | proxied engine tools; capability-gated registration with fail-closed edge semantics; curator ListTask drift fixed |
 | chess `internal/journal` | **Kept** | full-fidelity forensics retained (see Risks); correlation IDs added |
 | chess `internal/deploy` | **Rewritten** | the unified init; structured-merge skeleton retained; **exact-command** Stop-hook claim (graft) |
-| chess `cmd/chess` | **Extended** | `cmd/arbiter`: init/adopt/index/status/report/serve/hook |
+| chess `cmd/chess` | **Extended** | `cmd/arbiter`: init/adopt/status/report/serve/hook/cc (`index` is **planned** — not yet a subcommand; see §5) |
 | — (new) `internal/engineclient` | **New** | minimal JSON-RPC client; golden-transcript contract tests |
 | — (new) Go `internal/interpose` (`arbiter cc` subcommand) | **New** | per-TU compiler launcher in the ms-startup Go binary (a Python shim would tax every compile with interpreter startup): journals argv+cwd → compile-db, appends to the extraction queue, execs the real compiler; fail-open for the build, adversarially tested (response files, ccache stacking, `make -jN`, interrupted builds) |
 | crun `runner.py` | **Refactored** | `runs/`: harness-adapter seam; census-validated disk cache; per-workdir build lock; per-target reload fixed; `run_test` PK gains `occurrence` |
@@ -134,8 +139,8 @@ The facts store has no standalone lifecycle: no `cipher2 init`, no user-facing i
   .arbiter/
     config.yml                     # COMMITTED. strict YAML-subset. sections:
                                    #   facts:{extractor, incremental, index_on_build:{pool, key_flags}, toolchain:{clang, libclang, clang_args}}
-                                   #   runs:{harness defaults}
-                                   #   match:{goal_memo: false}        engine:{}
+                                   #   runs:{} (reserved; must be empty)
+                                   #   match:{goal_memo: false}        engine:{} (reserved; must be empty)
     playbook/*.md                  # COMMITTED — steps, [CheckList], [Branch], [Gotcha], [Verify], [SetGoal], [Submit], [Checkpoint]
     recipes.yaml                   # COMMITTED — RecipeBook v2:
                                    #   vars,
@@ -148,7 +153,8 @@ The facts store has no standalone lifecycle: no `cipher2 init`, no user-facing i
                                    #                                  # pgregress/tap optional, later
                                    #     sources:[globs],            # cache/memo census scope
                                    #     requires, notes, src_compile/test_compile/test_run}]
-    match/                         # DERIVED: state.json (0600), seat.key — chess layout, relocated
+    match/                         # DERIVED: run/state.json (0600, ADR-0014), status.json (0644),
+                                   #   log/ (journal etc. — see below), seat.key — chess layout, relocated
     facts/                         # DERIVED: snapshots/{current ptr, <id>/{facts,relatives,
                                    #   source_inventory}.jsonl.gz + read_index.sqlite + manifest/stats},
                                    #   run/{mapreduce,incremental} — cipher v5/v6 layout verbatim, relocated
@@ -158,10 +164,10 @@ The facts store has no standalone lifecycle: no `cipher2 init`, no user-facing i
                                    #   runs/<run_id>/ artifacts
     locks/                         # match.lock, snapshot.lock, overlay.lock, state.lock, build/<h>.lock
     run/engines.json               # MACHINE-LOCAL, gitignored: {python, engine_version, verified_at}
-    log/                           # TRACE: journal.jsonl (referee, full-fidelity, 0600, fsync),
+    match/log/                     # TRACE: journal.jsonl (referee, full-fidelity, 0600, fsync),
                                    #   facts.jsonl, runs.jsonl (redacted channels);
                                    #   all events carry {match_id?, round?, task_id?, run_id?}
-    status.json                    # 0644, REFEREE-ONLY match projection (never future steps);
+    match/status.json              # 0644, REFEREE-ONLY match projection (never future steps);
                                    #   facts/runs status composed on read by `arbiter status`
 ```
 

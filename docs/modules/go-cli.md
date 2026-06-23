@@ -17,7 +17,7 @@ Everything heavy lives in `internal/*`; this module stays thin.
 
 ## Design
 - **status:** compose-on-read (ADR-context: single-composer rule). The referee owns
-  `.arbiter/status.json` (match projection only, 0644, never future steps); `arbiter status`
+  `.arbiter/match/status.json` (match projection only, 0644, never future steps); `arbiter status`
   reads it and *queries* the engine for facts/runs status (snapshot id + age, staleness flags,
   proven-recipe counts, engines.json verification state) — two processes never write one file.
 - **report:** post-match digest joining `journal.jsonl` (full fidelity) with runs SQLite rows on

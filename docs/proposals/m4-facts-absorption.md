@@ -181,9 +181,11 @@ Forced first (incremental overlays merge over a base store).
 4. **Go + verify tests**: add populated-snapshot fact-predicate tests (`min_results≥1`, `reachable`,
    `total_at_least`) so the adjudication path is exercised, not just the empty path.
 5. **cipher-2 test acceptance** (owner-required): cipher-2's own facts tests are migrated as EXTRA
-   tests into `engine/tests/c2/` and **must pass against the port** — the full plan (24 files /
-   233 tests included across both phases — Phase 1: 16 / 165; Phase 2 adds the incremental/config
-   files — plus 10 partial, 33 excluded) is [m4-test-migration-map.md](m4-test-migration-map.md).
+   tests into `engine/tests/c2/` and **must pass against the port** — the full plan (24
+   `test_*.py` files / 233 tests in c2 across both phases — Phase 1 (non-incremental): 22 / 221;
+   Phase 2 (incremental): 2 / 12; the 3rd Phase-2 file `test_config_incremental.py` is new-native
+   at `engine/tests/` top-level, outside c2 — plus 10 partial, 33 excluded) is
+   [m4-test-migration-map.md](m4-test-migration-map.md).
    Each phase migrates its mapped tests once its code lands, keeping `make test-py` green.
 
 ## 8. Decisions — resolved by the owner (2026-06-15)
