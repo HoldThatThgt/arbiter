@@ -221,6 +221,27 @@ func TestInitEmbeddedEngineAddsWriteDenyRules(t *testing.T) {
 	}
 }
 
+// TestInitDeniesRunDirWrites pins the .arbiter/run/ fence: engines.json is the
+// engine_digest trust anchor the spawn check verifies against, so it must be
+// non-editable regardless of embedded mode.
+func TestInitDeniesRunDirWrites(t *testing.T) {
+	root := t.TempDir()
+	if _, err := InitWithOptions(root, testInitOptions()); err != nil {
+		t.Fatal(err)
+	}
+	var settings map[string]any
+	readJSONFile(t, filepath.Join(root, fileSettings), &settings)
+	deny := settings["permissions"].(map[string]any)["deny"].([]any)
+	for _, want := range []string{
+		"Edit(.arbiter/run/**)",
+		"Write(.arbiter/run/**)",
+	} {
+		if !hasLineValue(deny, want) {
+			t.Fatalf("missing run-dir deny %q in %#v", want, deny)
+		}
+	}
+}
+
 func TestInitNoExecutorSkipsExecutorAgent(t *testing.T) {
 	root := t.TempDir()
 	opts := testInitOptions()
