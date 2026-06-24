@@ -21,6 +21,7 @@ typed result — fail-closed, never a crash.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -235,12 +236,21 @@ def executable_coverage(repo_root: Path | str, *, limit: int = 200_000) -> dict[
     built_files = {
         candidate.file
         for candidate in discover_test_candidates(root, limit=limit)
-        if candidate.file
+        if candidate.file and _in_project_scope(candidate.file)
     }
+    compile_db = root / book.compile_db.path if book.compile_db is not None else None
     covered: List[str] = []
     uncovered: List[str] = []
     for target in book.targets:
-        if _target_source_files(root, target) & built_files:
+        sources = _target_source_files(root, target)
+        if not sources and compile_db is not None:
+            # A target that declares no `sources` (batch-registered cover targets often don't) would
+            # otherwise be UNCOVERABLE — its intersection with built_files is always empty, so the
+            # 100% ratio could never be reached and cover would self-loop. Credit it by build
+            # provenance instead: the translation units the build's own compile_commands.json
+            # records as compiled into this target's binary.
+            sources = _sources_from_compile_db(compile_db, target.binary, root)
+        if sources & built_files:
             covered.append(target.id)
         else:
             uncovered.append(target.id)
@@ -275,6 +285,43 @@ def _target_source_files(root: Path, target: recipes.Target) -> set:
                     files.add(path.relative_to(root).as_posix())
                 except ValueError:
                     continue
+    return files
+
+
+def _sources_from_compile_db(compile_db_path: Path, binary: Optional[str], root: Path) -> set:
+    """Repo-relative source files compiled into ``binary``, read from the build's own
+    compile_commands.json — the provenance fallback that keeps the cover gate satisfiable for a
+    target that declares no ``sources``. A CMake object path is ``…/<target>.dir/…/<src>.o``, so an
+    entry whose ``output`` sits under ``<binary-stem>.dir`` is one of this executable's translation
+    units. Empty when there is no compile_db, no ``output`` fields, or no convention match — the gate
+    then simply reports the target uncovered, never a crash.
+    """
+    if not binary:
+        return set()
+    needle = Path(binary).name + ".dir"
+    try:
+        data = json.loads(compile_db_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    if not isinstance(data, list):
+        return set()
+    root_abs = root.resolve()
+    files: set = set()
+    for raw in data:
+        if not isinstance(raw, Mapping):
+            continue
+        output = raw.get("output")
+        file = raw.get("file")
+        directory = raw.get("directory", "")
+        if not isinstance(output, str) or needle not in output or not isinstance(file, str):
+            continue
+        path = Path(file)
+        if not path.is_absolute() and isinstance(directory, str) and directory:
+            path = Path(directory) / file
+        try:
+            files.add(path.resolve().relative_to(root_abs).as_posix())
+        except (ValueError, OSError):
+            continue
     return files
 
 

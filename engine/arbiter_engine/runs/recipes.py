@@ -289,6 +289,15 @@ def _parse_harness(node: Optional[_Node]) -> Harness:
         for key, value in sorted(values.items())
         if key != "kind"
     }
+    # Validate the isolation option at parse/register time — cheaper and clearer than failing a
+    # run after a build is already spent (a typo'd value would otherwise surface as a confusing
+    # run-time error, including on the build-booted boot gate).
+    isolation = options.get("isolation")
+    if isolation is not None and isolation not in ("none", "per_suite", "per_test"):
+        raise RecipeError(
+            values["isolation"].line,
+            f"target.harness.isolation must be per_suite, per_test, or none, not {isolation!r}",
+        )
     return Harness(kind=kind, options=options)
 
 

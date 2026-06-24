@@ -44,7 +44,7 @@ gear-up → scan-tests → cover → prove → reconcile-perf → reconcile-diag
 |---|---|---|---|
 | **gear-up** *(was derive; native+cc combined)* | the cc-interposed build publishes facts **and** the binary it produced boots+enumerates | `build-booted` *(new)* — `facts.published==true` **and** `boot.exited_zero && boot.listed_tests≥1` | self-loop; failure msg compares native-vs-cc |
 | **scan-tests** *(was enumerate)* | full declared test set enumerated; every binary registered | `tests-enumerated` *(unchanged)* | self-loop |
-| **cover** | a real cc-run drives per-binary coverage of AST-declared files ≥ 0.50 | `suite-covered` *(unchanged)* | self-loop |
+| **cover** | a real cc-run drives per-EXECUTABLE coverage of the committed recipe book's targets = 1.0 | `suite-covered` | self-loop |
 | **prove** *(re-ordered after cover, thinned)* | whole suite asserts in its runtime env (genuine `passed`\|`failed`) | `candidate-proven` *(unchanged)* | dual: `no_tests_ran`→gear-up; env-shaped→re-author env |
 | reconcile-perf / -diag / confirm | *(unchanged)* | perf / gdb / `[Checkpoint]` | — |
 
@@ -109,12 +109,16 @@ Rename only; predicate `tests-enumerated` unchanged. The referee re-runs the
 computed by the referee's own `scan.py` walk — the submitter's transcript is not
 the test set.
 
-### Step 3 — `cover` (unchanged)
+### Step 3 — `cover`
 
-`suite-covered`: the referee re-runs `discovery.coverage(".")` and passes on a
-built/declared ratio ≥ 0.50. Built files come only from a real cc-run (a wall of
-shell-built binaries scores zero); declared comes from the build-independent AST
-scan; vendored excluded.
+`suite-covered`: the referee re-runs `discovery.executable_coverage(".")` and passes
+only when EVERY test executable registered in the committed recipe book has a real
+cc-built, indexed source — ratio = 1.0. (Superseded `coverage(".")` over AST-declared
+files ≥ 0.50: the AST denominator counted `#if`-guarded `TEST()`s that never build on
+the host, so it could not reach 1.0; the book of registered executables can.) Built
+files come only from a real cc-run (a wall of shell-built binaries scores zero). A
+target that declares no `sources` is credited by build provenance via the build's
+`compile_commands.json`; vendored excluded.
 
 ### Step 4 — `prove` (KEPT, RE-ORDERED to after `cover`, THINNED)
 

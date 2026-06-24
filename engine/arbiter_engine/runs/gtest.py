@@ -220,7 +220,11 @@ def run_target(
     # is untouched; this changes only HOW the cases run. Skipped under the no-match BOOT_FILTER (that
     # gate enumerates, it never runs cases).
     isolation_mode = target.harness.options.get("isolation")
-    if isolation_mode not in (None, "", "none", "per_suite", "per_test"):
+    is_boot = list(tests) == [BOOT_FILTER]
+    # bad_isolation is rejected at register/parse time now (recipes._parse_harness); this run-time
+    # check is a defensive fallback, gated off the boot filter so a stray value can never block the
+    # build-booted boot gate (which doesn't run cases under isolation anyway).
+    if not is_boot and isolation_mode not in (None, "", "none", "per_suite", "per_test"):
         return RunResult(
             run_id=run_id,
             overall="errored",
@@ -233,7 +237,7 @@ def run_target(
             boot_exit_code=boot_exit_code,
             listed_tests=listed_tests,
         )
-    if isolation_mode in ("per_suite", "per_test") and list(tests) != [BOOT_FILTER]:
+    if isolation_mode in ("per_suite", "per_test") and not is_boot:
         return _run_isolated(
             root,
             target,
@@ -355,6 +359,34 @@ def run_target(
     return replace(result, boot_exit_code=boot_exit_code, listed_tests=listed_tests)
 
 
+def _errored(
+    run_id: str,
+    failure: Optional[str],
+    facts_value: object,
+    *,
+    stdout_tail: str = "",
+    stderr_tail: str = "",
+    boot_exit_code: Optional[int] = None,
+    listed_tests: Optional[int] = None,
+) -> RunResult:
+    """The canonical no-verdict RunResult (overall=errored, zero counts) — one shape so the
+    single-process, isolated, and boot paths cannot drift on what an errored run looks like to the
+    predicates that read it."""
+    return RunResult(
+        run_id=run_id,
+        overall="errored",
+        passed=0,
+        failed=0,
+        skipped=0,
+        facts=facts_value,
+        failure=failure,
+        stdout_tail=stdout_tail,
+        stderr_tail=stderr_tail,
+        boot_exit_code=boot_exit_code,
+        listed_tests=listed_tests,
+    )
+
+
 def _run_isolated(
     root: Path,
     target: recipes.Target,
@@ -380,6 +412,11 @@ def _run_isolated(
     """
     base = list(stage.cmd)
     units = _enumerate_units(base, tests, workdir, env, stage_timeout, mode)
+    if units is None:
+        # Enumeration itself failed (timeout / spawn error) -- NOT a real "no tests". Fall back to a
+        # single-process run of the caller's filter, so an enumeration hiccup can't fail a proof the
+        # cases would have passed. One unit = the whole requested filter (``*`` when unfiltered).
+        units = [":".join(tests)] if tests else ["*"]
     run_dir = root / ".arbiter" / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     total_passed = 0
@@ -400,27 +437,27 @@ def _run_isolated(
         result, unit_failure = _interpret_unit(proc, xml_path, run_id)
         if unit_failure is not None and failure is None:
             failure, stdout_tail, stderr_tail = unit_failure, proc.stdout_tail, proc.stderr_tail
-        if result is None:
-            continue
-        ran_any = True
-        total_passed += result.passed
-        total_failed += result.failed
-        total_skipped += result.skipped
-        per_test.extend(result.per_test)
+        if result is not None:
+            ran_any = True
+            total_passed += result.passed
+            total_failed += result.failed
+            total_skipped += result.skipped
+            per_test.extend(result.per_test)
+        # fail_fast must bound total time ACROSS units, not just within one: stop at the first unit
+        # that failed (a verdict with failures, or an adverse unit_failure). Without this, isolation
+        # would defeat fail_fast -- worst case N full per-unit timeouts.
+        if fail_fast and (unit_failure is not None or (result is not None and result.failed > 0)):
+            break
     # teardown runs once, after every unit, like the single-process path's stage.post.
     for post_command in stage.post:
         runner._run_command(post_command, workdir, env, stage_timeout)
     if not ran_any:
         # No unit produced a verdict: an empty filter, or every unit errored. Mirror the
         # single-process no-verdict path — `errored` keeps it out of both green and red gates.
-        return RunResult(
-            run_id=run_id,
-            overall="errored",
-            passed=0,
-            failed=0,
-            skipped=0,
-            facts=facts.get("facts"),
-            failure=failure or "no_tests_ran",
+        return _errored(
+            run_id,
+            failure or "no_tests_ran",
+            facts.get("facts"),
             stdout_tail=stdout_tail,
             stderr_tail=stderr_tail,
         )
@@ -450,9 +487,15 @@ def _enumerate_units(
     env: Mapping[str, str],
     timeout_s: Optional[int],
     mode: str,
-) -> list:
-    """List the units to run — `Suite.*` filters for per_suite, full `Suite.Case` names for
-    per_test — by parsing ``<cmd> --gtest_list_tests`` under the requested filter."""
+) -> Optional[list]:
+    """List the unit filters to run in isolation, enumerated UNDER the caller's filter so a unit
+    never adds a test the caller didn't ask for. per_test -> one filter per case; per_suite -> one
+    filter per suite holding exactly that suite's enumerated cases (joined) -- NOT ``Suite.*``, which
+    would widen a single-case request to the whole suite and silently change ``run`` semantics.
+    Returns None when enumeration ITSELF failed (timeout / spawn error) so the caller can fall back
+    to a single-process run rather than mistake the hiccup for "no tests". Uses a raw subprocess (not
+    runner._run_command) because the FULL listing is needed -- _run_command tails stdout, which would
+    truncate a large suite's enumeration."""
     command = list(base) + ["--gtest_list_tests"]
     if tests:
         command.append("--gtest_filter=" + ":".join(tests))
@@ -468,17 +511,22 @@ def _enumerate_units(
             check=False,
         )
     except (subprocess.TimeoutExpired, OSError):
-        return []
-    return _parse_units(proc.stdout, mode)
+        return None
+    suites = _parse_listing(proc.stdout)
+    if mode == "per_test":
+        return [case for _suite, cases in suites for case in cases]
+    return [":".join(cases) for _suite, cases in suites if cases]
 
 
-def _parse_units(listing: str, mode: str) -> list:
-    """Parse ``--gtest_list_tests`` output. A flush-left line is a suite header ending in ``.``;
-    an indented line is a case. gtest may append a ``# GetParam()=...`` comment to either, stripped
-    here. per_suite returns ``Suite.*`` filters; per_test returns full ``Suite.Case`` names."""
+def _parse_listing(listing: str) -> list:
+    """Parse ``--gtest_list_tests`` output into ``[(suite_prefix, [full_case_name, ...]), ...]``.
+    A flush-left line is a suite header ending in ``.``; an indented line is a case under it. gtest
+    may append a ``# GetParam()=...`` comment to either, stripped here. The SINGLE parser for this
+    format -- both the isolation unit-builder and the boot-gate case counter read it, so they cannot
+    drift on parameterized-suite formatting."""
     suites: list = []
-    cases: list = []
-    current: Optional[str] = None
+    prefix: Optional[str] = None
+    cases: Optional[list] = None
     for line in listing.splitlines():
         if not line.strip():
             continue
@@ -486,13 +534,12 @@ def _parse_units(listing: str, mode: str) -> list:
         if not token:
             continue
         if not line[0].isspace():
-            current = token  # suite header, includes the trailing "."
-            suites.append(current)
-        elif current is not None:
-            cases.append(current + token)  # "Suite." + "Case"
-    if mode == "per_suite":
-        return [suite + "*" for suite in suites]
-    return cases
+            prefix = token  # suite header, includes the trailing "."
+            cases = []
+            suites.append((prefix, cases))
+        elif cases is not None:
+            cases.append(prefix + token)  # full "Suite.Case"
+    return suites
 
 
 def _interpret_unit(proc, xml_path: Path, run_id: str) -> Tuple[Optional[RunResult], Optional[str]]:
@@ -673,13 +720,9 @@ def _boot_enumerate(
 
 
 def _count_listed_tests(listing: str) -> int:
-    """Count cases in `--gtest_list_tests` output: a flush-left line is a suite header, an
-    indented line is a test case. A non-gtest `true`/`echo` prints nothing, yielding 0."""
-    count = 0
-    for line in listing.splitlines():
-        if line.strip() and line[0].isspace():
-            count += 1
-    return count
+    """Count cases in `--gtest_list_tests` output via the shared listing parser (so it cannot drift
+    from the isolation unit-builder). A non-gtest `true`/`echo` prints nothing, yielding 0."""
+    return sum(len(cases) for _suite, cases in _parse_listing(listing))
 
 
 def _run_compile_stages(

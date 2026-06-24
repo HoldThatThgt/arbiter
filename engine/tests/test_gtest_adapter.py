@@ -693,19 +693,19 @@ targets:
                 sorted((c.suite, c.name) for c in result.per_test),
                 [("SuiteA", "Case1"), ("SuiteB", "Case2")],
             )
-            # Each suite ran in its own process under its own filter — the proof of isolation.
+            # Each suite ran in its own process under a filter built from ITS enumerated cases —
+            # the proof of isolation, and (per review #2) the actual case names, never a widening
+            # "Suite.*" that would run tests the caller didn't ask for.
             filters = sorted((root / "filters.log").read_text(encoding="utf-8").split())
-            self.assertEqual(filters, ["SuiteA.*", "SuiteB.*"])
+            self.assertEqual(filters, ["SuiteA.Case1", "SuiteB.Case2"])
 
-    def test_unknown_isolation_value_is_errored(self):
-        # A typo'd isolation value fails fast with a typed errored result, never a silent fallback.
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            fake = root / "fake_gtest.sh"
-            fake.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-            fake.chmod(0o755)
-            book = recipes.parse(
-                f"""
+    def test_unknown_isolation_value_rejected_at_register(self):
+        # A typo'd isolation value is rejected when the recipe is PARSED/registered (review #6) —
+        # cheaper and clearer than failing a run after a build is already spent, and it can never
+        # block the build-booted boot gate.
+        with self.assertRaises(recipes.RecipeError) as ctx:
+            recipes.parse(
+                """
 targets:
   - id: unit
     binary: fake_gtest.sh
@@ -713,12 +713,27 @@ targets:
       kind: gtest
       isolation: per_suit
     test_run:
-      cmd: [{str(fake)}]
+      cmd: [./fake_gtest.sh]
 """
             )
-            result = gtest.run_target(root, book, "unit", run_id="bad", tests=["*"])
-            self.assertEqual(result.overall, "errored")
-            self.assertEqual(result.failure, "bad_isolation")
+        self.assertIn("isolation", str(ctx.exception))
+
+    def test_parse_listing_and_per_suite_units_preserve_filter(self):
+        # review #8: one parser for --gtest_list_tests output (shared by the boot counter and the
+        # isolation unit-builder). review #2: per_suite builds units from the LISTED cases — which
+        # gtest restricts to the caller's --gtest_filter — so a narrow request never widens to
+        # "Suite.*" and run a case the caller didn't ask for.
+        listing = "SuiteA.\n  Case1  # GetParam() = 1\nSuiteB.\n  Case2\n  Case3\n"
+        parsed = gtest._parse_listing(listing)
+        self.assertEqual(
+            parsed,
+            [("SuiteA.", ["SuiteA.Case1"]), ("SuiteB.", ["SuiteB.Case2", "SuiteB.Case3"])],
+        )
+        self.assertEqual(gtest._count_listed_tests(listing), 3)
+        per_suite = [":".join(cases) for _suite, cases in parsed if cases]
+        self.assertEqual(per_suite, ["SuiteA.Case1", "SuiteB.Case2:SuiteB.Case3"])
+        per_test = [c for _suite, cases in parsed for c in cases]
+        self.assertEqual(per_test, ["SuiteA.Case1", "SuiteB.Case2", "SuiteB.Case3"])
 
 
 if __name__ == "__main__":

@@ -299,8 +299,10 @@ assert but the index does not contain cannot pass.
 Then make the WHOLE SUITE runnable, not just the one target you proved. List every test binary the
 build produces — `ctest -N`, the build's test/target list, or the test-executable declarations in
 the build files — and register a recipe for EACH by calling register on one RecipeBook with a target
-per binary, same shape as the proven one (its own build target + binary path + `gtest` harness,
-reusing the `env`/`test_run.pre`/`workdir` that apply). register is a pure write, so
+per binary, same shape as the proven one (its own build target + binary path + `gtest` harness, its
+own `sources` globs — so the cover gate can credit the executable; a sourceless target falls back to
+the build's compile_commands.json — and the `env`/`test_run.pre`/`workdir` that apply). register is
+a pure write, so
 this is cheap and does NOT build anything: each added target stays UNPROVEN until its first `run`
 (its tests enter the facts index only once it is built), exactly like a fresh recipe. Keep the
 proven target's id `src_compile`; give the others their binary names. For a large suite, GENERATE
