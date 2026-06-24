@@ -36,7 +36,6 @@ SCENARIOS: List[Tuple[str, List[Dict[str, Any]]]] = [
     _scenario("tool_detail_budget_small", _tool_call(1, "detail", {"fact_id": "fact:1", "budget": "small"})),
     _scenario("tool_detail_budget_normal", _tool_call(1, "detail", {"fact_id": "fact:1", "budget": "normal"})),
     _scenario("tool_detail_budget_large", _tool_call(1, "detail", {"fact_id": "fact:1", "budget": "large"})),
-    _scenario("tool_import_recipes", _tool_call(1, "import_recipes", {"path": "engine/tests/fixtures/recipes/v2_basic.yaml"})),
     _scenario("tool_recipe_search", _tool_call(1, "recipe_search", {"query": "unit"})),
     _scenario("tool_register", _tool_call(1, "register", {"path": "engine/tests/fixtures/recipes/v2_basic.yaml"})),
     _scenario("tool_run", _tool_call(1, "run", {"recipe": "unit", "options": {"harness_options": {"gtest": {"fail_fast": False}}}})),

@@ -107,6 +107,50 @@ func TestThreeSeatFlow(t *testing.T) {
 	}
 }
 
+// The executor seat — the one with hands on the code — now reads gotchas (via its own
+// ShowStepJob and via ReviewTask) and writes them (NotePlaybook), so pitfalls are
+// captured at the source instead of relayed through the player.
+func TestExecutorReadsAndWritesGotchas(t *testing.T) {
+	root := repoWithEngine(t)
+	dir := filepath.Join(root, ".arbiter", "playbook")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "end.md"), []byte(endBook), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	curator := testClient(t, root, Curator)
+	player := testClient(t, root, Player)
+	executor := testClient(t, root, Executor)
+
+	var load map[string]any
+	callJSON(t, curator, "LoadPlayBook", map[string]any{"name": "endgame"}, &load)
+	taskID := createTask(t, player, "do the work")
+
+	// 读路径一:执行席现在也有 ShowStepJob,能看到当前步骤(只当前步,无未来步骤)。
+	var show map[string]any
+	callJSON(t, executor, "ShowStepJob", map[string]any{}, &show)
+	if step, _ := show["step"].(map[string]any); step == nil || step["id"] != "only" {
+		t.Fatalf("executor ShowStepJob = %#v", show)
+	}
+
+	// 写路径:执行席就地记下 gotcha(直接写入棋谱,append-only)。
+	var noted map[string]any
+	callJSON(t, executor, "NotePlaybook", map[string]any{"step_id": "only", "note": "exit code is the only verdict"}, &noted)
+	if noted["added"] != true {
+		t.Fatalf("executor NotePlaybook = %#v", noted)
+	}
+
+	// 读路径二:执行席在自己的任务视图 ReviewTask 里读到该步骤 gotcha。
+	var review struct {
+		Gotchas []string `json:"gotchas"`
+	}
+	callJSON(t, executor, "ReviewTask", map[string]any{"task_id": taskID}, &review)
+	if len(review.Gotchas) != 1 || review.Gotchas[0] != "exit code is the only verdict" {
+		t.Fatalf("executor ReviewTask gotchas = %#v", review.Gotchas)
+	}
+}
+
 func TestLoadPlayBookEmptyNameIncludesAvailable(t *testing.T) {
 	root := repoWithEngine(t)
 	dir := filepath.Join(root, ".arbiter", "playbook")

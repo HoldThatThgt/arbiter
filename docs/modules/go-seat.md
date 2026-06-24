@@ -22,10 +22,16 @@ contexts with different cwds.
 - **player (10):** ShowStepJob, CreateTask, CheckStepJob, SubmitCheckpoint, ListTask, ReviewTask,
   NotePlaybook, AddPlayBook, + proxied `search`, `detail`.
 - **curator (4):** ReadPlayBook, LoadPlayBook, ListTask, ReviewTask.
-- **executor (8 base + 3 gated):** SubmitTask, RegisterTest, ListTask, ReviewTask, `search`,
-  `detail`, `run`, `recipe_search` (renamed from crun's `search` — the only name collision in the
-  bundle); gated: `register`, `import_recipes`, `scan` — registered ONLY when the loaded playbook
-  declares `capabilities:[recipes]`.
+- **executor (10 base + 2 gated):** SubmitTask, RegisterTest, ListTask, ReviewTask, ShowStepJob,
+  NotePlaybook, `search`, `detail`, `run`, `recipe_search` (renamed from crun's `search` — the only
+  name collision in the bundle); gated: `register`, `scan` — registered ONLY when
+  the loaded playbook declares `capabilities:[recipes]`.
+- **Gotcha access is symmetric.** The executor — the seat with hands on the code — both *reads*
+  gotchas (its own `ShowStepJob`, plus the task's step gotchas ride along in `ReviewTask`) and
+  *writes* them (`NotePlaybook`), so pitfalls are captured at the source rather than relayed
+  through the player. `ShowStepJob` still reveals only the current step for either seat; `ReviewTask`
+  surfaces only the gotchas of the step its task belongs to — neither widens the no-future-steps
+  information edge.
 - Capability-gating edge semantics are **fail-closed**: executor seat with no active match at
   birth registers NO gated tools; every gated call re-checks under flock that the granting match
   is still current, else `capability_revoked`.

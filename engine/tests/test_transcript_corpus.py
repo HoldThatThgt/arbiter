@@ -57,7 +57,7 @@ class TranscriptCorpusCoverageTest(unittest.TestCase):
         )
         self.assertGreaterEqual(
             tools,
-            {"search", "detail", "run", "recipe_search", "register", "import_recipes", "scan"},
+            {"search", "detail", "run", "recipe_search", "register", "scan"},
         )
         self.assertGreaterEqual(
             budgets,

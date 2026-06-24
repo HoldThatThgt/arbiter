@@ -215,9 +215,12 @@ type ReviewTaskOutput struct {
 	Status   string         `json:"status"`
 	Request  string         `json:"request"`
 	Briefing []BriefingCard `json:"briefing,omitempty"`
-	Summary  string         `json:"summary,omitempty"`
-	Report   string         `json:"report,omitempty"`
-	Result   *verify.Result `json:"result,omitempty"`
+	// Gotchas 是该任务所属步骤累积的踩坑提示(随步骤,非随任务)。执行席 ReviewTask
+	// 时一并带出,与 ShowStepJob 同一信息边界——只见自身任务那一步,绝不暴露未来步骤。
+	Gotchas []string       `json:"gotchas,omitempty"`
+	Summary string         `json:"summary,omitempty"`
+	Report  string         `json:"report,omitempty"`
+	Result  *verify.Result `json:"result,omitempty"`
 }
 
 // ListTaskItem 是任务索引的一行:编号与一句话概要,细节走 ReviewTask。

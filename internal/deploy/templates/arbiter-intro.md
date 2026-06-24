@@ -41,8 +41,8 @@ the referee ends the match:
    hands you a task; you write it. CreateTask returns a `task_id`.
 3. **Dispatch the right executor subagent** with the Task tool, putting that `task_id` on a
    "task id:" line in the prompt along with the request. Route by step: the recipe/facts steps
-   (`gear-up`, `scan-tests`, `cover`, `prove`) go to **arbiter-executor** (`register`, `import_recipes`,
-   `scan` are its capability-gated tools, live only while a `capabilities:[recipes]` opening is
+   (`gear-up`, `scan-tests`, `cover`, `prove`) go to **arbiter-executor** (`register` and `scan` are
+   its capability-gated tools, live only while a `capabilities:[recipes]` opening is
    loaded); the diagnostic reconcile steps (`reconcile-perf`, `reconcile-diag`) go to
    **arbiter-debugger**, the only subagent wired with the `perf-mcp` and `gdb-mcp` companion tools
    needed to drive a real perf scan and a real gdb session. Whichever you dispatch finishes by
@@ -105,14 +105,17 @@ and the opening's `ShowStepJob` text tells you exactly what to submit:
   facts publication is blocked only by a missing capable Clang (LLVM ≥ 16 / Apple ≥ 15) — not a
   build failure — report the typed reason; builds, matches, and shell/mcp predicates work without
   facts. This step also REGISTERS the whole suite: a recipe for every test binary the build produces
-  (`import_recipes`, one target per binary) so a clean checkout can `run` any suite from the
+  (`register`, one target per binary) so a clean checkout can `run` any suite from the
   committed book — registered here, built+indexed at the next step.
-- **cover** → `suite-covered`: build and RUN every project test binary through `arbiter cc` — a FEW
-  cases per binary (not all of its often-hundreds), each run building+indexing that binary's file. The
-  referee measures PER-BINARY coverage (built/declared test files, vendored third-party excluded) and
-  passes only at substantial coverage — covering one binary scores ~0. This is the bootstrap's
-  FULL-COVERAGE purpose; it does not require cases to pass, only each binary to build+run, and skips
-  host-unbuildable binaries. (arbiter-executor.)
+- **cover** → `suite-covered`: build+index EVERY registered test EXECUTABLE through `arbiter cc`. The
+  purpose is proving the recipe's env+compile work on each test/source combo, NOT test-case coverage —
+  so run the SMALLEST slice per executable (one suite, or a single `Suite.Case`, NEVER `["*"]`). That
+  one compile indexes the executable's whole file; running more cases is what makes this step crawl on
+  a big suite. Combos are handled by the recipe's `isolation: per_suite` (each suite runs in its own
+  process), not by hand. The referee runs `discovery.executable_coverage()` over the committed book —
+  denominator is the REGISTERED executables (not AST source files), and it passes only at 100% (every
+  registered executable built); register only the binaries this host builds. Cases need not pass.
+  (arbiter-executor.)
 - **prove** → `candidate-proven`: with the suite built and covered, discover the runtime environment
   the test needs (CI config first), add it to the recipe, and prove the whole suite actually RUNS
   through the recipe — this is where an environment-shaped failure means a recipe defect to fix, not a
@@ -124,14 +127,15 @@ and the opening's `ShowStepJob` text tells you exactly what to submit:
   through break→run→inspect — proving real debugging where the host can, reporting-and-passing
   where gdb is absent or cannot launch inferiors (gdb is reported, never used to fail the repo). In
   the same step drive a real gdb-mcp session against the proven binary
-  (`gdb_start`→`gdb_breakpoint`→`gdb_exec`→`gdb_stack`/`gdb_eval`→`gdb_stop`), exercise
-  `import_recipes` (then `recipe_search` to confirm the import is queryable), and append a
+  (`gdb_start`→`gdb_breakpoint`→`gdb_exec`→`gdb_stack`/`gdb_eval`→`gdb_stop`), confirm a registered
+  recipe is queryable via `recipe_search`, and append a
   `NotePlaybook` gotcha. (arbiter-debugger.)
 - **confirm** → a `[Checkpoint]`: put its question to the user with `AskUserQuestion` and relay the
   answer via `SubmitCheckpoint`. This proves the human-confirmation surface.
 
 Three things the opening leaves to you — do them and fold them into the final report:
-- **Probe the build system** before loading the opening (make/cmake entry points, compiler, gtest
+- **Probe the build system** before loading the opening (the project's OWN build entry to REUSE — a
+  `build.sh` / test script / the command CI runs — plus the make/cmake entry points, compiler, gtest
   binary, build dir, and which test target to prove) so your gear-up task is concrete. When the
   project exposes MANY test executables, do NOT pick an aggregate / "merged" / "all-tests" target
   and do NOT build the whole project — those compile a large fraction of the codebase, so the

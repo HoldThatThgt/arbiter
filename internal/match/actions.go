@@ -718,13 +718,13 @@ func (s *Store) ReviewTask(taskID string) (ReviewTaskOutput, error) {
 		if m.Current != nil {
 			if idx, ok := findCurrentTask(m, taskID); ok {
 				task := m.Current.Tasks[idx]
-				return nil, ReviewTaskOutput{TaskID: task.ID, Round: m.Current.Seq, StepID: m.Current.StepID, Archived: false, Status: task.Status, Request: task.Request, Briefing: task.Briefing, Summary: task.Summary, Report: task.Report, Result: task.Result}, nil
+				return nil, ReviewTaskOutput{TaskID: task.ID, Round: m.Current.Seq, StepID: m.Current.StepID, Archived: false, Status: task.Status, Request: task.Request, Briefing: task.Briefing, Gotchas: stepGotchas(m, m.Current.StepID), Summary: task.Summary, Report: task.Report, Result: task.Result}, nil
 			}
 		}
 		for _, round := range m.History {
 			for _, task := range round.Tasks {
 				if task.ID == taskID {
-					return nil, ReviewTaskOutput{TaskID: task.ID, Round: round.Seq, StepID: round.StepID, Archived: true, Status: task.Status, Request: task.Request, Briefing: task.Briefing, Summary: task.Summary, Report: task.Report, Result: task.Result}, nil
+					return nil, ReviewTaskOutput{TaskID: task.ID, Round: round.Seq, StepID: round.StepID, Archived: true, Status: task.Status, Request: task.Request, Briefing: task.Briefing, Gotchas: stepGotchas(m, round.StepID), Summary: task.Summary, Report: task.Report, Result: task.Result}, nil
 				}
 			}
 		}
@@ -841,6 +841,17 @@ func (s *Store) NotePlaybook(stepID, note string) (NotePlaybookOutput, error) {
 		return NotePlaybookOutput{}, err
 	}
 	return out.(NotePlaybookOutput), nil
+}
+
+// stepGotchas 返回某步骤当前累积的 gotcha 副本(快照无此步骤或无注记则返回 nil)。
+// 拷贝而非别名:返回值越过 withLock 边界后快照仍可能被改写/落盘。供 ReviewTask
+// 把步骤级避坑提示带给执行席——与 ShowStepJob.step.Gotchas 同源。
+func stepGotchas(m *Match, stepID string) []string {
+	step, ok := m.Playbook.Steps[stepID]
+	if !ok || len(step.Gotchas) == 0 {
+		return nil
+	}
+	return append([]string(nil), step.Gotchas...)
 }
 
 func stepVisited(m *Match, stepID string) bool {

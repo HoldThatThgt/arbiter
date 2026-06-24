@@ -445,8 +445,6 @@ def _handler(namespace: str, name: str) -> Callable[[Context, Mapping[str, Any]]
             return _recipe_search_tool
         if name == "register":
             return _register_tool
-        if name == "import_recipes":
-            return _import_recipes_tool
         if name == "scan":
             return _scan_tool
     return _stub_handler(namespace, name)
@@ -627,12 +625,6 @@ def _register_tool(context: Context, arguments: Mapping[str, Any]) -> Mapping[st
     del context
     book = _load_recipe_book_arg(arguments)
     return _recipe_book_summary(book, "registered")
-
-
-def _import_recipes_tool(context: Context, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
-    del context
-    book = _load_recipe_book_arg(arguments)
-    return _recipe_book_summary(book, "imported")
 
 
 def _scan_tool(context: Context, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -817,13 +809,7 @@ _DEFAULT_TOOLS = (
     (
         "runs",
         "register",
-        "Register a candidate recipe book from a path (capability-gated: live only while a capabilities:[recipes] opening is loaded). A candidate becomes committed knowledge only after a refereed run proves it - register, then submit a run-kind task over it.",
-        _object_schema({"path": {"type": "string"}}, ("path",)),
-    ),
-    (
-        "runs",
-        "import_recipes",
-        "Import recipe definitions from a path into the working book (capability-gated, like register). Imported entries still need a proving run before they count as committed knowledge.",
+        "Register a candidate recipe book from a path (capability-gated: live only while a capabilities:[recipes] opening is loaded). The book may declare one target or many - register the whole book in one call. A candidate becomes committed knowledge only after a refereed run proves it - register, then submit a run-kind task over it.",
         _object_schema({"path": {"type": "string"}}, ("path",)),
     ),
     (

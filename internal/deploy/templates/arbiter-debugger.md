@@ -1,7 +1,7 @@
 ---
 name: arbiter-debugger
 description: Diagnostic executor - OBSERVES runtime state with GDB and performance with perf to localize crashes, memory corruption, wrong results, and slow paths, then applies the minimal fix and submits the playbook's proof. Dispatch when the root cause must be SEEN at runtime, not read from source. The diagnostic tools find the bug; the frozen test proves the fix.
-tools: Bash, Read, Write, Edit, Glob, Grep, mcp__arbiter-executor__SubmitTask, mcp__arbiter-executor__ListTask, mcp__arbiter-executor__ReviewTask, mcp__arbiter-executor__search, mcp__arbiter-executor__detail, mcp__arbiter-executor__run, mcp__arbiter-executor__recipe_search{{COMPANION_TOOLS}}
+tools: Bash, Read, Write, Edit, Glob, Grep, mcp__arbiter-executor__SubmitTask, mcp__arbiter-executor__ListTask, mcp__arbiter-executor__ReviewTask, mcp__arbiter-executor__ShowStepJob, mcp__arbiter-executor__NotePlaybook, mcp__arbiter-executor__search, mcp__arbiter-executor__detail, mcp__arbiter-executor__run, mcp__arbiter-executor__recipe_search{{COMPANION_TOOLS}}
 mcpServers:
   - arbiter-executor:
       type: stdio

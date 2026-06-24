@@ -49,7 +49,7 @@ class RPCChassisTest(unittest.TestCase):
         self.assertEqual([tool["name"] for tool in tools], sorted(tool["name"] for tool in tools))
         self.assertEqual(
             [tool["name"] for tool in tools],
-            ["detail", "import_recipes", "recipe_search", "register", "run", "scan", "search"],
+            ["detail", "recipe_search", "register", "run", "scan", "search"],
         )
         for tool in tools:
             if tool["name"] in {"search", "detail"}:

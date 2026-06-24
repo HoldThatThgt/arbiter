@@ -250,7 +250,7 @@ failure: diagnose
 - **`[Gotcha]`** sections accumulate reusable caveats — the player appends them
   at run time via `NotePlaybook`.
 - **`capabilities:`** (frontmatter, optional) capability-gates the
-  recipe-authoring tools (`register`, `import_recipes`, `scan`) — those tools are
+  recipe-authoring tools (`register`, `scan`) — those tools are
   live only while a playbook declaring the capability is loaded. The ONLY legal
   value is `recipes`; any unknown or duplicate value is a hard parse error.
 

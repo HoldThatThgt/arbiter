@@ -56,7 +56,7 @@ harness-neutral for future adapters).
   — the extractor does not emit a `::TestBody` method, so discovery keys off the generated
   `Suite_Name_Test` type) when a snapshot exists; tree-sitter only via the optional `[scan]`
   extra for cold repos, fail-closed when absent.
-- **Adjudicated registration**: `register`/`import_recipes`/`scan` are capability-gated tools
+- **Adjudicated registration**: `register`/`scan` are capability-gated tools
   (go-seat); a recipe enters the committed book only after a refereed
   `{kind:"run", expect:{overall:one_of[passed,failed]}}` proof (compile+launch+structured output).
 

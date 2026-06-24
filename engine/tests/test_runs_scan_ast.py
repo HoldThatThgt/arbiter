@@ -174,6 +174,101 @@ TEST(Suite, Fail) { SUCCEED(); }
             cov = discovery.coverage(tmp)
             self.assertEqual((cov["declared"], cov["built"], cov["ratio"]), (1, 0, 0.0))
 
+    def test_executable_coverage_counts_recipe_targets_not_ast_files(self):
+        # executable_coverage's denominator is the EXECUTABLES in the committed recipe book (one
+        # target per binary), NOT AST-declared test files. A target is covered iff a source it
+        # compiles has >=1 facts-built case. Two targets registered; only one is actually built.
+        with tempfile.TemporaryDirectory() as tmp:
+            _write(tmp, "unittest/a_test.cc", b"#include <gtest/gtest.h>\nTEST(A, One) { SUCCEED(); }\n")
+            _write(tmp, "unittest/b_test.cc", b"#include <gtest/gtest.h>\nTEST(B, One) { SUCCEED(); }\n")
+            _write(tmp, ".arbiter/recipes.yaml", (
+                "targets:\n"
+                "  - id: a\n"
+                "    binary: build/a_test\n"
+                "    harness:\n"
+                "      kind: gtest\n"
+                "    src_compile:\n"
+                "      cmd: [\"true\"]\n"
+                "    test_run:\n"
+                "      cmd: [./build/a_test]\n"
+                "    sources: [unittest/a_test.cc]\n"
+                "  - id: b\n"
+                "    binary: build/b_test\n"
+                "    harness:\n"
+                "      kind: gtest\n"
+                "    src_compile:\n"
+                "      cmd: [\"true\"]\n"
+                "    test_run:\n"
+                "      cmd: [./build/b_test]\n"
+                "    sources: [unittest/b_test.cc]\n"
+            ).encode())
+            # Only target a's source is built (its case is indexed); b is registered but unbuilt.
+            _publish(tmp, [_test_body_fact("A", "One", "unittest/a_test.cc", 2, "code:t:1")])
+
+            cov = discovery.executable_coverage(tmp)
+            self.assertEqual(cov["executables"], 2)   # two registered executables
+            self.assertEqual(cov["covered"], 1)        # only target a is built+indexed
+            self.assertAlmostEqual(cov["ratio"], 0.5)
+            self.assertEqual(cov["uncovered"], ["b"])
+
+    def test_executable_coverage_reaches_one_when_all_targets_built(self):
+        # The 100% gate is satisfiable: every registered executable built+indexed -> ratio 1.0.
+        with tempfile.TemporaryDirectory() as tmp:
+            _write(tmp, "unittest/a_test.cc", b"#include <gtest/gtest.h>\nTEST(A, One) { SUCCEED(); }\n")
+            _write(tmp, ".arbiter/recipes.yaml", (
+                "targets:\n"
+                "  - id: a\n"
+                "    binary: build/a_test\n"
+                "    harness:\n"
+                "      kind: gtest\n"
+                "    src_compile:\n"
+                "      cmd: [\"true\"]\n"
+                "    test_run:\n"
+                "      cmd: [./build/a_test]\n"
+                "    sources: [unittest/a_test.cc]\n"
+            ).encode())
+            _publish(tmp, [_test_body_fact("A", "One", "unittest/a_test.cc", 2, "code:t:1")])
+            cov = discovery.executable_coverage(tmp)
+            self.assertEqual((cov["executables"], cov["covered"], cov["ratio"]), (1, 1, 1.0))
+
+    def test_executable_coverage_empty_book_is_zero(self):
+        # No committed recipe book yet -> nothing registered -> ratio 0 (never crashes).
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(discovery.executable_coverage(tmp)["ratio"], 0.0)
+
+    def test_executable_coverage_credits_sourceless_target_via_compile_db(self):
+        # review #1: a target with NO `sources` (batch-registered cover targets often have none)
+        # must still be creditable, or the 100% gate is unsatisfiable and cover self-loops. Fall
+        # back to the build's own compile_commands.json: an object under `<binary-stem>.dir` maps
+        # the binary to the translation units it compiled.
+        with tempfile.TemporaryDirectory() as tmp:
+            _write(tmp, "unittest/a_test.cc", b"#include <gtest/gtest.h>\nTEST(A, One) { SUCCEED(); }\n")
+            _write(tmp, "build/compile_commands.json", json.dumps([
+                {
+                    "directory": tmp,
+                    "file": str(Path(tmp) / "unittest" / "a_test.cc"),
+                    "output": "CMakeFiles/a_test.dir/unittest/a_test.cc.o",
+                    "command": "cc -c unittest/a_test.cc",
+                }
+            ]).encode())
+            _write(tmp, ".arbiter/recipes.yaml", (
+                "compile_db:\n"
+                "  path: build/compile_commands.json\n"
+                "targets:\n"
+                "  - id: a_test\n"
+                "    binary: build/a_test\n"
+                "    harness:\n"
+                "      kind: gtest\n"
+                "    src_compile:\n"
+                "      cmd: [\"true\"]\n"
+                "    test_run:\n"
+                "      cmd: [./build/a_test]\n"
+                # deliberately NO `sources:` — the case review #1 flags as uncoverable
+            ).encode())
+            _publish(tmp, [_test_body_fact("A", "One", "unittest/a_test.cc", 2, "code:t:1")])
+            cov = discovery.executable_coverage(tmp)
+            self.assertEqual((cov["executables"], cov["covered"], cov["ratio"]), (1, 1, 1.0))
+
 
 class DegradeWithoutTreeSitterTest(unittest.TestCase):
     """With tree-sitter absent, scan falls back to the facts-only inventory."""
