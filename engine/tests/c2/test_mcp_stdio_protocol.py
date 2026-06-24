@@ -59,7 +59,7 @@ class ArbiterStdioProtocolTest(unittest.TestCase):
         self.assertIn("version", responses[0]["result"])
         self.assertTrue(responses[0]["result"]["capabilities"]["tools"])
         # The raw engine rpc exposes all engine tools (search/detail/run/recipe_search/register/
-        # import_recipes/scan); per-seat RBAC filtering happens in the Go seat layer, not here.
+        # scan); per-seat RBAC filtering happens in the Go seat layer, not here.
         tool_names = {tool["name"] for tool in responses[1]["result"]["tools"]}
         self.assertIn("search", tool_names)
         self.assertIn("detail", tool_names)

@@ -212,6 +212,42 @@ def run_target(
     # subprocess — and its worst-case timeout — on every run for a datum no predicate would read.
     if target.binary and list(tests) == [BOOT_FILTER]:
         boot_exit_code, listed_tests = _boot_enumerate(root / target.binary, workdir, env, stage_timeout)
+    # Tool-handled test isolation. With `harness: {kind: gtest, isolation: per_suite|per_test}` the
+    # recipe asks the runner to execute each suite (or case) in its OWN process and merge the
+    # verdicts, so a test that only fails when run ALONGSIDE another (shared global/static state)
+    # cannot make a working binary look broken — the model declares it once in the recipe instead of
+    # hand-running tests one at a time. The compile stages already published facts above, so coverage
+    # is untouched; this changes only HOW the cases run. Skipped under the no-match BOOT_FILTER (that
+    # gate enumerates, it never runs cases).
+    isolation_mode = target.harness.options.get("isolation")
+    if isolation_mode not in (None, "", "none", "per_suite", "per_test"):
+        return RunResult(
+            run_id=run_id,
+            overall="errored",
+            passed=0,
+            failed=0,
+            skipped=0,
+            facts=facts.get("facts"),
+            failure="bad_isolation",
+            stderr_tail=f"unknown gtest isolation {isolation_mode!r}; use per_suite or per_test",
+            boot_exit_code=boot_exit_code,
+            listed_tests=listed_tests,
+        )
+    if isolation_mode in ("per_suite", "per_test") and list(tests) != [BOOT_FILTER]:
+        return _run_isolated(
+            root,
+            target,
+            stage,
+            tests=tests,
+            workdir=workdir,
+            env=env,
+            stage_timeout=stage_timeout,
+            run_id=run_id,
+            target_id=target_id,
+            fail_fast=fail_fast,
+            facts=facts,
+            mode=isolation_mode,
+        )
     run_dir = root / ".arbiter" / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     xml_path = run_dir / f"{target_id}.xml"
@@ -317,6 +353,162 @@ def run_target(
     if result.overall == "failed":
         result = _with_guidance(result, guidance.for_result(root, result))
     return replace(result, boot_exit_code=boot_exit_code, listed_tests=listed_tests)
+
+
+def _run_isolated(
+    root: Path,
+    target: recipes.Target,
+    stage: recipes.Stage,
+    *,
+    tests: Sequence[str],
+    workdir: Path,
+    env: Mapping[str, str],
+    stage_timeout: Optional[int],
+    run_id: str,
+    target_id: str,
+    fail_fast: bool,
+    facts: Mapping[str, object],
+    mode: str,
+) -> RunResult:
+    """Run each gtest unit (suite for per_suite, case for per_test) in its OWN process and merge.
+
+    Enumerate the units under the requested filter, run each on its own, and aggregate the verdicts
+    into one RunResult shaped exactly like the single-process path (so the same predicates read it).
+    A unit that produces no result row is treated as no verdict; a unit that crashed after running
+    (non-zero exit, nothing marked failed) flags the merged run failed with `exit_code`. Facts and
+    failure-guidance are attached once, at the end, as in the single-process path.
+    """
+    base = list(stage.cmd)
+    units = _enumerate_units(base, tests, workdir, env, stage_timeout, mode)
+    run_dir = root / ".arbiter" / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    total_passed = 0
+    total_failed = 0
+    total_skipped = 0
+    per_test: list = []
+    ran_any = False
+    failure: Optional[str] = None
+    stdout_tail = ""
+    stderr_tail = ""
+    for idx, unit in enumerate(units):
+        xml_path = run_dir / f"{target_id}.u{idx}.xml"
+        command = base + [f"--gtest_output=xml:{xml_path}"]
+        if fail_fast:
+            command.append("--gtest_fail_fast")
+        command.append("--gtest_filter=" + unit)
+        proc = runner._run_command(command, workdir, env, stage_timeout)
+        result, unit_failure = _interpret_unit(proc, xml_path, run_id)
+        if unit_failure is not None and failure is None:
+            failure, stdout_tail, stderr_tail = unit_failure, proc.stdout_tail, proc.stderr_tail
+        if result is None:
+            continue
+        ran_any = True
+        total_passed += result.passed
+        total_failed += result.failed
+        total_skipped += result.skipped
+        per_test.extend(result.per_test)
+    # teardown runs once, after every unit, like the single-process path's stage.post.
+    for post_command in stage.post:
+        runner._run_command(post_command, workdir, env, stage_timeout)
+    if not ran_any:
+        # No unit produced a verdict: an empty filter, or every unit errored. Mirror the
+        # single-process no-verdict path — `errored` keeps it out of both green and red gates.
+        return RunResult(
+            run_id=run_id,
+            overall="errored",
+            passed=0,
+            failed=0,
+            skipped=0,
+            facts=facts.get("facts"),
+            failure=failure or "no_tests_ran",
+            stdout_tail=stdout_tail,
+            stderr_tail=stderr_tail,
+        )
+    overall = "failed" if (total_failed > 0 or failure is not None) else "passed"
+    result = RunResult(
+        run_id=run_id,
+        overall=overall,
+        passed=total_passed,
+        failed=total_failed,
+        skipped=total_skipped,
+        per_test=tuple(per_test),
+        failure=failure,
+        stdout_tail=stdout_tail,
+        stderr_tail=stderr_tail,
+    )
+    if facts.get("facts") is not None:
+        result = _with_facts(result, facts["facts"])
+    if result.overall == "failed":
+        result = _with_guidance(result, guidance.for_result(root, result))
+    return result
+
+
+def _enumerate_units(
+    base: Sequence[str],
+    tests: Sequence[str],
+    workdir: Path,
+    env: Mapping[str, str],
+    timeout_s: Optional[int],
+    mode: str,
+) -> list:
+    """List the units to run — `Suite.*` filters for per_suite, full `Suite.Case` names for
+    per_test — by parsing ``<cmd> --gtest_list_tests`` under the requested filter."""
+    command = list(base) + ["--gtest_list_tests"]
+    if tests:
+        command.append("--gtest_filter=" + ":".join(tests))
+    try:
+        proc = subprocess.run(
+            command,
+            cwd=str(workdir),
+            env=dict(env),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout_s,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return []
+    return _parse_units(proc.stdout, mode)
+
+
+def _parse_units(listing: str, mode: str) -> list:
+    """Parse ``--gtest_list_tests`` output. A flush-left line is a suite header ending in ``.``;
+    an indented line is a case. gtest may append a ``# GetParam()=...`` comment to either, stripped
+    here. per_suite returns ``Suite.*`` filters; per_test returns full ``Suite.Case`` names."""
+    suites: list = []
+    cases: list = []
+    current: Optional[str] = None
+    for line in listing.splitlines():
+        if not line.strip():
+            continue
+        token = line.split("#", 1)[0].strip()
+        if not token:
+            continue
+        if not line[0].isspace():
+            current = token  # suite header, includes the trailing "."
+            suites.append(current)
+        elif current is not None:
+            cases.append(current + token)  # "Suite." + "Case"
+    if mode == "per_suite":
+        return [suite + "*" for suite in suites]
+    return cases
+
+
+def _interpret_unit(proc, xml_path: Path, run_id: str) -> Tuple[Optional[RunResult], Optional[str]]:
+    """Map one isolated unit's process + XML to (verdict, failure). The verdict is None when the
+    unit yielded no result row (timed out, crashed before writing, or matched nothing); failure
+    names the adverse reason when there is one (so the merge can flag the whole run)."""
+    if not xml_path.exists():
+        return None, ("timeout" if proc.exit_code == 124 else "missing_result_file")
+    try:
+        result = parse_xml(xml_path, run_id=run_id)
+    except ET.ParseError:
+        return None, "invalid_result_file"
+    if result.passed + result.failed + result.skipped == 0:
+        return None, None
+    failure = "exit_code" if (proc.exit_code != 0 and result.failed == 0) else None
+    return result, failure
 
 
 def parse_xml(path: Path | str, *, run_id: str) -> RunResult:

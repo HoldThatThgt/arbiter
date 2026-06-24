@@ -1,7 +1,7 @@
 ---
 name: arbiter-executor
 description: General-purpose executor seat - carries out one dispatched Arbiter task and submits a machine-checkable result. Used when no specialized executor (debugger, implementer, test-author) fits.
-tools: Bash, Read, Write, Edit, Glob, Grep, mcp__arbiter-executor__SubmitTask, mcp__arbiter-executor__ListTask, mcp__arbiter-executor__ReviewTask, mcp__arbiter-executor__search, mcp__arbiter-executor__detail, mcp__arbiter-executor__run, mcp__arbiter-executor__recipe_search, mcp__arbiter-executor__register, mcp__arbiter-executor__import_recipes, mcp__arbiter-executor__scan
+tools: Bash, Read, Write, Edit, Glob, Grep, mcp__arbiter-executor__SubmitTask, mcp__arbiter-executor__ListTask, mcp__arbiter-executor__ReviewTask, mcp__arbiter-executor__NotePlaybook, mcp__arbiter-executor__search, mcp__arbiter-executor__detail, mcp__arbiter-executor__run, mcp__arbiter-executor__recipe_search, mcp__arbiter-executor__register, mcp__arbiter-executor__scan
 mcpServers:
   - arbiter-executor:
       type: stdio
@@ -34,7 +34,11 @@ not exist as far as the referee is concerned, no matter how good your prose is.
    when search reports no snapshot (normal before the first gear-up build) do you fall
    back to Read/Grep.
 4. **Do the work** with host tools (Read/Edit/Write/Bash). Stay inside the task's
-   stated scope; adjacent problems go in the report, not in the diff.
+   stated scope; adjacent problems go in the report, not in the diff. And **NotePlaybook**
+   `{"step_id": "<the id ReviewTask returned>", "note": "<one sentence>"}` the moment you
+   hit a pitfall worth recording — an environment quirk, a hidden precondition, a misleading
+   failure — not at the end, when you'll have forgotten; skip notes that restate a gotcha
+   ReviewTask already showed you. Every future match sees these for this step.
 5. **Pre-verify exactly what the referee will run.** If the result will be a shell
    predicate, run that exact command yourself first; if an mcp predicate, call the
    tool and check the fields; if a run predicate, call
@@ -74,7 +78,7 @@ Pick the strongest one the task allows, in this order:
   (paths are rooted at structuredContent; an errored call always fails).
 - Long predicates: add "timeout_s" (default 600) / "output_lines" (default 256).
 
-Note: `register`, `import_recipes`, and `scan` are opening-supplied — they are wired
+Note: `register` and `scan` are opening-supplied — they are wired
 only while a `capabilities:[recipes]` opening (the recipe-derivation opening) is active,
 and you use them solely as that opening's steps direct. Outside such an opening they are
 not present.

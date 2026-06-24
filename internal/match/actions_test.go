@@ -454,6 +454,52 @@ func TestNotePlaybook(t *testing.T) {
 	}
 }
 
+// ReviewTask 把任务所属步骤的 gotcha 带给执行席:未注记时缺省,注记后当即可见,
+// 任务归档(回合推进)后仍按其原步骤带出。
+func TestReviewTaskCarriesStepGotchas(t *testing.T) {
+	root := repoWithBook(t, "flow.md", twoStepBook)
+	store := New(root, "test")
+	if _, err := store.LoadPlayBook("flow"); err != nil {
+		t.Fatal(err)
+	}
+	task, err := store.CreateTask("prove first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	review, err := store.ReviewTask(task.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(review.Gotchas) != 0 {
+		t.Fatalf("gotchas before note = %#v", review.Gotchas)
+	}
+
+	if _, err := store.NotePlaybook("first", "watch the cache"); err != nil {
+		t.Fatal(err)
+	}
+	review, err = store.ReviewTask(task.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(review.Gotchas) != 1 || review.Gotchas[0] != "watch the cache" {
+		t.Fatalf("current-task gotchas = %#v", review.Gotchas)
+	}
+
+	if _, err := store.SubmitTask(context.Background(), task.TaskID, "ok", "r", verify.ResultSpec{Kind: "shell", Command: "exit 0"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CheckStepJob(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	archived, err := store.ReviewTask(task.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !archived.Archived || len(archived.Gotchas) != 1 || archived.Gotchas[0] != "watch the cache" {
+		t.Fatalf("archived-task gotchas = %#v", archived)
+	}
+}
+
 func TestNotePlaybookAfterFinish(t *testing.T) {
 	const oneStep = `---
 name: once

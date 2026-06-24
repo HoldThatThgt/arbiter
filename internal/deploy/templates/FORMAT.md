@@ -78,7 +78,7 @@ Rules:
   `steps_exhausted` once spent.
 - Optional frontmatter `capabilities` is a list whose only legal value is
   `recipes`; it capability-gates the recipe-authoring tools
-  (`register` / `import_recipes` / `scan`) so they are exposed only while a
+  (`register` / `scan`) so they are exposed only while a
   playbook that opts in is the active match. Any unknown value, a
   non-`recipes` entry, or a duplicate is a parse error.
 - Optional `[SetGoal]` (before the first `[STEP]`, at most once) declares the

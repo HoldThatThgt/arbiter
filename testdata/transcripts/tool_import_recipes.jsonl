@@ -1,2 +1,0 @@
-{"type":"request","message":{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"import_recipes","arguments":{"path":"engine/tests/fixtures/recipes/v2_basic.yaml"}}}}
-{"type":"response","message":{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"imported 1 recipes"}],"isError":false,"structuredContent":{"targets":["unit"],"profiles":["asan","debug"]}}},"allow_volatile":[]}

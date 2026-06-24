@@ -30,16 +30,16 @@ expect: {"facts":{"published":true},"boot":{"exited_zero":true,"listed_tests_min
 fact: _Test
 expect: {"min_results":1}
 
-# Per-binary coverage gate: of the project's test BINARIES (test source files, one per binary,
-# counted once each regardless of how many cases they hold), how many the facts index carries —
-# a file counts as built once >=1 of its cases is indexed, which a single cc-interposed run of
-# that binary achieves. `declared` files come from the build-independent AST scan; `built` is
-# produced ONLY by a real arbiter cc-interposed build, so the ratio cannot be faked. Vendored
-# third-party is excluded. Covering one binary scores ~0; covering the binaries drives it up.
-# The referee re-runs discovery.coverage() against the live snapshot; pass requires substantial
-# per-binary coverage (tune the 0.50 floor per repo).
+# Executable-coverage gate: of the test EXECUTABLES the committed recipe book registers (one target
+# per binary), what fraction has a real, indexed build. A target counts as covered once the facts
+# index carries >=1 case from a source it compiles — produced ONLY by a real arbiter cc-interposed
+# build, so the ratio cannot be faked. The denominator is the REGISTERED executables, NOT
+# AST-declared source files (those count `#if`-guarded TEST()s that never become an executable on
+# this host, so they could never reach 1.0). The referee re-runs discovery.executable_coverage()
+# against the live snapshot + committed book; pass requires EVERY registered executable built
+# (ratio == 1.0) — so the book must register only the binaries THIS host actually builds.
 [Verify] suite-covered
-shell: PYTHONPATH=.arbiter/engine python3 -c 'import sys; from arbiter_engine.runs import discovery as d; c=d.coverage("."); sys.stderr.write("suite-covered "+repr(c)+chr(10)); sys.exit(0 if c["ratio"]>=0.50 else 1)'
+shell: PYTHONPATH=.arbiter/engine python3 -c 'import sys; from arbiter_engine.runs import discovery as d; c=d.executable_coverage("."); sys.stderr.write("suite-covered "+repr(c)+chr(10)); sys.exit(0 if c["ratio"]>=1.0 else 1)'
 timeout_s: 900
 
 # perf-mcp proven on its REAL function, not a version probe: the referee itself calls
@@ -76,12 +76,19 @@ THEN wire arbiter cc, write the build half of the recipe, and submit the build+b
 in order; do not skip or fake a sub-step — the only thing that finishes this step is a real
 cc-interposed build that publishes facts AND a binary the referee can boot (the prove step that
 follows runs the whole suite in its runtime environment).
-A. NATIVE SMOKE (no arbiter cc, NOT submitted). Before wiring anything, build the project with its
-   OWN build entry and run the test binary once with `--gtest_list_tests` to exit 0. This is pure
-   de-risking and discovery: it confirms the project builds on THIS host, and it is how you learn the
-   real configure/build commands, the binary path, and the source globs you wire in phase B. If the
-   cc build later fails where this native build succeeded, the launcher wiring is at fault, not the
-   project. Nothing here is submitted — only the cc-interposed predicate counts.
+A. NATIVE SMOKE — RUN IT THE PROJECT'S OWN WAY FIRST (no arbiter cc, not submitted, but REQUIRED, and
+   done BEFORE you author or register anything). Build AND run the project's tests the way the project
+   / CI does — invoke its OWN entry point (`./build.sh`, `./run_tests.sh`, `ctest`, `make test`, the
+   command its CI runs), NOT a cmake line you compose — and watch it actually build and run a test or
+   two (a small slice is enough; you are confirming it RUNS on THIS host, not proving the suite). This
+   is the de-risking AND the discovery pass, and it is load-bearing for everything after: running the
+   project's own command is HOW you find the build entry you will REUSE in phase B (you cannot reuse a
+   wrapper you never ran), and it hands you the real configure/build commands, the binary path, and the
+   source globs. Do NOT skip ahead to writing recipes.yaml or calling register before
+   you have watched the project build and run its OWN way — registering a recipe you never ran natively
+   is exactly the jump this step exists to stop. If the cc build later fails where this native build
+   succeeded, the launcher wiring is at fault, not the project. Nothing here is submitted — only the
+   cc-interposed predicate counts.
 B. WIRE + AUTHOR + SUBMIT. Probe and wire arbiter cc, write the build half of the recipe, then submit
    build-booted:
 1. Probe the native build system (read its build files) to learn the configure command, the build
@@ -92,8 +99,10 @@ B. WIRE + AUTHOR + SUBMIT. Probe and wire arbiter cc, write the build half of th
    `run_tests.sh` / `make`-target of that kind), or the exact configure+build commands the CI config
    runs. If one exists it already encodes the right flags, build order, and setup the project expects,
    so you will REUSE it in sub-step 2 instead of reconstructing an equivalent by hand — reconstructing
-   a build the project already wraps is how recipes turn into long, fragile, hand-built command
-   strings that break on details the wrapper handles for you. When the build defines MANY test
+   a build the project already wraps both turns recipes into long, fragile, hand-built command strings
+   that break on details the wrapper handles for you AND forks a SECOND build definition the team must
+   keep in sync with the wrapper they actually edit; reuse keeps the recipe and the humans on ONE
+   source of truth. When the build defines MANY test
    executables, pick the SMALLEST self-contained one to prove — ideally a target built from a single
    test source file with the fewest link dependencies — NOT an aggregate / "merged" / "all-tests"
    target and NOT a "build everything" target. One small gtest binary proves the recipe and publishes
@@ -201,11 +210,12 @@ B. WIRE + AUTHOR + SUBMIT. Probe and wire arbiter cc, write the build half of th
         binary: build/TEST_BINARY
         harness:
           kind: gtest
+          isolation: per_suite              # tool-handled combo isolation: run each test SUITE in its own process + merge, so a test that only fails alongside another (shared global/static state) can't fail the run. Keep it; drop to one-process runs only if you know the suite has no shared state.
         workdir: .                          # dir the test runs from (filled at the prove step); OMIT to default to the repo root
         env:                                # env vars the test needs to run (filled at the prove step); OMIT the whole key if none
           SOME_VAR: some-value
         notes: "trap: <symptom> -> cause: <root cause> -> fix: <recipe field changed> | <next trap>"   # one clause per runtime trap you hit-and-fixed at the prove step; a single double-quoted line, OMIT if the suite proves first try
-        src_compile:
+        src_compile:                          # RAW-build form, for a project with NO build entry. If a build.sh / test script / CI build command EXISTS, REUSE it here instead — see "decide which form" below.
           pre:
             - [cmake, -S, ., -B, build, "-DCMAKE_C_COMPILER_LAUNCHER=arbiter;cc;--root;ABS_REPO;--", "-DCMAKE_CXX_COMPILER_LAUNCHER=arbiter;cc;--root;ABS_REPO;--", -DCMAKE_BUILD_TYPE=Debug]
           cmd: [cmake, --build, build, --target, TEST_BINARY]
@@ -222,11 +232,25 @@ lists — is literal — EXCEPT the runtime-environment slots `workdir:`, `env:`
 `notes:`, which you fill at the PROVE step (the `SOME_VAR` / `setup-test-env.sh` / `notes` shown are
 illustrative — replace or remove them): at gear-up, leave them blank or drop each line, since the
 build+boot proof (build-booted) runs the binary under a no-match filter and needs no test environment.
-The shape shows the CMake compiler-launcher form (sub-step 2, first bullet); for
-a make/autotools build, drop the `-D…LAUNCHER` flags and instead carry the `CC`/`CXX` prefix tokens
-on the build command, e.g. `cmd: [make, "CC=arbiter cc --root ABS_REPO -- REAL_CC", "CXX=arbiter cc
---root ABS_REPO -- REAL_CXX", -C, build]`. Common mistakes that make register reject the file, do
-NOT do these:
+BEFORE copying, decide which form `src_compile` takes, from what sub-step 1 found:
+- **The project HAS its own build entry — a `build.sh` / `run_tests.sh` / a single `make` target /
+  the exact command its CI runs → REUSE it as the stage command; do NOT hand-write the cmake/make
+  form shown.** Thread `arbiter cc` through the `CC`/`CXX` the wrapper already honors and let it run
+  unchanged, e.g. `cmd: [sh, -c, "CC='arbiter cc --root ABS_REPO -- REAL_CC' CXX='arbiter cc --root
+  ABS_REPO -- REAL_CXX' ./build.sh TARGET"]` — `TARGET` is the wrapper's own argument/flag for the
+  ONE small target from sub-step 1 (drop it if the wrapper builds a single thing). If the wrapper
+  forwards configure flags instead of reading `CC`/`CXX`, pass the `-D…LAUNCHER` tokens through it
+  the way it forwards them (sub-step 2). Point `compile_db.path` at the `compile_commands.json` that
+  build writes and `binary:` at the artifact it produces. The reason is SINGLE SOURCE OF TRUTH: humans
+  maintain that wrapper, so a recipe that hand-rolls its own cmake is a SECOND build definition that
+  silently drifts from the one the team edits — reuse the wrapper and the recipe tracks the project's
+  real build for free, so a clean checkout (human or model) runs the same thing.
+- **No such entry exists → author the raw build yourself with the shape as shown** — the CMake
+  compiler-launcher form; for a make/autotools build, drop the `-D…LAUNCHER` flags and carry the
+  `CC`/`CXX` prefix tokens on the build command, e.g. `cmd: [make, "CC=arbiter cc --root ABS_REPO --
+  REAL_CC", "CXX=arbiter cc --root ABS_REPO -- REAL_CXX", -C, build]`.
+
+Common mistakes that make register reject the file, do NOT do these:
 - There is NO `stages:`/`steps:`/`stage:` wrapper — the stage keys `src_compile`/`test_run` sit
   DIRECTLY under the target, exactly as shown.
 - A target is keyed by `id:`, never `name:`. `targets:` is a sequence — each target is a `- id:`
@@ -251,7 +275,9 @@ NOT do these:
 - RED FLAG self-check (the REFEREE re-builds and is the only gate; this list only tells you when NOT to waste a submit): do NOT submit if your recipe has no real cc-interposed src_compile stage, or you emptied / dropped / commented it out to force a green — a recipe with no cc-interposed compile publishes NO facts and the `_Test` index stays empty forever
 - RED FLAG: do NOT submit a build you made outside this predicate — a `run` call you made, or a Bash / make / cmake build in your own shell — a snapshot built outside the submitted predicate leaves facts.published=false no matter how many times you build
 - RED FLAG: do NOT submit a file-exists check, a marker file, or any shell shortcut as the build proof; and a binary that exits 0 but lists ZERO tests (a cmd:[true]/echo, or `binary:` pointed at the wrong artifact) is not a real gtest binary — boot requires >=1 listed case from the binary src_compile actually built
-- Ran the native smoke FIRST (the project's own build + `<binary> --gtest_list_tests` exited 0) so you discovered the real build commands / binary / globs and confirmed the project builds on this host
+- RED FLAG: a build.sh / test script / single CI build command EXISTS and you hand-reconstructed the cmake/make it runs instead of reusing it — REUSE the wrapper as the stage `cmd` (thread `arbiter cc` through the `CC`/`CXX` or configure flags it honors); a long raw cmake string rebuilt by hand is the failure this step most often produces
+- RED FLAG: you jumped to writing recipes.yaml / calling register WITHOUT first building AND running the project its OWN way (the native smoke) — a recipe you never ran natively, wired to a build entry you never invoked, is backwards; run it the project's way first, then make the recipe REUSE exactly that
+- Ran the native smoke FIRST — built AND ran the project's tests its OWN way (`./build.sh` / `./run_tests.sh` / `ctest` / `make test`), before authoring or registering anything, so you confirmed the suite RUNS on this host and discovered the build entry to reuse + the real binary / globs
 - The recipe begins with a top-level `compile_db:` section (sibling of `targets:`, `path:` pointing at the build's compile_commands.json) — without it the recipe builds but NEVER publishes facts, and the publish step fails forever
 - The build REUSES the project's own build entry (build.sh / test wrapper / the CI build command) when one exists, instead of a hand-reconstructed command string; the compile is routed through `arbiter cc` by the least invasive form that entry offers — a compiler-launcher hook (CMake: CMAKE_C/CXX_COMPILER_LAUNCHER), a CC/CXX prefix (make/autotools or a wrapper that honors them), or standalone shim scripts only as a last resort — keeping the project's own compilers; every form includes `--root ABS_REPO`
 - recipe_search, then write .arbiter/recipes.yaml (build half: compile_db + a real cc-interposed src_compile stage + a bare test_run.cmd) in the shape above, then register {"path": ".arbiter/recipes.yaml"}
@@ -272,9 +298,9 @@ snapshot and passes only when the snapshot actually contains the test set, so an
 assert but the index does not contain cannot pass.
 Then make the WHOLE SUITE runnable, not just the one target you proved. List every test binary the
 build produces — `ctest -N`, the build's test/target list, or the test-executable declarations in
-the build files — and register a recipe for EACH via import_recipes: one RecipeBook with a target
+the build files — and register a recipe for EACH by calling register on one RecipeBook with a target
 per binary, same shape as the proven one (its own build target + binary path + `gtest` harness,
-reusing the `env`/`test_run.pre`/`workdir` that apply). register/import_recipes are pure writes, so
+reusing the `env`/`test_run.pre`/`workdir` that apply). register is a pure write, so
 this is cheap and does NOT build anything: each added target stays UNPROVEN until its first `run`
 (its tests enter the facts index only once it is built), exactly like a fresh recipe. Keep the
 proven target's id `src_compile`; give the others their binary names. For a large suite, GENERATE
@@ -286,7 +312,7 @@ and indexes those binaries so the whole project test suite enters the facts inde
 - Call scan {"scope": "*"} and treat its facts-derived set as the authoritative test inventory
 - Confirm the snapshot answers a query (search/detail) before submitting — publication is not searchability
 - Submit tests-enumerated (referee re-queries the index; your transcript is not the test set)
-- Register a recipe for EVERY test binary the build produces (import_recipes — one target per binary, ids = binary names) so the whole suite is runnable, not just the single target you proved; these stay unproven until first run
+- Register a recipe for EVERY test binary the build produces (register one book with a target per binary, ids = binary names) so the whole suite is runnable, not just the single target you proved; these stay unproven until first run
 [Submit] tests-enumerated
 [Branch]
 success: cover
@@ -294,29 +320,34 @@ failure: gear-up
 
 [STEP] cover
 [StepJob]
-Now COVER every project test binary: build and RUN each one so the facts index carries the whole
-suite, not just the one binary gear-up proved. This is the bootstrap's purpose — full coverage, so a
-clean checkout can run any suite AND the index knows every binary works. Coverage is measured
-PER BINARY (per test source file), each counted once: you do NOT have to run all of a binary's
-cases — many hold hundreds — you only run a FEW per binary to prove that binary builds and runs.
-Drive `run` over each registered target with a SMALL gtest filter (one suite, or a handful of cases
-— `tests: ["Suite.*"]` or a couple of `Suite.Case`), built through `arbiter cc` (the launcher
-wiring from gear-up). Each such run compiles that binary's test file — which indexes ALL of its cases
-into the facts snapshot (the index comes from the compile, so a few executed cases still cover the
-whole file) — and confirms the binary actually runs. The index merges INCREMENTALLY, so runs
-accumulate; loop over the binaries you registered at scan-tests (generate the calls programmatically
-for a large suite rather than by hand). You do NOT need the cases to PASS, only the binary to build
-and run (the gate measures per-binary coverage, never pass/fail). Some binaries cannot build on this
-host (platform-guarded, or unrelated breakage); skip those and keep going — cover as many binaries
-as the host can build. When the index carries the binaries, submit suite-covered: the referee
-re-runs `discovery.coverage()` over the live snapshot and passes only at substantial per-binary
-coverage (built test files / declared test files, vendored third-party excluded). Covering one
-binary scores ~0; cover the binaries to pass. If it fails, read the reported ratio, run more
-binaries, and submit again.
+COVER every registered test EXECUTABLE — build each one so the facts index carries it. "Covered"
+means the COMPILE indexed that executable's test file; it does NOT mean running its cases. The
+purpose of this step is to prove, executable by executable, that your recipe's ENV SETUP and COMPILE
+COMMANDS work on each test/source combo — NOT to achieve test-case coverage. So for EACH executable
+run the SMALLEST slice that builds it: ONE suite, or a single case (`tests: ["Suite.OneCase"]`) —
+NEVER `["*"]`, and never all of its suites. That one `run` compiles the executable's test file, which
+indexes ALL of its cases (the index comes from the COMPILE — a single executed case still covers the
+whole file), and confirms it builds and runs under your recipe. Running more cases per executable
+buys ZERO extra coverage and is the #1 reason this step crawls on a 10k-test suite — one case per
+executable is the bar. You do NOT need the cases to PASS (the gate measures coverage, never
+pass/fail). Combo interactions are NOT yours to hand-manage here: the recipe you wrote at gear-up
+carries `isolation: per_suite`, so `run` already executes each suite in its OWN process and merges —
+a test that only fails alongside another can't make a working executable look broken. The index
+merges INCREMENTALLY, so runs accumulate; loop over the executables you registered at scan-tests
+(generate the calls programmatically for a large suite).
+The gate is 100%: submit suite-covered and the referee re-runs `discovery.executable_coverage()` over
+the live snapshot + committed book, passing only when EVERY registered executable is built
+(ratio == 1.0). The denominator is the executables in YOUR book — only what you registered — so if an
+executable genuinely cannot build on this host (platform-guarded, or not a real this-host target), it
+does not belong in the committed book (a clean checkout here couldn't run it either): REMOVE it from
+the book and re-register, rather than leaving it forever uncovered. If the gate fails, read the
+reported `uncovered` ids, build those executables (or drop the ones this host cannot build), and
+submit again.
 [CheckList]
-- Ran each registered test binary through `arbiter cc` with a small filter (a few cases per binary, not all) so it built + ran and its file entered the facts index — covering binaries, not re-running hundreds of cases
-- Skipped only the binaries the host genuinely cannot build (platform-guarded / unrelated breakage), covering as many binaries as possible
-- Submit suite-covered — the referee measures per-binary (built/declared test files) project coverage from the live index; report the ratio reached
+- For EACH registered executable ran the SMALLEST slice (one suite, or a single `Suite.Case` — NEVER `["*"]` or all suites) through `arbiter cc`: that one compile indexed it; running more cases per executable buys ZERO coverage and is what makes this step slow
+- Did NOT hand-manage combos — the recipe's `isolation: per_suite` makes `run` execute each suite in its own process, so a case that only fails alongside another can't fail the run; passes are not required (the gate is build, never pass/fail)
+- The committed book registers only the executables THIS host builds — removed any target that genuinely cannot build here (platform-guarded / not a real this-host target) so coverage can reach 100%
+- Submit suite-covered — the referee runs discovery.executable_coverage() over the book and passes only at 100% (every registered executable built); report the ratio and any `uncovered` ids
 [Submit] suite-covered
 [Branch]
 success: prove
@@ -422,13 +453,13 @@ break->run->inspect, asserting it reads a live value — it passes on hosts wher
 reports-and-passes where gdb is absent or the host forbids launching inferiors (a host limitation
 never fails the repo). Alongside it, drive a real gdb-mcp session against your proven test binary
 and report the outputs: gdb_start (mode exec on the binary) → gdb_breakpoint (set one) → gdb_exec
-(run) → gdb_stack / gdb_eval (read a frame and a value) → gdb_stop. Also exercise the recipe-import
-path — call import_recipes on a recipe book and confirm the imported recipe is queryable via
-recipe_search — and append one NotePlaybook gotcha capturing anything you learned this run.
+(run) → gdb_stack / gdb_eval (read a frame and a value) → gdb_stop. Also confirm the recipe surface
+round-trips — call recipe_search and check that a recipe you registered comes back queryable — and
+append one NotePlaybook gotcha capturing anything you learned this run.
 [CheckList]
 - Submit gdb-debugs-real-binary (referee proves gdb debugs, or reports a host limitation)
 - Drive a real gdb-mcp session (gdb_start → gdb_breakpoint → gdb_exec → gdb_stack/gdb_eval → gdb_stop) on the proven binary and report the outputs
-- Exercise import_recipes (then recipe_search to confirm the import is queryable) and append a NotePlaybook gotcha
+- Confirm a registered recipe is queryable via recipe_search, and append a NotePlaybook gotcha
 [Submit] gdb-debugs-real-binary
 [Branch]
 success: confirm

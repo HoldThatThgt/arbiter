@@ -47,7 +47,7 @@ TARGET REPO (your gtest-guarded C DBMS; pg/sqlite checkouts = dummy benchmarks)
 │ ┌──────────────────────────────────────────────────────────────────┐         │
 │ │ arbiter-engine (Python stdlib, stdio JSON-RPC, per-seat children)│         │
 │ │  facts: search, detail        (snapshots + overlay, budgets)     │         │
-│ │  runs : run, recipe_search, register, import_recipes, scan       │         │
+│ │  runs : run, recipe_search, register, scan                       │         │
 │ │  rpc  : arbiter/refresh /census /resolveBriefing                 │         │
 │ │         /startRun /runStatus  (referee-only methods, not tools)  │         │
 │ │  shared: work-tree census · disk build cache · compile-db        │         │
@@ -207,7 +207,7 @@ Beyond these four verbs the session is stock Claude Code — no recipe ceremony,
 **curator** (inline frontmatter, `ARBITER_SEAT_KEY`) — 4 tools: `ReadPlayBook`, `LoadPlayBook`, `ListTask`, `ReviewTask`.
 
 **executor** (inline frontmatter, credential) — 8 base + 3 gated:
-`SubmitTask{task_id, summary≤1024B, report, result:ResultSpec}`, `RegisterTest{paths}`, `ListTask`, `ReviewTask`, `search`, `detail`, `run{tests, options{harness_options.gtest.{fail_fast,timeout_s}}}`, `recipe_search{query}` (renamed from crun `search` — the only name collision); **`register`/`import_recipes`/`scan`** registered only when the loaded playbook declares `capabilities:[recipes]`. Edge semantics fail-closed: no active match at seat birth ⇒ gated tools not registered; every gated call re-checks under flock that the granting match is still current, else `capability_revoked`.
+`SubmitTask{task_id, summary≤1024B, report, result:ResultSpec}`, `RegisterTest{paths}`, `ListTask`, `ReviewTask`, `search`, `detail`, `run{tests, options{harness_options.gtest.{fail_fast,timeout_s}}}`, `recipe_search{query}` (renamed from crun `search` — the only name collision); **`register`/`scan`** registered only when the loaded playbook declares `capabilities:[recipes]`. Edge semantics fail-closed: no active match at seat birth ⇒ gated tools not registered; every gated call re-checks under flock that the granting match is still current, else `capability_revoked`.
 
 **Companion diagnostics (ADR-0010, bundled, not seats):** `gdb-mcp` and `perf-mcp` ship inside `arbiter-engine` as `arbiter_engine.gdbmcp`/`arbiter_engine.perfmcp` — delivering arbiter delivers them. They remain FOREIGN stdio servers in the ADR-0006 sense: `.mcp.json` launches them via the resolved engine interpreter (`python3 -m …`), never via the arbiter binary, so the deny-self guard is never in play. `arbiter init` probes the engine, add-if-missing merges the two entries, and writes the `arbiter-debugger` executor-agent variant wired with them. Executors use their tools for crash/perf evidence; adjudication consumes their `structuredContent` only through mcp-kind `expect[]` clauses. The seat RBAC boundary is untouched — companions are host-level capabilities like Bash, never arbiter tools.
 
@@ -324,7 +324,7 @@ Rejected: all-Go (rewrites the conformance-tested extractor against a red line, 
 - **Bespoke YAML-subset parser for recipe books:** fail-closed dialect, line-precise errors, crun's full recipe corpus as golden tests — accepted as the permanent price of the stdlib-only engine.
 - **expect-language scope creep:** ops frozen at `eq/ne/ge/le/exists`, scalars only, ≤8 clauses, no wildcards/string ops — constitutionally documented; new needs go into the target tool's structured output.
 - **Red-line renegotiations** (explicit, phase-3 blockers): zero-PyPI becomes "engine core stdlib-only + fail-closed `[scan]` extra"; "no third MCP tool" holds for the facts namespace while the engine process hosts other namespaces and referee-only methods; chess's 10 interfaces become per-seat 10/4/8–11. Each requires a decisions.md entry and owner sign-off.
-- **Recipe `env` credential smuggling** (amplified by one-command init): `register`/`import_recipes`/init lint env values against secret-shaped names and warn.
+- **Recipe `env` credential smuggling** (amplified by one-command init): `register`/init lint env values against secret-shaped names and warn.
 - **Migration cutover:** adopt deletes derived state by contract; committed playbooks/agents referencing legacy tool names get a generated whole-token-scan checklist for manual rewrite (the constitution forbids automated prose edits) — a documented human step, not a silent gap.
 - **Doc surface tripling in two languages:** module READMEs stay Chinese and spec-authoritative; unified top-level docs are English; per-phase doc-reconciliation passes are budgeted, and the reviewer-relay's "no silently dropped follow-ups" rule is adopted repo-wide.
 

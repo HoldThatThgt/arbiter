@@ -640,6 +640,86 @@ sys.exit(subprocess.run(argv).returncode)
         )
         path.chmod(0o755)
 
+    def test_isolation_per_suite_runs_each_suite_in_its_own_process(self):
+        # harness isolation per_suite: run_target enumerates the suites and runs EACH in its own
+        # process, then merges. The fake records every --gtest_filter it is invoked with, so we can
+        # prove two separate suite-scoped runs happened (not one combined --gtest_filter=*).
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake = root / "fake_gtest.sh"
+            fake.write_text(
+                "#!/bin/sh\n"
+                "for arg in \"$@\"; do\n"
+                "  case \"$arg\" in\n"
+                "    --gtest_list_tests) printf 'SuiteA.\\n  Case1\\nSuiteB.\\n  Case2\\n'; exit 0 ;;\n"
+                "  esac\n"
+                "done\n"
+                "filter=''; out=''\n"
+                "for arg in \"$@\"; do\n"
+                "  case \"$arg\" in\n"
+                "    --gtest_filter=*) filter=\"${arg#--gtest_filter=}\" ;;\n"
+                "    --gtest_output=xml:*) out=\"${arg#--gtest_output=xml:}\" ;;\n"
+                "  esac\n"
+                "done\n"
+                "printf '%s\\n' \"$filter\" >> filters.log\n"
+                "mkdir -p \"$(dirname \"$out\")\"\n"
+                "case \"$filter\" in\n"
+                "  SuiteA.*) printf '<testsuites><testsuite name=\"SuiteA\"><testcase classname=\"SuiteA\" name=\"Case1\" time=\"0.001\"/></testsuite></testsuites>\\n' > \"$out\" ;;\n"
+                "  SuiteB.*) printf '<testsuites><testsuite name=\"SuiteB\"><testcase classname=\"SuiteB\" name=\"Case2\" time=\"0.001\"><failure message=\"boom\">x</failure></testcase></testsuite></testsuites>\\n' > \"$out\" ;;\n"
+                "esac\n"
+                "exit 0\n",
+                encoding="utf-8",
+            )
+            fake.chmod(0o755)
+            book = recipes.parse(
+                f"""
+targets:
+  - id: unit
+    binary: fake_gtest.sh
+    harness:
+      kind: gtest
+      isolation: per_suite
+    test_run:
+      cmd: [{str(fake)}]
+"""
+            )
+
+            result = gtest.run_target(root, book, "unit", run_id="iso", tests=["*"])
+
+            # Merged across the two isolated suite runs: SuiteA passed, SuiteB failed.
+            self.assertEqual(result.overall, "failed")
+            self.assertEqual((result.passed, result.failed, result.skipped), (1, 1, 0))
+            self.assertEqual(
+                sorted((c.suite, c.name) for c in result.per_test),
+                [("SuiteA", "Case1"), ("SuiteB", "Case2")],
+            )
+            # Each suite ran in its own process under its own filter — the proof of isolation.
+            filters = sorted((root / "filters.log").read_text(encoding="utf-8").split())
+            self.assertEqual(filters, ["SuiteA.*", "SuiteB.*"])
+
+    def test_unknown_isolation_value_is_errored(self):
+        # A typo'd isolation value fails fast with a typed errored result, never a silent fallback.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake = root / "fake_gtest.sh"
+            fake.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            fake.chmod(0o755)
+            book = recipes.parse(
+                f"""
+targets:
+  - id: unit
+    binary: fake_gtest.sh
+    harness:
+      kind: gtest
+      isolation: per_suit
+    test_run:
+      cmd: [{str(fake)}]
+"""
+            )
+            result = gtest.run_target(root, book, "unit", run_id="bad", tests=["*"])
+            self.assertEqual(result.overall, "errored")
+            self.assertEqual(result.failure, "bad_isolation")
+
 
 if __name__ == "__main__":
     unittest.main()

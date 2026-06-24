@@ -185,10 +185,12 @@ func buildServerWithRuntime(ctx context.Context, root, seatName string) (*mcp.Se
 		addListTask(server, root, store)
 		addReviewTask(server, root, store)
 	case Executor:
+		addShowStepJob(server, root, store)
 		addSubmitTask(server, root, store)
 		addRegisterTest(server, root, store)
 		addListTask(server, root, store)
 		addReviewTask(server, root, store)
+		addNotePlaybook(server, root, store)
 	default:
 		runtime.Close()
 		return nil, nil, fmt.Errorf("unknown seat: %s", seatName)
@@ -291,7 +293,7 @@ func seatAllowsEngineTool(seatName, name string, recipesCap bool) bool {
 }
 
 func isGatedEngineTool(name string) bool {
-	return name == "register" || name == "import_recipes" || name == "scan"
+	return name == "register" || name == "scan"
 }
 
 func hasSeatCapability(values []string, target string) bool {
@@ -379,7 +381,7 @@ func addLoadPlayBook(server *mcp.Server, root string, store *match.Store) {
 }
 
 func addShowStepJob(server *mcp.Server, root string, store *match.Store) {
-	add(server, root, store.Seat, "ShowStepJob", "Show the active match's CURRENT step: job, checklist, gotchas from past matches, available [Verify] names, and this round's task ledger. The player's only view of the flow — future steps are never revealed. no_active_match means the curator must LoadPlayBook first.", emptySchema(), func(ctx context.Context, raw json.RawMessage) (any, error) {
+	add(server, root, store.Seat, "ShowStepJob", "Show the active match's CURRENT step: job, checklist, gotchas from past matches, available [Verify] names, and this round's task ledger. Your only view of the flow — future steps are never revealed. no_active_match means the curator must LoadPlayBook first.", emptySchema(), func(ctx context.Context, raw json.RawMessage) (any, error) {
 		var in EmptyInput
 		if err := decode(raw, &in); err != nil {
 			return nil, err
@@ -489,7 +491,7 @@ func addNotePlaybook(server *mcp.Server, root string, store *match.Store) {
 }
 
 func addReviewTask(server *mcp.Server, root string, store *match.Store) {
-	add(server, root, store.Seat, "ReviewTask", "Full detail for one task: authoritative request, briefing cards (pre-resolved facts), report, verdict, and the per-clause expect_report (path/op/value/actual). Executors call this FIRST on every dispatch; players call it on failures before re-dispatching.", objectSchema(map[string]any{"task_id": stringSchema()}, []string{"task_id"}), func(ctx context.Context, raw json.RawMessage) (any, error) {
+	add(server, root, store.Seat, "ReviewTask", "Full detail for one task: authoritative request, briefing cards (pre-resolved facts), the step's accumulated gotchas (avoid known pitfalls before you start), report, verdict, and the per-clause expect_report (path/op/value/actual). Executors call this FIRST on every dispatch; players call it on failures before re-dispatching.", objectSchema(map[string]any{"task_id": stringSchema()}, []string{"task_id"}), func(ctx context.Context, raw json.RawMessage) (any, error) {
 		var in ReviewTaskInput
 		if err := decode(raw, &in); err != nil {
 			return nil, err

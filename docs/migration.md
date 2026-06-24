@@ -50,7 +50,7 @@ on the conformance corpus; fact-kind predicates adjudicate real queries.
 harness/sources/stages), proven/unproven lifecycle on SQLite (WAL, `BEGIN IMMEDIATE`,
 correlation columns, `run_test.occurrence`), runner with pre/cmd/post stages, **gtest adapter**
 (injected `--gtest_output`, XML primary), census-validated build cache (correct polarity,
-cross-process under `build/<h>.lock`), `run`/`recipe_search`/`register`/`import_recipes` tools,
+cross-process under `build/<h>.lock`), `run`/`recipe_search`/`register` tools,
 `guidance[]` on failure (read_index lookups), facts-derived TestBody discovery (tree-sitter
 demoted to `[scan]` extra, fail-closed). Port crun's fake-harness test corpus. **Exit:** crun's
 ported tests green; run-kind predicates adjudicate real fixture runs; stale-binary polarity test

@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from arbiter_engine.facts import store as facts_store
+from arbiter_engine.runs import recipes
 from arbiter_engine.runs import scan as ast_scan
 from arbiter_engine.runs import state as run_state
 
@@ -211,6 +212,70 @@ def coverage(repo_root: Path | str, *, limit: int = 200_000) -> dict[str, Any]:
         "declared_tests": len(declared),
         "built_tests": sum(1 for t in declared if (t.suite, t.name) in built_keys),
     }
+
+
+def executable_coverage(repo_root: Path | str, *, limit: int = 200_000) -> dict[str, Any]:
+    """Coverage over EXECUTABLES — the test binaries declared in the committed recipe book,
+    NOT the AST-declared source files ``coverage`` measures.
+
+    Denominator = the targets in ``.arbiter/recipes.yaml`` (one per test executable the project
+    builds). A target is COVERED when the facts index carries >=1 test from a source file that
+    target compiles — and ``built`` facts are produced ONLY by a real ``arbiter cc``-interposed
+    build, so the ratio cannot be faked. This is the honest "what fraction of the project's test
+    EXECUTABLES has a real, indexed build" number: it never counts a source-level ``TEST()`` that
+    is ``#if``-guarded out and so never becomes an executable on this host — which kept the
+    file-based ``coverage`` denominator from ever reaching 1.0. An empty / unreadable book scores
+    0 (nothing registered yet).
+    """
+    root = Path(repo_root)
+    try:
+        book = recipes.load(root / ".arbiter" / "recipes.yaml")
+    except (OSError, recipes.RecipeError):
+        return {"executables": 0, "covered": 0, "ratio": 0.0, "uncovered": []}
+    built_files = {
+        candidate.file
+        for candidate in discover_test_candidates(root, limit=limit)
+        if candidate.file
+    }
+    covered: List[str] = []
+    uncovered: List[str] = []
+    for target in book.targets:
+        if _target_source_files(root, target) & built_files:
+            covered.append(target.id)
+        else:
+            uncovered.append(target.id)
+    total = len(book.targets)
+    ratio = (len(covered) / total) if total else 0.0
+    return {
+        "executables": total,
+        "covered": len(covered),
+        "ratio": round(ratio, 4),
+        "uncovered": sorted(uncovered)[:50],
+    }
+
+
+def _target_source_files(root: Path, target: recipes.Target) -> set:
+    """Repo-relative source files a target compiles, resolved from its ``sources`` globs.
+
+    The target's test source file is among these (the build must compile it to produce the
+    binary), so intersecting with the facts-built files tells us whether this executable's
+    build was actually indexed.
+    """
+    files: set = set()
+    for pattern in target.sources:
+        if not pattern:
+            continue
+        try:
+            matches = list(root.glob(pattern))
+        except (ValueError, OSError):
+            continue
+        for path in matches:
+            if path.is_file():
+                try:
+                    files.add(path.relative_to(root).as_posix())
+                except ValueError:
+                    continue
+    return files
 
 
 def _union(repo_root: Path | str) -> Tuple[TestCandidate, ...]:

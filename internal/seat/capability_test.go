@@ -53,7 +53,7 @@ func TestSeatToolSurfaceForwardsEngineTools(t *testing.T) {
 	}{
 		{Player, []string{"AddPlayBook", "CheckStepJob", "CreateTask", "ListTask", "NotePlaybook", "ReviewTask", "ShowStepJob", "SubmitCheckpoint", "detail", "search"}},
 		{Curator, []string{"ListTask", "LoadPlayBook", "ReadPlayBook", "ReviewTask"}},
-		{Executor, []string{"ListTask", "RegisterTest", "ReviewTask", "SubmitTask", "detail", "recipe_search", "run", "search"}},
+		{Executor, []string{"ListTask", "NotePlaybook", "RegisterTest", "ReviewTask", "ShowStepJob", "SubmitTask", "detail", "recipe_search", "run", "search"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.seat, func(t *testing.T) {
@@ -83,7 +83,7 @@ func TestExecutorGatedToolsRequireRecipesCapability(t *testing.T) {
 	}
 	t.Cleanup(runtime.Close)
 	got := listTools(t, server)
-	for _, name := range []string{"import_recipes", "register", "scan"} {
+	for _, name := range []string{"register", "scan"} {
 		if !hasString(got, name) {
 			t.Fatalf("missing gated tool %s in %#v", name, got)
 		}

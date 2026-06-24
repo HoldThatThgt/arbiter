@@ -14,7 +14,7 @@ channel policy.
 
 ## Public surface
 - **MCP tools** (namespaced registries): `facts`: `search`, `detail` (schemas byte-frozen);
-  `runs`: `run`, `recipe_search`, `register`, `import_recipes`, `scan`.
+  `runs`: `run`, `recipe_search`, `register`, `scan`.
 - **Custom JSON-RPC methods** (referee-only, never in tools/list): `arbiter/refresh`,
   `arbiter/census`, `arbiter/resolveBriefing`, `arbiter/startRun`, `arbiter/runStatus`,
   plus a version/handshake method for engines.json verification.
